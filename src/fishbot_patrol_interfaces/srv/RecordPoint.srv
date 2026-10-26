@@ -1,0 +1,10 @@
+string route_name
+string point_id
+string task_id
+float32 wait_seconds
+# ""（默认，不判定）/ "present"（应有）/ "absent"（应无）
+string expect
+---
+bool success
+string message
+PatrolPoint point

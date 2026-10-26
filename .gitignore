@@ -1,0 +1,85 @@
+# ---- colcon ----
+build/
+install/
+log/
+
+# ---- Python ----
+__pycache__/
+*.py[cod]
+*.egg-info/
+.eggs/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+.coverage.*
+htmlcov/
+venv/
+.venv/
+
+# ---- C/C++ ----
+*.o
+*.so
+*.a
+CMakeCache.txt
+CMakeFiles/
+cmake_install.cmake
+
+# ---- ROS runtime ----
+*.bag
+*.db3
+*.mcap
+*.yaml.bak
+
+# ---- 巡检运行时产物（报告 / 进度 / 路线库）----
+*.jsonl
+patrol_progress*.json
+routes/
+*.route.json
+!src/**/test/**/*.json
+
+# ---- 模型权重与数据集（体积大，放 Release �?LFS�?---
+# 只保留一份能直接跑的 .pt；其余都是导出产物，谁需要谁自己导出
+*.pt
+!src/fishbot_vision/yolo26n.pt
+*.pth
+*.onnx
+*.engine
+*.mnn
+*.gguf
+*.ncnn.bin
+*.ncnn.param
+**/yolo26n_ncnn_model/
+models/
+datasets/
+runs/
+*.mp4
+*.avi
+
+# ---- 密钥与本地配置（绝对不能提交�?---
+.env
+.env.*
+*.key
+*.pem
+*_ed25519
+*_rsa
+id_ed25519*
+id_rsa*
+_ssh_keys/
+known_hosts
+.secrets/
+
+# ---- 临时备份 / 补丁残留 ----
+*.bak*
+*.orig
+*.rej
+*.tmp
+*~
+
+# ---- 编辑�?/ 系统 ----
+.vscode/
+.idea/
+*.swp
+.DS_Store
+Thumbs.db
+desktop.ini

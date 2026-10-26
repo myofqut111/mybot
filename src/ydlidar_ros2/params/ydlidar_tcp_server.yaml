@@ -1,0 +1,26 @@
+ydlidar_node:
+  ros__parameters:
+    port: 0.0.0.0 # 监听地址（所有网卡）；TCP服务端模式
+    frame_id: laser_frame # 坐标系ID（与原 /scan 一致）
+    ignore_array: "" # 忽略的数组
+    baudrate: 8889 # TCP服务端模式下复用为网络端口
+    lidar_type: 1 # 激光雷达类型（三角协议）
+    device_type: 3 # 设备类型：3=TCP服务端（上位机监听，雷达作为客户端连入）
+    sample_rate: 3 # 采样率
+    intensity_bit: 8 # 强度位数
+    abnormal_check_count: 4 # 异常检查计数
+    fixed_resolution: false # 固定分辨率
+    reversion: true # 反转
+    inverted: true # 倒置
+    auto_reconnect: true # 自动重连（断线后重新 Listen + Accept）
+    isSingleChannel: true # 单通道
+    intensity: true # 强度
+    publish_point_cloud: false # /scan 已足够；按需显式打开调试点云
+    support_motor_dtr: true # 支持电机DTR
+    angle_max: 180.0 # 最大角度
+    angle_min: -180.0 # 最小角度
+    range_max: 64.0 # 最大范围
+    range_min: 0.05 # 最小范围
+    frequency: 5.0 # 频率
+    invalid_range_is_inf: false # 无效范围为无穷大
+    use_hardware_timestamp: false # 使用ROS接收时间，避免硬件时钟落后约56ms

@@ -1,0 +1,1 @@
+"""Fishbot patrol route executor."""
