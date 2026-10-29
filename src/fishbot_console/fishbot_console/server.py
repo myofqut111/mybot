@@ -138,6 +138,12 @@ class ConsoleServer(object):
                 if path == '/api/cancel_nav':
                     ok, message = server_.bridge.cancel_nav()
                     return _json_response(self, {'ok': ok, 'message': message})
+                if path == '/api/initialpose':
+                    ok, message = server_.bridge.set_initial_pose(
+                        float(payload.get('x')),
+                        float(payload.get('y')),
+                        float(payload.get('yaw') or 0.0))
+                    return _json_response(self, {'ok': ok, 'message': message})
                 if path == '/api/patrol':
                     ok, message = server_.bridge.start_patrol(
                         payload.get('route') or '',

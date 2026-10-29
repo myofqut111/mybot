@@ -1,9 +1,9 @@
-﻿<?xml version="1.0"?>
+<?xml version="1.0"?>
 <?xml-model href="http://download.ros.org/schema/package_format3.xsd" schematypens="http://www.w3.org/2001/XMLSchema"?>
 <package format="3">
   <name>fishbot_console</name>
-  <version>0.1.2</version>
-  <description>鏈哄櫒浜哄湪绾挎帶鍒跺彴锛氬鑸€佸缓鍥俱€佸贰妫€銆佹憚鍍忓ご銆佹棩蹇椼€丄I 鍔╂墜锛堟祻瑙堝櫒璁块棶锛?/description>
+  <version>0.1.3</version>
+  <description>机器人在线控制台：地图与导航、建图、巡检、摄像头、日志、看板、AI 助手（浏览器或手机访问）</description>
   <maintainer email="dev@example.com">Fishbot Maintainer</maintainer>
   <license>Apache-2.0</license>
 

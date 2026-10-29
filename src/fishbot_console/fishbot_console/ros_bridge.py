@@ -8,6 +8,7 @@ nav2 / slam_toolbox / camera 任何一个缺失，都只是少一个功能，
 不能让控制台起不来。
 """
 import json
+import math
 import os
 import subprocess
 import threading
@@ -126,6 +127,10 @@ class ConsoleBridge(Node):
         self.create_subscription(Log, '/rosout', self._on_log, 200,
                                  callback_group=self._callbacks)
 
+        # 手动给初始位姿：和 RViz 的 "2D Pose Estimate" 发的是同一个话题、同一套协方差
+        self._initial_pub = self.create_publisher(
+            PoseWithCovarianceStamped, '/initialpose', 10)
+
         self._patrol_client = None
         if ExecutePatrol is not None:
             self._patrol_client = ActionClient(
@@ -192,9 +197,14 @@ class ConsoleBridge(Node):
 
     def _on_pose(self, msg):
         pose = msg.pose.pose
+        # 朝向也要存：地图上那个箭头没有 yaw 就只能画成圆点，
+        # 而"车头朝哪"恰恰是给初始位姿时最需要看的东西。
+        q = pose.orientation
+        yaw = math.atan2(2.0 * (q.w * q.z + q.x * q.y),
+                         1.0 - 2.0 * (q.y * q.y + q.z * q.z))
         with self._lock:
             self._pose = (float(pose.position.x), float(pose.position.y),
-                          time.time())
+                          float(yaw), time.time())
 
     def _on_log(self, msg):
         self.logs.add(msg.name, int(msg.level), msg.msg)
@@ -248,8 +258,8 @@ class ConsoleBridge(Node):
             from .data import battery_band
             status['battery_band'] = battery_band(battery, self._warn_v,
                                                   self._crit_v)
-        status['pose'] = ({'x': pose[0], 'y': pose[1],
-                           'age_s': max(0.0, time.time() - pose[2])}
+        status['pose'] = ({'x': pose[0], 'y': pose[1], 'yaw': pose[2],
+                           'age_s': max(0.0, time.time() - pose[3])}
                           if pose else None)
         return status
 
@@ -323,6 +333,32 @@ class ConsoleBridge(Node):
         return out
 
     # ------------------------------------------------------------ 动作
+    def set_initial_pose(self, x, y, yaw=0.0):
+        """发 /initialpose，等价于 RViz 的 2D Pose Estimate。
+
+        协方差按 RViz 的默认值给（位置 0.25 m²、朝向 0.0685 rad² ≈ 15°），
+        这两个数不是随便写的：AMCL 用它们当初始粒子分布的宽度，给 0 会让
+        滤波器一上来就发散。
+        """
+        msg = PoseWithCovarianceStamped()
+        msg.header.frame_id = 'map'
+        msg.header.stamp = self.get_clock().now().to_msg()
+        msg.pose.pose.position.x = float(x)
+        msg.pose.pose.position.y = float(y)
+        msg.pose.pose.position.z = 0.0
+        msg.pose.pose.orientation.z = math.sin(yaw / 2.0)
+        msg.pose.pose.orientation.w = math.cos(yaw / 2.0)
+        cov = [0.0] * 36
+        cov[0] = cov[7] = 0.25
+        cov[35] = 0.06853891945200942
+        msg.pose.covariance = cov
+        self._initial_pub.publish(msg)
+        self.logs.add('console', 20,
+                      'initial pose -> (%.2f, %.2f) yaw %.2f rad'
+                      % (x, y, yaw))
+        return True, '已发送初始位姿 (%.2f, %.2f) %.0f°' % (
+            x, y, math.degrees(yaw))
+
     def send_nav(self, x, y, yaw=None):
         if self._nav_client is None:
             return False, '没有 nav2（nav2_msgs 未安装）'

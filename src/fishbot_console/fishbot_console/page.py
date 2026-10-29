@@ -38,9 +38,12 @@ section{background:var(--panel);border:1px solid var(--line);border-radius:10px;
         padding:10px}
 section h2{font-size:13px;margin:0 0 8px;color:var(--dim);font-weight:600;
            letter-spacing:.6px;text-transform:uppercase}
-#mapWrap{position:relative;background:#111826;border-radius:8px;overflow:hidden;
-         min-height:260px;display:flex;align-items:center;justify-content:center}
-#mapCanvas{max-width:100%;cursor:crosshair;display:block}
+#mapSection{grid-column:1/-1}
+#mapWrap{position:relative;background:#111826;border-radius:8px;overflow:auto;
+         min-height:260px;height:60vh;display:block;text-align:center}
+#mapCanvas{max-width:none;cursor:crosshair;display:inline-block;
+           image-rendering:pixelated}
+#mapWrap.mode-pose #mapCanvas{cursor:crosshair}
 #mapHint{color:var(--dim);font-size:12px;padding:20px;text-align:center}
 .row{display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-top:8px}
 button{background:#22304a;color:var(--fg);border:1px solid var(--line);
@@ -84,8 +87,19 @@ th{color:var(--dim);font-weight:500}
 <div id="sysHint"></div>
 
 <main>
-  <section>
-    <h2>地图（点一下 = 发导航目标）</h2>
+  <section id="mapSection">
+    <h2>地图</h2>
+    <div class="row" style="margin-top:0">
+      <select id="mapMode" title="左键模式">
+        <option value="nav">左键 = 发导航目标</option>
+        <option value="pose">左键拖拽 = 设定初始位姿</option>
+      </select>
+      <button id="btnZoomOut" title="缩小">−</button>
+      <span class="badge" id="zoomLabel">100%</span>
+      <button id="btnZoomIn" title="放大">+</button>
+      <button id="btnZoomFit">适应窗口</button>
+      <span id="mapModeHint" style="color:var(--dim);font-size:12px"></span>
+    </div>
     <div id="mapWrap"><div id="mapHint">还没有收到 /map</div>
       <canvas id="mapCanvas" hidden></canvas></div>
     <div class="row">
@@ -184,25 +198,68 @@ async function api(path, body){
 function setBadge(el, text, cls){ el.textContent = text; el.className = 'badge ' + (cls||''); }
 
 /* ---------------- 地图 ---------------- */
+let ZOOM = 1.0;
+let ZOOM_AUTO = true;      // 没手动调过就自动铺满宽度
+let DRAG = null;           // 设定初始位姿时的拖拽状态
+
+function fitZoom(){
+  const wrap = $('mapWrap');
+  const availW = (wrap.clientWidth || 640) - 6;
+  const availH = (wrap.clientHeight || 400) - 6;
+  if(!MAPIMG || !MAP.width) return 1;
+  // 宽高都得放得下：地图可能是竖条（长走廊），只按宽度算会溢出到看不见底
+  const z = Math.min(availW / MAP.width, availH / MAP.height);
+  return Math.max(0.05, Math.min(4, z));
+}
+function zoomBy(factor){
+  ZOOM_AUTO = false;
+  drawMapZoom(ZOOM * factor);
+}
+function drawMapZoom(z){
+  const canvas = $('mapCanvas');
+  ZOOM = Math.max(0.05, Math.min(8, z));   // 5% ~ 800%，再大就没意义了
+  if(!MAPIMG || !MAP.width) return;
+  canvas.style.width = Math.round(MAP.width * ZOOM) + 'px';
+  canvas.style.height = Math.round(MAP.height * ZOOM) + 'px';
+  $('zoomLabel').textContent = Math.round(ZOOM * 100) + '%';
+  paint();
+}
 function drawMap(){
   const canvas = $('mapCanvas');
   if(!MAPIMG || !MAP.width) return;
   canvas.hidden = false; $('mapHint').hidden = true;
-  const avail = $('mapWrap').clientWidth || 480;
-  const scale = Math.min(1, avail / MAP.width);
-  canvas.width = MAP.width; canvas.height = MAP.height;
-  canvas.style.width = (MAP.width*scale) + 'px';
-  canvas.style.height = (MAP.height*scale) + 'px';
+  canvas.width = MAP.width; canvas.height = MAP.height;   // 内部分辨率永远是原图
+  if(ZOOM_AUTO) ZOOM = fitZoom();
+  drawMapZoom(ZOOM);
+}
+function paint(){
+  const canvas = $('mapCanvas');
   const ctx = canvas.getContext('2d');
   ctx.imageSmoothingEnabled = false;
+  ctx.clearRect(0, 0, canvas.width, canvas.height);
   ctx.drawImage(MAPIMG, 0, 0);
   const pose = STATE && STATE.status && STATE.status.pose;
-  if(pose){
-    const px = (pose.x - MAP.origin_x)/MAP.resolution;
-    const py = (MAP.height-1) - (pose.y - MAP.origin_y)/MAP.resolution;
-    ctx.fillStyle = '#4c8dff'; ctx.strokeStyle = '#fff'; ctx.lineWidth = 1.5;
-    ctx.beginPath(); ctx.arc(px, py, 5, 0, Math.PI*2); ctx.fill(); ctx.stroke();
-  }
+  if(pose) arrow(ctx, pose.x, pose.y, pose.yaw || 0, '#4c8dff');
+  if(DRAG && DRAG.yaw != null) arrow(ctx, DRAG.x, DRAG.y, DRAG.yaw, '#ffd166');
+}
+function worldToPx(wx, wy){
+  return [(wx - MAP.origin_x) / MAP.resolution,
+          (MAP.height - 1) - (wy - MAP.origin_y) / MAP.resolution];
+}
+function arrow(ctx, wx, wy, yaw, color){
+  const p = worldToPx(wx, wy);
+  const r = 6 / Math.max(ZOOM, 0.2);      // 屏幕上的大小固定，别随缩放变
+  ctx.save();
+  ctx.translate(p[0], p[1]);
+  ctx.rotate(-yaw);                       // 世界 y 向上、画布 y 向下
+  ctx.beginPath(); ctx.arc(0, 0, r, 0, Math.PI * 2);
+  ctx.fillStyle = color; ctx.fill();
+  ctx.strokeStyle = '#fff'; ctx.lineWidth = 1.2; ctx.stroke();
+  ctx.beginPath();                        // 朝向那一撇
+  ctx.moveTo(r, 0); ctx.lineTo(-r * 0.4, r * 0.9);
+  ctx.lineTo(-r * 0.4, -r * 0.9); ctx.closePath();
+  ctx.fillStyle = color; ctx.fill(); ctx.stroke();
+  ctx.restore();
 }
 async function loadMap(){
   try{
@@ -214,16 +271,64 @@ async function loadMap(){
     img.src = URL.createObjectURL(blob);
   }catch(e){}
 }
-$('mapCanvas').addEventListener('click', ev=>{
-  if(!MAPIMG) return;
+function evToWorld(ev){
   const canvas = $('mapCanvas');
   const rect = canvas.getBoundingClientRect();
   const px = (ev.clientX - rect.left) * (canvas.width / rect.width);
   const py = (ev.clientY - rect.top) * (canvas.height / rect.height);
-  const wx = MAP.origin_x + px * MAP.resolution;
-  const wy = MAP.origin_y + ((MAP.height-1) - py) * MAP.resolution;
-  $('navX').value = wx.toFixed(2); $('navY').value = wy.toFixed(2);
-  sendNav(wx, wy);
+  return {x: MAP.origin_x + px * MAP.resolution,
+          y: MAP.origin_y + ((MAP.height - 1) - py) * MAP.resolution,
+          px: px, py: py};
+}
+$('mapMode').addEventListener('change', updateMapMode);
+function updateMapMode(){
+  const poseMode = $('mapMode').value === 'pose';
+  $('mapWrap').classList.toggle('mode-pose', poseMode);
+  $('mapModeHint').textContent = poseMode
+    ? '在地图上按住左键拖一下：起点=位置，方向=朝向'
+    : '点一下地图就发过去';
+}
+$('btnZoomIn').addEventListener('click', ()=>zoomBy(1.25));
+$('btnZoomOut').addEventListener('click', ()=>zoomBy(0.8));
+$('btnZoomFit').addEventListener('click', ()=>{ ZOOM_AUTO = true; drawMap(); });
+$('mapWrap').addEventListener('wheel', ev=>{
+  if(!MAPIMG || !ev.ctrlKey && !ev.shiftKey && !ev.altKey) return;
+  ev.preventDefault();                    // 只有按住修饰键才抢滚轮，别毁掉页面滚动
+  zoomBy(ev.deltaY < 0 ? 1.1 : 1 / 1.1);
+}, {passive: false});
+
+$('mapCanvas').addEventListener('mousedown', ev=>{
+  if(!MAPIMG || $('mapMode').value !== 'pose') return;
+  const w = evToWorld(ev);
+  DRAG = {x: w.x, y: w.y, yaw: 0, px: w.px, py: w.py};
+  paint();
+});
+window.addEventListener('mousemove', ev=>{
+  if(!DRAG) return;
+  const canvas = $('mapCanvas');
+  const rect = canvas.getBoundingClientRect();
+  const px = (ev.clientX - rect.left) * (canvas.width / rect.width);
+  const py = (ev.clientY - rect.top) * (canvas.height / rect.height);
+  const dx = px - DRAG.px, dy = py - DRAG.py;
+  if(Math.abs(dx) + Math.abs(dy) > 2) DRAG.yaw = Math.atan2(-dy, dx);
+  paint();
+});
+window.addEventListener('mouseup', async ()=>{
+  if(!DRAG) return;
+  const {x, y, yaw} = DRAG;
+  DRAG = null; paint();
+  try{
+    const r = await api('/api/initialpose', {x: x, y: y, yaw: yaw});
+    toast(r.ok ? ('初始位姿已发送 ' + x.toFixed(2) + ',' + y.toFixed(2)
+                 + ' ' + (yaw * 180 / Math.PI).toFixed(0) + '°')
+               : ('失败：' + r.message));
+  }catch(e){ toast('发送失败：' + e.message); }
+});
+$('mapCanvas').addEventListener('click', ev=>{
+  if(!MAPIMG || $('mapMode').value === 'pose') return;
+  const w = evToWorld(ev);
+  $('navX').value = w.x.toFixed(2); $('navY').value = w.y.toFixed(2);
+  sendNav(w.x, w.y);
 });
 async function sendNav(x, y){
   try{
@@ -382,6 +487,7 @@ $('btnAsk').onclick = ask;
 $('askBox').addEventListener('keydown', e => { if(e.key === 'Enter') ask(); });
 
 /* ---------------- 循环 ---------------- */
+updateMapMode();
 pollState(); loadMap(); pollFrame(); pollLogs(); pollRuns();
 setInterval(pollState, 1000);
 setInterval(pollFrame, 700);

@@ -50,6 +50,10 @@ class FakeBridge(object):
              'hint': 'nav2 没起', 'detail': ''},
         ]
 
+    def set_initial_pose(self, x, y, yaw=0.0):
+        self.calls.append(('initialpose', x, y, yaw))
+        return True, '已发送初始位姿 (%.2f, %.2f) %.0f°' % (x, y, yaw * 57.3)
+
     def reports_dir(self):
         return self._reports
 
@@ -193,6 +197,18 @@ class ServerCase(unittest.TestCase):
     def test_cancel_endpoints(self):
         self.assertTrue(self.post('/api/cancel_nav', {})['ok'])
         self.assertTrue(self.post('/api/patrol/cancel', {})['ok'])
+
+    def test_initial_pose_roundtrip(self):
+        # 地图上拖一下 -> /api/initialpose -> /initialpose（等价 RViz 的 2D Pose Estimate）
+        out = self.post('/api/initialpose', {'x': 1.25, 'y': -0.5, 'yaw': 1.57})
+        self.assertTrue(out['ok'])
+        self.assertEqual(self.bridge.calls[-1], ('initialpose', 1.25, -0.5, 1.57))
+
+    def test_initial_pose_defaults_yaw(self):
+        # 只点不拖时 yaw 缺省为 0，不能因为没传就 500
+        out = self.post('/api/initialpose', {'x': 0.0, 'y': 0.0})
+        self.assertTrue(out['ok'])
+        self.assertEqual(self.bridge.calls[-1][3], 0.0)
 
     def test_capture_and_mapping(self):
         self.assertTrue(self.post('/api/capture', {})['ok'])
