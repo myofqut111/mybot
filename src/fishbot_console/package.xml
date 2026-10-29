@@ -2,7 +2,7 @@
 <?xml-model href="http://download.ros.org/schema/package_format3.xsd" schematypens="http://www.w3.org/2001/XMLSchema"?>
 <package format="3">
   <name>fishbot_console</name>
-  <version>0.4.0</version>
+  <version>0.4.1</version>
   <description>鏈哄櫒浜哄湪绾挎帶鍒跺彴锛氬湴鍥句笌瀵艰埅銆佸缓鍥俱€佸贰妫€銆佹憚鍍忓ご銆佹棩蹇椼€佺湅鏉裤€丄I 鍔╂墜锛堟祻瑙堝櫒鎴栨墜鏈鸿闂級</description>
   <maintainer email="dev@example.com">Fishbot Maintainer</maintainer>
   <license>Apache-2.0</license>

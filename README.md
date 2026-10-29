@@ -184,6 +184,29 @@ export OPENAI_API_KEY=sk-...
 ros2 launch fishbot_console console.launch.py
 ```
 
+### 不开车也能验证（mock）
+
+改前端最怕"改完还得推车试"。`mock.launch.py` 会拉起控制台 + rosbridge + 一台
+假机器人，地图、位姿、点云全都是算出来的：
+
+```bash
+ros2 launch fishbot_console mock.launch.py     # 不需要开小车、不需要 nav2
+# 浏览器打开 http://127.0.0.1:8080
+```
+
+假机器人做四件事，正好覆盖所有"没硬件就看不见"的面板：
+
+| 它发布/订阅 | 于是你能验证 |
+|---|---|
+| `/map`（latched）10 m×10 m 房间：外墙 + 带门洞的隔断 + 两个方块 | 地图渲染、比例尺、点击换算 |
+| 20 Hz `/tf`（`map→odom→base_link→laser_frame`）+ `/odom` | 位姿箭头、实时流、TF 链 |
+| 10 Hz `/scan`，射线**真的从这张图上打** | 点云与地图是否对齐（对不齐一眼就看出穿墙） |
+| 订阅 `/cmd_vel`；假装 `NavigateToPose` 服务端 | 手动控制、"地图上点一下发目标"能真的跑过去 |
+
+几何部分在 `mock_world.py`（不 import `rclpy`），21 个用例钉的是具体数字：
+从 (2,5) 朝 −x 打必须命中左墙内沿 1.90 m、朝门洞打必须穿过去、边转边走必须
+是圆弧而不是折线。物理算错时 UI 上只会表现为"怪"，所以这些数字必须单独测。
+
 ## 设计取舍
 
 > 这一节比功能列表更能说明工程质量。

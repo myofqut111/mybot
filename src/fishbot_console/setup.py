@@ -30,6 +30,7 @@ setup(
     entry_points={
         'console_scripts': [
             'robot_console = fishbot_console.node:main',
+            'mock_robot = fishbot_console.mock_robot:main',
         ],
     },
 )
