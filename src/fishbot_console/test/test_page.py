@@ -50,6 +50,14 @@ class TestPage(unittest.TestCase):
                      '/api/ask', '/api/cancel_nav', '/api/patrol/cancel'):
             self.assertIn(path, self.html, 'page never calls %s' % path)
 
+    def test_map_layers_and_scan_present(self):
+        """RViz 对齐的三样东西必须真的在页面里，否则只是后端有接口。"""
+        self.assertIn('id="chkCostmap"', self.html)
+        self.assertIn('id="chkScan"', self.html)
+        self.assertIn('/api/layers.png', self.html)
+        self.assertIn('/api/scan', self.html)
+        self.assertIn('LOADLAYERS', self.html.upper().replace('loadLayers', 'LOADLAYERS'))
+
     def test_map_click_sends_nav(self):
         self.assertIn("getElementById('mapCanvas')", self.html.replace(
             '$(\'mapCanvas\')', "getElementById('mapCanvas')"))
