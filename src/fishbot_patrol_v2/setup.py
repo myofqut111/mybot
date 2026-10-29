@@ -9,7 +9,7 @@ package_name = 'fishbot_patrol_v2'
 
 setup(
     name=package_name,
-    version='0.3.2',
+    version='0.4.0',
     packages=find_packages(exclude=['test']),
     data_files=[
         ('share/ament_index/resource_index/packages',
@@ -32,6 +32,7 @@ setup(
         'console_scripts': [
             'patrol_executor_v2 = fishbot_patrol_v2.node:main',
             'patrol_viewer = fishbot_patrol_v2.result_viewer:main',
+            'patrol_console = fishbot_patrol_v2.console:main',
         ],
     },
 )

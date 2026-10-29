@@ -57,6 +57,7 @@ def generate_launch_description():
     use_task = LaunchConfiguration('task_manager')
     use_vision = LaunchConfiguration('vision')
     use_nav = LaunchConfiguration('nav')
+    use_console = LaunchConfiguration('console')
 
     nodes = [
         # 1. 路线管理器：记录/查询路线（存 ~/.ros/fishbot_patrol_routes.json）
@@ -98,6 +99,16 @@ def generate_launch_description():
                 },
             ],
         ),
+        # 4. 网页控制台：浏览器/手机远程操作（默认不开，占用 8080 端口）
+        Node(
+            package='fishbot_patrol_v2',
+            executable='patrol_console',
+            name='patrol_console',
+            output='screen',
+            emulate_tty=True,
+            parameters=[{'reports_dir': report_dir}],
+            condition=IfCondition(use_console),
+        ),
     ]
 
     return LaunchDescription([
@@ -119,6 +130,9 @@ def generate_launch_description():
         DeclareLaunchArgument(
             'task_timeout_s', default_value='120.0',
             description='单个点位任务的超时（秒）'),
+        DeclareLaunchArgument(
+            'console', default_value='false',
+            description='是否同时启动网页控制台（http://<本机IP>:8080）'),
         DeclareLaunchArgument(
             'vision', default_value='false',
             description='是否同时启动视觉节点（本机装了 fishbot_vision 才有用）'),

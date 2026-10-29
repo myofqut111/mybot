@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
 # 检查「现在跑的是不是最新版」。逐层往下查，第一处 ❌ 就是断点。
 #
-# 用法： bash check_version.sh [期望版本，默认 0.3.3]
+# 用法： bash check_version.sh [期望版本，默认 0.4.0]
 set -uo pipefail
 
-WANT="${1:-0.3.3}"
+WANT="${1:-0.4.0}"
 WS="${WS:-$HOME/fishbot_full_ws}"
 PKG=fishbot_patrol_v2
 FAIL=0

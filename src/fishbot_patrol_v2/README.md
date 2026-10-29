@@ -319,3 +319,38 @@ ecall / precision / alse_alarm_rate 三个率。不填就完全不判定，
   ishbot_patrol_interfaces 升到 **0.2.0**，ishbot_patrol_v2 升到 **0.3.3**。
   两个包都要重编（旧 msg 与新 msg 的 md5 不同，混用会一收一发全丢）。
 - 导航失败也按 detected=False 记判定，避免把「没到点」算成「没目标」让召回虚高。
+
+---
+
+## 网页控制台（v0.4.0）
+
+不想背命令时用它：一个进程 = 一个 ROS 节点 + 一个 HTTP 服务，浏览器打开就能
+开始/暂停巡检、看实时状态和历史报告。
+
+```bash
+ros2 run fishbot_patrol_v2 patrol_console
+# 或随 launch 一起起（占用 8080 端口）
+ros2 launch fishbot_patrol_v2 patrol_v2.launch.py console:=true
+```
+
+浏览器打开 `http://<本机IP>:8080`（手机连同一个热点也能开）。
+
+> 只用标准库：不需要 rosbridge、不需要 Flask，也没有前端构建步骤。
+
+| 页面能做什么 | 背后的命令 |
+|---|---|
+| 开始巡检（路线/模式/轮次） | `ros2 action send_goal /execute_patrol ...` |
+| 暂停 / 恢复 | 服务 `/patrol/pause`、`/patrol/resume` |
+| 抢占当前点位 | 发布 `/patrol/preempt` |
+| 记录当前位置为点位（含 expect） | 服务 `/patrol_route/record_point` |
+| 实时状态、电量、事件流 | 订阅 `/patrol/execution/status`、`/battery/voltage`、`/patrol/task/result` |
+| 历史运行表格 + 点开看事件 | 读 `~/patrol_reports` |
+
+端口和监听地址可以用环境变量改：
+
+```bash
+PATROL_CONSOLE_PORT=9000 PATROL_CONSOLE_HOST=127.0.0.1 \
+  ros2 run fishbot_patrol_v2 patrol_console
+```
+
+注意：控制台只是转发命令，**真正的决策还在执行器里**。关掉网页不影响正在跑的巡检。
