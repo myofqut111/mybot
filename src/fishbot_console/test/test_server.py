@@ -150,6 +150,23 @@ class ServerCase(unittest.TestCase):
             self.get('/favicon.ico')
         self.assertEqual(ctx.exception.code, 404)
 
+    def test_static_leaflet_is_served(self):
+        """地图组件必须真能取到：取不到的后果是页面白屏，而不是少个按钮。"""
+        status, body, ctype = self.get('/static/leaflet.js')
+        self.assertEqual(status, 200)
+        self.assertIn('javascript', ctype)
+        self.assertGreater(len(body), 50000)
+        self.assertIn(b'leaflet', body.lower())
+
+        status, body, ctype = self.get('/static/leaflet.css')
+        self.assertEqual(status, 200)
+        self.assertIn('text/css', ctype)
+
+    def test_static_rejects_traversal(self):
+        with self.assertRaises(urllib.error.HTTPError) as ctx:
+            self.get('/static/../server.py')
+        self.assertEqual(ctx.exception.code, 404)
+
     # ---------------- 数据接口 ----------------
     def test_state(self):
         _status, body, _ctype = self.get('/api/state')

@@ -21,7 +21,7 @@ from rclpy.executors import MultiThreadedExecutor
 from rclpy.node import Node
 from rclpy.qos import DurabilityPolicy, HistoryPolicy, QoSProfile, ReliabilityPolicy
 
-from geometry_msgs.msg import PoseWithCovarianceStamped
+from geometry_msgs.msg import Pose, TwistWithCovarianceStamped
 from nav_msgs.msg import OccupancyGrid, Path
 from rcl_interfaces.msg import Log
 from sensor_msgs.msg import Image, LaserScan
@@ -73,6 +73,8 @@ class ConsoleBridge(Node):
         self.declare_parameter('robot_length', 0.22)
         self.declare_parameter('robot_width', 0.18)
         self.declare_parameter('battery_topic', '/battery/voltage')
+        self.declare_parameter('cmd_vel_topic', '/cmd_vel')
+        self.declare_parameter('teleop_timeout_sec', 0.6)
         self.declare_parameter('pose_topic', '/amcl_pose')
         self.declare_parameter('patrol_action', '/execute_patrol')
         self.declare_parameter('nav_action', '/navigate_to_pose')
@@ -177,6 +179,12 @@ class ConsoleBridge(Node):
 
 
         # 手动给初始位姿：和 RViz 的 "2D Pose Estimate" 发的是同一个话题、同一套协方差
+        self._teleop_pub = self.create_publisher(Twist, self._cmd_vel_topic, 10)
+        self._teleop_lock = threading.Lock()
+        self._teleop_vx = 0.0
+        self._teleop_wz = 0.0
+        self._teleop_seen = 0.0
+        self.create_timer(0.1, self._teleop_tick)
         self._initial_pub = self.create_publisher(
             PoseWithCovarianceStamped, '/initialpose', 10)
 
@@ -465,6 +473,29 @@ class ConsoleBridge(Node):
         if not data or not stamp:
             return None
         return max(0.0, time.time() - stamp)
+
+    # ------------------------------------------------------------ 手动控制
+    def set_teleop(self, vx, wz):
+        """页面按住方向键时每 100 ms 刷新一次目标速度。"""
+        with self._teleop_lock:
+            self._teleop_vx = float(vx)
+            self._teleop_wz = float(wz)
+            self._teleop_seen = time.time()
+
+    def _teleop_tick(self):
+        """10 Hz 发布；超过 teleop_timeout_sec 没刷新就发 0（防页面被关掉后车一直跑）。"""
+        with self._teleop_lock:
+            silent = (time.time() - self._teleop_seen) > self._teleop_timeout_sec
+            vx, wz = (0.0, 0.0) if silent else (self._teleop_vx, self._teleop_wz)
+            if silent and (self._teleop_vx or self._teleop_wz):
+                self._teleop_vx = self._teleop_wz = 0.0
+        message = Twist()
+        message.linear.x = vx
+        message.angular.z = wz
+        try:
+            self._teleop_pub.publish(message)
+        except Exception:
+            pass
 
     def reports_dir(self):
         return self._reports_dir

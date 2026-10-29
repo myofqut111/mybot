@@ -17,6 +17,55 @@ from .page import HTML
 
 AI_TIMEOUT = 25.0
 
+def _static_dir():
+    """找 static/：优先包目录，退回 share/<pkg>/static。
+
+    --symlink-install 时包目录就是源码目录，直接命中；普通 colcon build 只拷
+    .py，static/* 由 setup.py 的 data_files 装到 share 下，所以要有第二条路。
+    两条都不在就返回包目录，让请求正常 404（页面会提示地图组件缺失）。
+    """
+    here = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'static')
+    if os.path.isfile(os.path.join(here, 'leaflet.js')):
+        return here
+    try:
+        from ament_index_python.packages import get_package_share_directory
+        share = os.path.join(
+            get_package_share_directory('fishbot_console'), 'static')
+        if os.path.isfile(os.path.join(share, 'leaflet.js')):
+            return share
+    except Exception:
+        pass
+    return here
+
+
+STATIC_DIR = _static_dir()
+STATIC_TYPES = {
+    '.js': 'text/javascript; charset=utf-8',
+    '.css': 'text/css; charset=utf-8',
+    '.png': 'image/png',
+    '.svg': 'image/svg+xml',
+    '.ico': 'image/x-icon',
+}
+
+
+def _serve_static(handler, name):
+    """只服务 static/ 目录下的白名单文件（地图组件、图标），拒绝任何路径穿越。"""
+    safe = os.path.basename(name or '')
+    if not safe or safe.startswith('.'):
+        return _json_response(handler, {'error': 'bad name'}, 404)
+    path = os.path.join(STATIC_DIR, safe)
+    if not os.path.isfile(path):
+        return _json_response(handler, {'error': 'not found'}, 404)
+    kind = STATIC_TYPES.get(os.path.splitext(safe)[1].lower(),
+                            'application/octet-stream')
+    try:
+        with open(path, 'rb') as handle:
+            body = handle.read()
+    except OSError:
+        return _json_response(handler, {'error': 'read failed'}, 500)
+    return _bytes_response(handler, body, kind)
+
+
 
 def _json_response(handler, payload, code=200):
     body = json.dumps(payload, ensure_ascii=False).encode('utf-8')
@@ -65,6 +114,8 @@ class ConsoleServer(object):
                 if path == '/':
                     return _bytes_response(self, HTML.encode('utf-8'),
                                            'text/html; charset=utf-8')
+                if path.startswith('/static/'):
+                    return _serve_static(self, path[len('/static/'):])
                 if path == '/api/state':
                     return _json_response(self, server.state())
                 if path == '/api/logs':
@@ -156,6 +207,12 @@ class ConsoleServer(object):
                 if path == '/api/cancel_nav':
                     ok, message = server_.bridge.cancel_nav()
                     return _json_response(self, {'ok': ok, 'message': message})
+                if path == '/api/teleop':
+                    body = payload or {}
+                    server_.bridge.set_teleop(
+                        float(body.get('vx') or 0.0),
+                        float(body.get('wz') or 0.0))
+                    return _json_response(self, {'ok': True})
                 if path == '/api/initialpose':
                     ok, message = server_.bridge.set_initial_pose(
                         float(payload.get('x')),

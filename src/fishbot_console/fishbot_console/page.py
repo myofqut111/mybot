@@ -39,7 +39,17 @@ section{background:var(--panel);border:1px solid var(--line);border-radius:10px;
 section h2{font-size:13px;margin:0 0 8px;color:var(--dim);font-weight:600;
            letter-spacing:.6px;text-transform:uppercase}
 #mapSection{grid-column:1/-1}
-#mapWrap{position:relative;background:#111826;border-radius:8px;overflow:auto;
+#mapWrap{position:relative;height:58vh;overflow:hidden;background:#111826;
+                    border-radius:8px;
+#map{position:absolute;inset:0;background:#111826;border-radius:8px}
+.leaflet-container{background:#111826;font:inherit}
+.leaflet-control-scale-line{background:rgba(17,24,38,.72);border-color:#3a4664;
+                            color:#c9d3e6;font-size:11px}
+#teleopPad{display:grid;grid-template-columns:repeat(3,54px);
+           grid-template-rows:repeat(3,46px);gap:6px;justify-content:start}
+#teleopPad button{font-size:17px}
+#teleopPad .mid{opacity:.55}
+#mapWrapOld{position:relative;background:#111826;border-radius:8px;overflow:auto;
          min-height:260px;height:60vh;display:block;text-align:center}
 #mapCanvas{max-width:none;cursor:crosshair;display:inline-block;
            image-rendering:pixelated}
@@ -75,6 +85,8 @@ th{color:var(--dim);font-weight:500}
        background:#22304a;border:1px solid var(--line);padding:9px 16px;
        border-radius:9px;opacity:0;transition:opacity .25s;pointer-events:none}
 </style>
+<link rel="stylesheet" href="/static/leaflet.css">
+<script src="/static/leaflet.js"></script>
 </head>
 <body>
 <header>
@@ -93,6 +105,7 @@ th{color:var(--dim);font-weight:500}
     <h2>地图</h2>
     <div class="row" style="margin-top:0">
       <select id="mapMode" title="左键模式">
+        <option value="pan">左键拖拽 = 平移地图（滚轮/双指缩放）</option>
         <option value="nav">左键拖拽 = 发导航目标（带朝向）</option>
         <option value="pose">左键拖拽 = 设定初始位姿</option>
       </select>
@@ -106,13 +119,32 @@ th{color:var(--dim);font-weight:500}
       <span id="mapCoord" class="chk">—</span>
       <span id="mapModeHint" style="color:var(--dim);font-size:12px"></span>
     </div>
-    <div id="mapWrap"><div id="mapHint">还没有收到 /map</div>
-      <canvas id="mapCanvas" hidden></canvas></div>
+    <div id="mapWrap"><div id="map"></div>
+      <div id="mapHint" style="position:absolute;left:12px;top:12px;z-index:500;
+        background:rgba(17,24,38,.8);padding:4px 8px;border-radius:6px">
+        还没有收到 /map</div></div>
     <div class="row">
       <button id="btnCancelNav">取消导航</button>
       <input type="number" id="navX" placeholder="x" step="0.1">
       <input type="number" id="navY" placeholder="y" step="0.1">
       <button id="btnSendNav">发送</button>
+    </div>
+  </section>
+
+  <section>
+    <h2>手动控制</h2>
+    <div class="row" style="margin-top:0">
+      <span class="chk">按住方向键行走，松手立即停（0.6 s 无刷新服务端也会停机）</span>
+      <input id="teleSpeed" type="range" min="0.05" max="0.6" step="0.05" value="0.2"
+             style="width:120px">
+      <span class="badge" id="teleLabel">0.20 m/s</span>
+    </div>
+    <div id="teleopPad">
+      <span></span><button data-v="1" data-w="0" title="前进（W）">▲</button><span></span>
+      <button data-v="0" data-w="1" title="左转（A）">↺</button>
+      <button data-v="0" data-w="0" class="mid" title="停（空格）">■</button>
+      <button data-v="0" data-w="-1" title="右转（D）">↻</button>
+      <span></span><button data-v="-1" data-w="0" title="后退（S）">▼</button><span></span>
     </div>
   </section>
 
@@ -211,330 +243,250 @@ async function api(path, body){
 }
 function setBadge(el, text, cls){ el.textContent = text; el.className = 'badge ' + (cls||''); }
 
-/* ---------------- 地图 ---------------- */
-let ZOOM = 1.0;
-let ZOOM_AUTO = true;      // 没手动调过就自动铺满宽度
-let DRAG = null;           // 设定初始位姿时的拖拽状态
+/* ---------------- 地图（Leaflet，手感对齐 RViz） ---------------- */
+const MAPM = {ready:false, key:'', w:0, h:0, res:0.05, ox:0, oy:0, yaw:0};
+const CANVAS_R = L.canvas({padding:0.4});
+const LL = {};
+let LF = null, DRAG = null;
 
-function fitZoom(){
-  const wrap = $('mapWrap');
-  const availW = (wrap.clientWidth || 640) - 6;
-  const availH = (wrap.clientHeight || 400) - 6;
-  if(!MAPIMG || !MAP.width) return 1;
-  // 宽高都得放得下：地图可能是竖条（长走廊），只按宽度算会溢出到看不见底
-  const z = Math.min(availW / MAP.width, availH / MAP.height);
-  return Math.max(0.05, Math.min(4, z));
-}
-function zoomBy(factor, anchor){
-  ZOOM_AUTO = false;
-  drawMapZoom(ZOOM * factor, anchor);
-}
-function drawMapZoom(z, anchor){
-  const canvas = $('mapCanvas');
-  const wrap = $('mapWrap');
-  if(!MAPIMG || !MAP.width) return;
-  const oldZoom = ZOOM;
-  // 缩放前把"光标下面是哪个世界点"记成比例，缩放后再把滚动条挪回去，
-  // 这样光标咬着的那块地图不动——RViz 的滚轮就是这个手感。
-  let anchorFrac = null;
-  if(anchor){
-    const rect = wrap.getBoundingClientRect();
-    const cursorX = anchor.clientX - rect.left + wrap.scrollLeft;
-    const cursorY = anchor.clientY - rect.top + wrap.scrollTop;
-    anchorFrac = {fx: cursorX / (MAP.width * oldZoom || 1),
-                  fy: cursorY / (MAP.height * oldZoom || 1),
-                  dx: anchor.clientX - rect.left,
-                  dy: anchor.clientY - rect.top};
-  }
-  ZOOM = Math.max(0.05, Math.min(8, z));   // 5% ~ 800%，再大就没意义了
-  canvas.style.width = Math.round(MAP.width * ZOOM) + 'px';
-  canvas.style.height = Math.round(MAP.height * ZOOM) + 'px';
-  $('zoomLabel').textContent = Math.round(ZOOM * 100) + '%';
-  if(anchorFrac){
-    wrap.scrollLeft = anchorFrac.fx * MAP.width * ZOOM - anchorFrac.dx;
-    wrap.scrollTop = anchorFrac.fy * MAP.height * ZOOM - anchorFrac.dy;
-  }
-  paint();
+function ensureMap(){
+  if(LF) return LF;
+  LF = L.map('map', {crs:L.CRS.Simple, zoomControl:false,
+                     attributionControl:false, doubleClickZoom:false,
+                     zoomSnap:0.25, zoomDelta:0.5, minZoom:-4, maxZoom:8,
+                     renderer:CANVAS_R});
+  LL.plan = L.layerGroup().addTo(LF);
+  LL.scan = L.layerGroup().addTo(LF);
+  LL.goal = L.layerGroup().addTo(LF);
+  LL.robot = L.layerGroup().addTo(LF);
+  LF.on('mousemove', ev => {
+    if(DRAG) return;
+    $('mapCoord').textContent = ev.latlng.lng.toFixed(2) + ', ' +
+                                ev.latlng.lat.toFixed(2) + ' m';
+  });
+  LF.on('zoomend', () => {
+    $('zoomLabel').textContent = Math.round(Math.pow(2, LF.getZoom()) * 100) + '%';
+  });
+  LF.on('mousedown', onDown);
+  LF.on('mousemove', onMove);
+  LF.on('mouseup', onUp);
+  return LF;
 }
 
-function drawMap(){
-  const canvas = $('mapCanvas');
-  if(!MAPIMG || !MAP.width) return;
-  canvas.hidden = false; $('mapHint').hidden = true;
-  canvas.width = MAP.width; canvas.height = MAP.height;   // 内部分辨率永远是原图
-  if(ZOOM_AUTO) ZOOM = fitZoom();
-  drawMapZoom(ZOOM);
+function mapBounds(){
+  return [[MAPM.oy, MAPM.ox],
+          [MAPM.oy + MAPM.h * MAPM.res, MAPM.ox + MAPM.w * MAPM.res]];
 }
-function paint(){
-  const canvas = $('mapCanvas');
-  const ctx = canvas.getContext('2d');
-  ctx.imageSmoothingEnabled = false;
-  ctx.clearRect(0, 0, canvas.width, canvas.height);
-  ctx.drawImage(MAPIMG, 0, 0);
-  // 代价地图层：和 RViz 一样压在底图上面，致命红、膨胀橙
-  if(LAYERSIMG && $('chkCostmap').checked){
-    ctx.globalAlpha = 0.9;
-    ctx.drawImage(LAYERSIMG, 0, 0, canvas.width, canvas.height);
-    ctx.globalAlpha = 1;
-  }
-  // 雷达点：屏幕上固定 2.2px，缩放时不变粗
-  if(SCAN.length && $('chkScan').checked){
-    const r = Math.max(1.2, 2.2 / Math.max(ZOOM, 0.2));
-    ctx.fillStyle = '#39d98a';
-    for(let i = 0; i < SCAN.length; i++){
-      const p = worldToPx(SCAN[i][0], SCAN[i][1]);
-      ctx.beginPath(); ctx.arc(p[0], p[1], r, 0, Math.PI * 2); ctx.fill();
-    }
-  }
-  // 全局路径：画在点云下面、箭头上面，和 RViz 的 Path 一个层次
-  if(PLAN.length > 1 && $('chkPlan').checked){
-    ctx.beginPath();
-    for(let i = 0; i < PLAN.length; i++){
-      const p = worldToPx(PLAN[i][0], PLAN[i][1]);
-      if(i === 0) ctx.moveTo(p[0], p[1]); else ctx.lineTo(p[0], p[1]);
-    }
-    ctx.strokeStyle = '#ff9f43';
-    ctx.lineWidth = Math.max(1.5, 2.0 / Math.max(ZOOM, 0.2));
-    ctx.lineJoin = 'round';
-    ctx.stroke();
-  }
-  const pose = STATE && STATE.status && STATE.status.pose;
-  if(pose){
-    const robot = (STATE.status && STATE.status.robot) || {};
-    footprint(ctx, pose.x, pose.y, pose.yaw || 0,
-              robot.length || 0.22, robot.width || 0.18);
-    arrow(ctx, pose.x, pose.y, pose.yaw || 0, '#4c8dff');
-  }
-  if(GOAL) arrow(ctx, GOAL.x, GOAL.y, GOAL.yaw || 0, '#37d67a');
-  if(DRAG && DRAG.yaw != null) arrow(ctx, DRAG.x, DRAG.y, DRAG.yaw, '#ffd166');
-  if(NAVDRAG && NAVDRAG.yaw != null) arrow(ctx, NAVDRAG.x, NAVDRAG.y, NAVDRAG.yaw, '#7be3a3');
+function robotIcon(yaw){
+  const deg = -yaw * 180 / Math.PI;
+  return L.divIcon({className:'', iconSize:[26,26], iconAnchor:[13,13],
+    html:'<svg width="26" height="26" viewBox="0 0 26 26" ' +
+         'style="transform:rotate(' + deg.toFixed(1) + 'deg)">' +
+         '<polygon points="13,1 23,24 13,19 3,24" fill="#4c8dff" ' +
+         'stroke="#eaf1ff" stroke-width="1.2"/></svg>'});
+}
+function goalIcon(yaw){
+  const deg = -yaw * 180 / Math.PI;
+  return L.divIcon({className:'', iconSize:[30,30], iconAnchor:[15,15],
+    html:'<svg width="30" height="30" viewBox="0 0 30 30" ' +
+         'style="transform:rotate(' + deg.toFixed(1) + 'deg)">' +
+         '<polygon points="15,2 21,26 15,21 9,26" fill="#37c98a" ' +
+         'fill-opacity=".85" stroke="#d8ffe9" stroke-width="1"/></svg>'});
 }
 
-function footprint(ctx, wx, wy, yaw, length, width){
-  const p = worldToPx(wx, wy);
-  const hl = (length / MAP.resolution) / 2;
-  const hw = (width / MAP.resolution) / 2;
-  ctx.save();
-  ctx.translate(p[0], p[1]);
-  ctx.rotate(-yaw);
-  ctx.strokeStyle = '#4c8dff';
-  ctx.lineWidth = Math.max(1, 1.4 / Math.max(ZOOM, 0.2));
-  ctx.strokeRect(-hl, -hw, hl * 2, hw * 2);
-  ctx.restore();
-}
-
-function worldToPx(wx, wy){
-  return [(wx - MAP.origin_x) / MAP.resolution,
-          (MAP.height - 1) - (wy - MAP.origin_y) / MAP.resolution];
-}
-function arrow(ctx, wx, wy, yaw, color){
-  const p = worldToPx(wx, wy);
-  const r = 6 / Math.max(ZOOM, 0.2);      // 屏幕上的大小固定，别随缩放变
-  ctx.save();
-  ctx.translate(p[0], p[1]);
-  ctx.rotate(-yaw);                       // 世界 y 向上、画布 y 向下
-  ctx.beginPath(); ctx.arc(0, 0, r, 0, Math.PI * 2);
-  ctx.fillStyle = color; ctx.fill();
-  ctx.strokeStyle = '#fff'; ctx.lineWidth = 1.2; ctx.stroke();
-  ctx.beginPath();                        // 朝向那一撇
-  ctx.moveTo(r, 0); ctx.lineTo(-r * 0.4, r * 0.9);
-  ctx.lineTo(-r * 0.4, -r * 0.9); ctx.closePath();
-  ctx.fillStyle = color; ctx.fill(); ctx.stroke();
-  ctx.restore();
-}
 async function loadMap(){
-  try{
-    const res = await fetch('/api/map.png?t=' + Date.now());
-    if(!res.ok) return;
-    const blob = await res.blob();
-    const img = new Image();
-    img.onload = ()=>{ MAPIMG = img; drawMap(); loadLayers(); };
-    img.src = URL.createObjectURL(blob);
-  }catch(e){}
-}
-function evToWorld(ev){
-  const canvas = $('mapCanvas');
-  const rect = canvas.getBoundingClientRect();
-  const px = (ev.clientX - rect.left) * (canvas.width / rect.width);
-  const py = (ev.clientY - rect.top) * (canvas.height / rect.height);
-  return {x: MAP.origin_x + px * MAP.resolution,
-          y: MAP.origin_y + ((MAP.height - 1) - py) * MAP.resolution,
-          px: px, py: py};
-}
-$('mapMode').addEventListener('change', updateMapMode);
-function updateMapMode(){
-  const poseMode = $('mapMode').value === 'pose';
-  $('mapWrap').classList.toggle('mode-pose', poseMode);
-$('mapModeHint').textContent = poseMode
-    ? '在地图上按住左键拖一下：起点=位置，方向=朝向'
-    : '在地图上按住左键拖一下：起点=目标点，方向=车头朝向（只点不拖也行）';
-}
-$('btnZoomIn').addEventListener('click', ()=>zoomBy(1.25));
-$('btnZoomOut').addEventListener('click', ()=>zoomBy(0.8));
-$('btnZoomFit').addEventListener('click', ()=>{ ZOOM_AUTO = true; drawMap(); });
-$('mapWrap').addEventListener('wheel', ev=>{
-  if(!MAPIMG) return;
-  ev.preventDefault();                    // 地图上滚轮就是缩放，别带着整页滚
-  zoomBy(ev.deltaY < 0 ? 1.12 : 1 / 1.12, {clientX: ev.clientX, clientY: ev.clientY});
-}, {passive: false});
-
-// 中键/右键拖动 = 平移（和 RViz 一样，左键留给发目标/给位姿）
-$('mapWrap').addEventListener('contextmenu', ev=>{
-  if(MAPIMG) ev.preventDefault();
-});
-$('mapCanvas').addEventListener('mousedown', ev=>{
-  if(ev.button !== 1 && ev.button !== 2) return;
-  ev.preventDefault();
-  PAN = {x: ev.clientX, y: ev.clientY,
-         left: $('mapWrap').scrollLeft, top: $('mapWrap').scrollTop};
-  $('mapWrap').style.cursor = 'grabbing';
-});
-window.addEventListener('mousemove', ev=>{
-  if(!PAN) return;
-  $('mapWrap').scrollLeft = PAN.left - (ev.clientX - PAN.x);
-  $('mapWrap').scrollTop = PAN.top - (ev.clientY - PAN.y);
-});
-window.addEventListener('mouseup', ev=>{
-  if(!PAN) return;
-  PAN = null;
-  $('mapWrap').style.cursor = '';
-});
-
-$('mapCanvas').addEventListener('mousedown', ev=>{
-  if(!MAPIMG) return;
-  if(ev.button !== 0) return;      // 中键/右键留给平移
-  const mode = $('mapMode').value;
-  const w = evToWorld(ev);
-  if(mode === 'pose'){
-    DRAG = {x: w.x, y: w.y, yaw: 0, px: w.px, py: w.py};
-  }else{
-    NAVDRAG = {x: w.x, y: w.y, yaw: null, px: w.px, py: w.py};
+  ensureMap();
+  let st;
+  try{ st = await api('/api/state'); }catch(e){ return; }
+  const m = (st && st.map) || {};
+  if(!m.ready){ $('mapHint').style.display = 'block'; return; }
+  $('mapHint').style.display = 'none';
+  const res = +(m.resolution || m.res || 0);
+  const w = m.width | 0, h = m.height | 0;
+  if(!(res > 0) || !w || !h) return;
+  const ox = (m.origin_x != null ? +m.origin_x : 0);
+  const oy = (m.origin_y != null ? +m.origin_y : 0);
+  const key = [w, h, res, ox, oy].join(',');
+  if(key !== MAPM.key){
+    MAPM.key = key;
+    Object.assign(MAP, {ready:true, w:w, h:h, res:res, ox:ox, oy:oy});
+    if(LL.img){ LF.removeLayer(LL.img); }
+    LL.img = L.imageOverlay('/api/map.png?t=' + Date.now(), mapBounds(),
+                            {opacity:1}).addTo(LF);
+    LL.img.bringToBack();
+    if(LL.cost){ LF.removeLayer(LL.cost); LL.cost = null; }
+    LF.setMaxBounds(mapBounds());
+    LF.fitBounds(mapBounds());
   }
-  paint();
-});
-window.addEventListener('mousemove', ev=>{
-  const active = DRAG || NAVDRAG;
-  if(!active) return;
-  const canvas = $('mapCanvas');
-  const rect = canvas.getBoundingClientRect();
-  const px = (ev.clientX - rect.left) * (canvas.width / rect.width);
-  const py = (ev.clientY - rect.top) * (canvas.height / rect.height);
-  const dx = px - active.px, dy = py - active.py;
-  // 位移太小当“只点了一下”，不给朝向（RViz 里也是这样：拖多远指多少度）
-  if(Math.abs(dx) + Math.abs(dy) > 3) active.yaw = Math.atan2(-dy, dx);
-  paint();
-});
-window.addEventListener('mouseup', async ()=>{
-  if(NAVDRAG){
-    const {x, y, yaw} = NAVDRAG;
-    NAVDRAG = null;
-    SUPPRESS_CLICK = true;               // 别让随后的 click 再发一次
-    setTimeout(()=>{ SUPPRESS_CLICK = false; }, 0);
-    GOAL = {x: x, y: y, yaw: yaw};
-    paint();
-    await sendNav(x, y, yaw);
+  drawRobot(st);
+  MAPM.yaw = (st.pose && st.pose.yaw) || 0;
+}
+
+function drawRobot(st){
+  if(!MAPM.ready) return;
+  const pose = (st && st.pose) || null;
+  LL.robot.clearLayers();
+  if(!pose || pose.x == null) return;
+  const yaw = pose.yaw || 0;
+  L.marker([pose.y, pose.x], {icon:robotIcon(yaw), interactive:false,
+                              keyboard:false}).addTo(LL.robot);
+}
+
+function paint(){ loadLayers(); pollScan(); pollPlan(); }
+function drawMap(){ loadMap(); }
+function drawMapZoom(){ /* Leaflet 自己处理缩放 */ }
+function fitZoom(){ if(LF && MAPM.ready) LF.fitBounds(mapBounds()); }
+function zoomBy(factor){ if(LF) LF.setZoom(LF.getZoom() + Math.log2(factor)); }
+
+async function loadLayers(){
+  if(!MAPM.ready) return;
+  if(!$('chkCostmap').checked){
+    if(LL.cost){ LF.removeLayer(LL.cost); LL.cost = null; }
     return;
   }
-  if(!DRAG) return;
-  const {x, y, yaw} = DRAG;
-  DRAG = null; paint();
-  try{
-    const r = await api('/api/initialpose', {x: x, y: y, yaw: yaw});
-    toast(r.ok ? ('初始位姿已发送 ' + x.toFixed(2) + ',' + y.toFixed(2)
-                 + ' ' + (yaw * 180 / Math.PI).toFixed(0) + '°')
-               : ('失败：' + r.message));
-  }catch(e){ toast('发送失败：' + e.message); }
-});
-$('mapCanvas').addEventListener('click', ev=>{
-  if(!MAPIMG || $('mapMode').value === 'pose') return;
-  const w = evToWorld(ev);
-  $('navX').value = w.x.toFixed(2); $('navY').value = w.y.toFixed(2);
-  sendNav(w.x, w.y);
-});
-async function sendNav(x, y, yaw){
-  const body = {x:x, y:y};
-  if(yaw != null) body.yaw = yaw;
-  try{
-    const r = await api('/api/nav', body);
-    toast(r.ok ? r.message : ('失败：' + r.message));
-    if(!r.ok) GOAL = null;
-  }catch(e){ toast('发送失败：' + e.message); GOAL = null; }
+  if(!LL.cost){
+    LL.cost = L.imageOverlay(
+      'data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7',
+      mapBounds(), {opacity:0.85, interactive:false}).addTo(LF);
+  }
+  const element = LL.cost.getElement();
+  if(element) element.src = '/api/layers.png?t=' + Date.now();
 }
 
-/* ---------------- 代价地图与点云 ---------------- */
-async function loadLayers(){
-  if(!MAP.width) return;
-  try{
-    const res = await fetch('/api/layers.png?t=' + Date.now());
-    if(!res.ok){ LAYERSIMG = null; return; }   // 没有代价地图是正常状态
-    const blob = await res.blob();
-    const img = new Image();
-    img.onload = ()=>{ LAYERSIMG = img; paint(); };
-    img.src = URL.createObjectURL(blob);
-  }catch(e){}
-}
 async function pollScan(){
-  if(!MAP.width) return;
-  try{
-    const r = await api('/api/scan');
-    SCAN = (r && r.points) ? r.points : [];
-    if(MAPIMG && (SCAN.length || $('chkScan').checked)) paint();
-  }catch(e){}
+  if(!MAPM.ready) return;
+  if(!$('chkScan').checked){ LL.scan.clearLayers(); return; }
+  let r;
+  try{ r = await api('/api/scan'); }catch(e){ return; }
+  const points = (r && r.points) || [];
+  LL.scan.clearLayers();
+  for(let i = 0; i < points.length; i++){
+    const p = points[i];
+    L.circleMarker([p[1], p[0]], {radius:1.6, stroke:false,
+      fillColor:'#ff5b5b', fillOpacity:0.92, renderer:CANVAS_R,
+      interactive:false}).addTo(LL.scan);
+  }
 }
+
 async function pollPlan(){
-  if(!MAP.width) return;
+  if(!MAPM.ready) return;
+  if(!$('chkPlan').checked){ LL.plan.clearLayers(); return; }
+  let r;
+  try{ r = await api('/api/plan.json'); }catch(e){ return; }
+  const points = (r && r.points) || [];
+  LL.plan.clearLayers();
+  if(points.length < 2) return;
+  L.polyline(points.map(p => [p[1], p[0]]),
+             {color:'#37c98a', weight:2, opacity:0.9,
+              interactive:false}).addTo(LL.plan);
+}
+
+function mapMode(){ return $('mapMode').value; }
+function updateMapMode(){
+  ensureMap();
+  const mode = mapMode();
+  if(mode === 'pan'){
+    LF.dragging.enable();
+    $('mapWrap').style.cursor = 'grab';
+    $('mapModeHint').textContent = '拖动平移，滚轮/双指缩放，双击放大';
+  }else{
+    LF.dragging.disable();
+    $('mapWrap').style.cursor = 'crosshair';
+    $('mapModeHint').textContent = mode === 'nav'
+      ? '按下定位置、拖出朝向、松手直接发目标'
+      : '按下定位姿、拖出朝向、松手设为初始位姿';
+  }
+}
+$('mapMode').addEventListener('change', updateMapMode);
+$('btnZoomIn').addEventListener('click', () => zoomBy(1.4));
+$('btnZoomOut').addEventListener('click', () => zoomBy(1 / 1.4));
+$('btnZoomFit').addEventListener('click', () => fitZoom());
+$('chkCostmap').addEventListener('change', () => paint());
+$('chkScan').addEventListener('change', () => paint());
+$('chkPlan').addEventListener('change', () => paint());
+
+function onDown(ev){
+  if(mapMode() === 'pan') return;
+  LF.dragging.disable();
+  DRAG = {x:ev.latlng.lng, y:ev.latlng.lat, yaw:null};
+  updateGhost();
+}
+function onMove(ev){
+  if(!DRAG) return;
+  const dx = ev.latlng.lng - DRAG.x, dy = ev.latlng.lat - DRAG.y;
+  const len = Math.sqrt(dx * dx + dy * dy);
+  if(len > MAPM.res * 8) DRAG.yaw = Math.atan2(dy, dx);
+  $('mapCoord').textContent = '→ ' + DRAG.x.toFixed(2) + ', ' +
+      DRAG.y.toFixed(2) + (DRAG.yaw == null ? '' :
+      '  ' + Math.round(DRAG.yaw * 180 / Math.PI) + '°');
+  updateGhost();
+}
+function updateGhost(){
+  LL.goal.clearLayers();
+  if(!DRAG) return;
+  const yaw = (DRAG.yaw == null ? MAPM.yaw : DRAG.yaw);
+  L.marker([DRAG.y, DRAG.x], {icon:goalIcon(yaw), interactive:false,
+                              keyboard:false}).addTo(LL.goal);
+}
+async function onUp(){
+  if(!DRAG) return;
+  const done = DRAG;
+  DRAG = null;
+  const yaw = (done.yaw == null ? MAPM.yaw : done.yaw);
+  if(mapMode() === 'pose'){
+    LL.goal.clearLayers();
+    try{ await api('/api/initialpose', {x:done.x, y:done.y, yaw:yaw}); }catch(e){}
+    return;
+  }
+  setGoal(done.x, done.y, yaw);
+  sendNav(done.x, done.y, yaw);
+}
+function setGoal(x, y, yaw){
+  $('navX').value = x.toFixed(2);
+  $('navY').value = y.toFixed(2);
+  LL.goal.clearLayers();
+  L.marker([y, x], {icon:goalIcon(yaw), interactive:false,
+                    keyboard:false}).addTo(LL.goal);
+}
+async function sendNav(x, y, yaw){
   try{
-    const r = await api('/api/plan.json');
-    const got = (r && r.points) ? r.points : [];
-    const changed = got.length !== PLAN.length;
-    PLAN = got;
-    if(MAPIMG && changed) paint();
-  }catch(e){}
+    const r = await api('/api/nav', {x:x, y:y, yaw:yaw});
+    if(!r.ok) bubble('导航失败：' + (r.message || ''), 'ai');
+  }catch(e){ bubble('导航失败：' + e.message, 'ai'); }
 }
-$('chkCostmap').addEventListener('change', ()=>paint());
-$('chkScan').addEventListener('change', ()=>paint());
-$('chkPlan').addEventListener('change', ()=>paint());
 
-/* ---------------- 触屏：双指缩放 + 双指平移 ---------------- */
-function touchDist(touches){
-  const dx = touches[0].clientX - touches[1].clientX;
-  const dy = touches[0].clientY - touches[1].clientY;
-  return Math.hypot(dx, dy);
+/* ---------------- 手动控制 ---------------- */
+let TELE = {timer:null, vx:0, wz:0};
+function teleSpeed(){ return parseFloat($('teleSpeed').value) || 0.2; }
+function teleStart(vx, wz){
+  teleStop();
+  const speed = teleSpeed();
+  TELE.vx = vx * speed; TELE.wz = wz * speed * 5;
+  sendTele();
+  TELE.timer = setInterval(sendTele, 100);
 }
-$('mapCanvas').addEventListener('touchstart', ev=>{
-  if(ev.touches.length !== 2){ return; }
-  DRAG = null; NAVDRAG = null;            // 双指开始，取消单指的操作
-  const wrap = $('mapWrap');
-  const rect = wrap.getBoundingClientRect();
-  const cx = (ev.touches[0].clientX + ev.touches[1].clientX) / 2;
-  const cy = (ev.touches[0].clientY + ev.touches[1].clientY) / 2;
-  TOUCH = {dist: touchDist(ev.touches), zoom: ZOOM,
-           cx: cx, cy: cy,
-           ox: cx - rect.left + wrap.scrollLeft,
-           oy: cy - rect.top + wrap.scrollTop,
-           dx: cx - rect.left, dy: cy - rect.top};
-  ev.preventDefault();
-}, {passive:false});
-$('mapCanvas').addEventListener('touchmove', ev=>{
-  if(!TOUCH || ev.touches.length !== 2) return;
-  ev.preventDefault();
-  const scale = touchDist(ev.touches) / (TOUCH.dist || 1);
-  const wrap = $('mapWrap');
-  drawMapZoom(TOUCH.zoom * scale, null);
-  // 双指中心对应的那块地图要跟着手指走
-  wrap.scrollLeft = TOUCH.ox * (ZOOM / TOUCH.zoom) - TOUCH.dx;
-  wrap.scrollTop = TOUCH.oy * (ZOOM / TOUCH.zoom) - TOUCH.dy;
-}, {passive:false});
-$('mapCanvas').addEventListener('touchend', ev=>{
-  if(ev.touches.length === 0) TOUCH = null;
-}, {passive:false});
-
-/* ---------------- 光标处的世界坐标（RViz 右下角那个） ---------------- */
-$('mapCanvas').addEventListener('mousemove', ev=>{
-  if(!MAPIMG || !MAP.width) return;
-  const w = evToWorld(ev);
-  $('mapCoord').textContent = w.x.toFixed(2) + ', ' + w.y.toFixed(2) + ' m';
+function teleStop(){
+  if(TELE.timer){ clearInterval(TELE.timer); TELE.timer = null; }
+  TELE.vx = 0; TELE.wz = 0;
+  sendTele();
+}
+function sendTele(){
+  api('/api/teleop', {vx:TELE.vx, wz:TELE.wz}).catch(() => {});
+}
+document.querySelectorAll('#teleopPad button').forEach(btn => {
+  const v = parseFloat(btn.dataset.v), w = parseFloat(btn.dataset.w);
+  btn.addEventListener('pointerdown', ev => {
+    ev.preventDefault(); teleStart(v, w);
+  });
+  btn.addEventListener('pointerup', ev => { ev.preventDefault(); teleStop(); });
+  btn.addEventListener('pointerleave', () => teleStop());
+  btn.addEventListener('pointercancel', () => teleStop());
 });
+$('teleSpeed').addEventListener('input', () => {
+  $('teleLabel').textContent = teleSpeed().toFixed(2) + ' m/s';
+  if(TELE.timer){ teleStop(); }
+});
+window.addEventListener('blur', teleStop);
 
 /* ---------------- 状态轮询 ---------------- */
 let STATE = null;
