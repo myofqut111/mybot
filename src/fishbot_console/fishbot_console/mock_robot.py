@@ -125,8 +125,14 @@ class MockRobot(Node):
 
         server = _Server()
         server.action = NavigateToPose
-        server.handle = ActionServer(
-            self, NavigateToPose, 'navigate_to_pose', self._on_nav_goal)
+        try:
+            server.handle = ActionServer(
+                self, NavigateToPose, 'navigate_to_pose', self._on_nav_goal)
+        except Exception as error:                      # noqa: BLE001
+            # 构造失败也不能把整个节点带下去：地图/点云/手动控制都还能用
+            self.get_logger().warning(
+                '假装导航服务端创建失败，只能不出导航（其他面板照常）: %s' % error)
+            return None
         return server
 
     def _on_nav_goal(self, goal_handle):
@@ -267,7 +273,10 @@ class MockRobot(Node):
         scan.header.stamp = self.get_clock().now().to_msg()
         scan.header.frame_id = 'laser_frame'
         scan.angle_min = fields['angle_min']
-        scan.angle_max = angles[-1]
+        # 用 angle_min + increment*(N-1) 反算，而不是拿 angles[-1]：两者浮点上
+        # 有时差一点点，部分消费者会报 "angle_max inconsistent" 警告。
+        scan.angle_max = (scan.angle_min
+                          + scan.angle_increment * (len(fields['ranges']) - 1))
         scan.angle_increment = fields['angle_increment']
         scan.range_min = fields['range_min']
         scan.range_max = fields['range_max']
