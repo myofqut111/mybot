@@ -1,0 +1,31 @@
+# fishbot_console 默认参数。
+# 全部可以用 ros2 launch/run 的 -r __node:= 或 -p 覆盖。
+fishbot_console:
+  ros__parameters:
+    # ---- 话题/服务名（按仓库现名写，换名字只改这里）----
+    status_topic: /patrol/execution/status
+    image_topic: /camera/camera/image_raw
+    annotated_topic: /yolo_detector/image_annotated
+    map_topic: /map
+    battery_topic: /battery/voltage
+    pose_topic: /amcl_pose
+    patrol_action: /execute_patrol
+    nav_action: /navigate_to_pose
+    route_service: /patrol_route/get
+    capture_service: /camera/camera/capture
+    reports_dir: ~/patrol_reports
+
+    # ---- 电量阈值（12V 铅酸；3S 锂电改 10.8/10.2）----
+    battery_warn_v: 11.8
+    battery_crit_v: 11.5
+
+    # ---- 网页服务 ----
+    http_host: 0.0.0.0
+    http_port: 8080
+    max_log_lines: 500
+
+    # ---- AI 助手（留空则只用规则回答，不需要联网）----
+    # 也可以改用环境变量 OPENAI_BASE_URL / OPENAI_API_KEY / OPENAI_MODEL
+    ai_base_url: ''
+    ai_api_key: ''
+    ai_model: 'gpt-4o-mini'

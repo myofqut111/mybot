@@ -19,6 +19,7 @@
 - **到点校验**：导航结束后用定位残差复核是否真的到位，避免"导航说到了其实没到"。
 - **任务派发**：到点后把检测任务发给视觉节点，带超时与幂等保护。
 - **报告输出**：每轮一个 JSONL 记录 + 汇总，便于事后统计。
+- **Web 控制台**：浏览器里看地图、点地图发导航、建图、看日志和摄像头、跟 AI 说话。
 
 ## 架构
 
@@ -89,8 +90,42 @@ ros2 service call /patrol/resume std_srvs/srv/Trigger
 | `fishbot_patrol_interfaces` | action / msg / srv 定义 |
 | `fishbot_patrol_executor` | v1 执行器（已被 v2 取代，保留做参考） |
 | `fishbot_vision` | 摄像头推流 + YOLO 检测 |
+| `fishbot_console` | 整机 Web 控制台：地图点击导航、建图、摄像头、日志、看板、AI 助手 |
 | `fishbot_navigation` | Nav2 / AMCL / EKF 参数与 launch |
 | `fishbot_bringup` | 底盘、TF、雷达启动 |
+
+## Web 控制台
+
+浏览器里操作整机，不用记命令。手机连同一个网就能开。
+
+```bash
+ros2 launch fishbot_console console.launch.py          # 默认 8080
+ros2 launch fishbot_console console.launch.py port:=9000
+```
+
+然后打开 `http://<机器人IP>:8080`。
+
+| 面板 | 能做什么 |
+| --- | --- |
+| 地图 | 显示 `/map`（自己编码 PNG，不依赖 PIL），**点一下就是发导航目标**，蓝点是当前位置 |
+| 摄像头 | 检测标注图 / 原始图切换，一键抓拍存盘 |
+| 巡检 | 选路线、模式、轮数，开始 / 停止 |
+| 建图 | 起停 SLAM、存图 |
+| 日志 | `/rosout` 实时滚动，按 WARN/ERROR 过滤，红色计数字段会顶在页头 |
+| 历史 | 最近几轮结果（耗时、成功数、召回），以及当前轮的逐点事件 |
+| AI 助手 | 自然语言发指令，动作要过白名单（见下） |
+
+**AI 助手的安全边界**：模型只允许输出 6 种动作（`nav` / `patrol` / `pause` /
+`resume` / `cancel_nav` / `snapshot`），坐标会被夹到当前地图范围内，任何不在
+白名单里的动作一律丢弃并回话说明。也就是说模型出错最多是"不动"，不可能让它
+发一个不存在的指令。没配 API key 时会退化成规则问答（电量、状态、暂停/恢复、
+"去 x=1 y=2"），面板不会因为没网而变成死板子。
+
+```bash
+export OPENAI_BASE_URL=https://api.openai.com/v1
+export OPENAI_API_KEY=sk-...
+ros2 launch fishbot_console console.launch.py
+```
 
 ## 设计取舍
 
@@ -106,7 +141,7 @@ ros2 service call /patrol/resume std_srvs/srv/Trigger
 ## 测试
 
 ```bash
-colcon test --packages-select fishbot_patrol_v2
+colcon test --packages-select fishbot_patrol_v2 fishbot_console
 colcon test-result --verbose
 ```
 
@@ -114,7 +149,12 @@ colcon test-result --verbose
 
 ```bash
 python -m pytest src/fishbot_patrol_v2/test
+python -m pytest src/fishbot_console/test
 ```
+
+`fishbot_console` 的测试里包含一个**真的起 HTTP 服务再用 urllib 打自己的接口**的
+端到端用例（用假 bridge 顶替 ROS），所以"按钮 → 接口 → 调用"这条链路在没有
+机器人的电脑上也能验证。
 
 ## 指标
 
@@ -130,7 +170,8 @@ python -m pytest src/fishbot_patrol_v2/test
 
 - [ ] 定时 / 班次巡检（按 cron 或班次表自动触发）
 - [ ] 视觉异常触发抢占（`/patrol/preempt` 已预留，尚无发布方）
-- [ ] 手机端网页看板
+- [x] 网页控制台：地图点击导航 / 建图 / 日志 / 看板 / AI 助手
+- [ ] 多机器人同时在同一个控制台里看
 - [ ] 异常工单闭环
 
 ## License
