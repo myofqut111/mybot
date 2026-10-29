@@ -78,6 +78,18 @@ class ConsoleServer(object):
                     if not png:
                         return _json_response(self, {'error': 'no map'}, 404)
                     return _bytes_response(self, png, 'image/png')
+                if path == '/api/layers.png':
+                    png = server.bridge.layers_view()
+                    if not png:
+                        return _json_response(self, {'error': 'no layers'}, 404)
+                    return _bytes_response(self, png, 'image/png')
+                if path == '/api/scan':
+                    points, age = server.bridge.scan_view()
+                    return _json_response(self, {
+                        'frame': 'map',
+                        'age': round(age, 2),
+                        'points': [[round(x, 2), round(y, 2)]
+                                   for x, y in points]})
                 if path == '/api/frame.jpg':
                     kind = (query.get('kind') or ['anno'])[0]
                     raw, _stamp = server.bridge.frame(kind == 'anno')

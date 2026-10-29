@@ -7,6 +7,10 @@ fishbot_console:
     image_topic: /camera/camera/image_raw
     annotated_topic: /yolo_detector/image_annotated
     map_topic: /map
+    global_costmap_topic: /global_costmap/costmap
+    local_costmap_topic: /local_costmap/costmap
+    scan_topic: /scan
+    scan_max_points: 400        # 一帧激光抽稀到多少个点（多了浏览器卡）
     battery_topic: /battery/voltage
     pose_topic: /amcl_pose
     patrol_action: /execute_patrol

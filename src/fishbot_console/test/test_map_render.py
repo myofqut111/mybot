@@ -147,5 +147,82 @@ class TestMapMeta(unittest.TestCase):
         self.assertGreater(meta['resolution'], 0)
 
 
+class TestCostmapLayer(unittest.TestCase):
+    """代价地图叠加层：和 RViz 一样，致命红、膨胀橙、其余透明。"""
+
+    def test_values(self):
+        self.assertEqual(map_render.layer_rgba(-1)[3], 0)
+        self.assertEqual(map_render.layer_rgba(0)[3], 0)
+        self.assertEqual(map_render.layer_rgba(100), map_render.LAYER_LETHAL)
+        middle = map_render.layer_rgba(50)
+        self.assertGreater(middle[3], 0)
+        self.assertLess(middle[3], map_render.LAYER_LETHAL[3])
+
+    def test_inflated_gets_more_opaque(self):
+        self.assertLess(map_render.layer_rgba(10)[3],
+                        map_render.layer_rgba(90)[3])
+
+    def test_composite_size_and_flip(self):
+        # 2x2 底图，分辨率 1 m。ROS 的 data 自下而上：索引 2 是**上面那行**，
+        # 所以致命格放索引 2 时应该出现在画布第 0 行（画布自上而下）。
+        base = {'width': 2, 'height': 2, 'resolution': 1.0,
+                'origin_x': 0.0, 'origin_y': 0.0}
+        data = [0, 0,
+                100, 0]
+        meta = {'width': 2, 'height': 2, 'resolution': 1.0,
+                'origin_x': 0.0, 'origin_y': 0.0}
+        png = map_render.composite_layers(2, 2, base, [(data, meta)])
+        width, height, pixels = read_png_rgba(png)
+        self.assertEqual((width, height), (2, 2))
+        self.assertEqual(pixels[0][0], map_render.LAYER_LETHAL)
+        self.assertEqual(pixels[1][0][3], 0)
+
+    def test_out_of_bounds_is_clipped(self):
+        base = {'width': 2, 'height': 2, 'resolution': 1.0,
+                'origin_x': 0.0, 'origin_y': 0.0}
+        # 层放在 (10, 10)，完全在底图外，不能抛异常
+        meta = {'width': 2, 'height': 2, 'resolution': 1.0,
+                'origin_x': 10.0, 'origin_y': 10.0}
+        png = map_render.composite_layers(2, 2, base, [([100] * 4, meta)])
+        _w, _h, pixels = read_png_rgba(png)
+        self.assertEqual(sum(p[3] for row in pixels for p in row), 0)
+
+    def test_empty_layers(self):
+        base = {'width': 2, 'height': 2, 'resolution': 1.0,
+                'origin_x': 0.0, 'origin_y': 0.0}
+        png = map_render.composite_layers(2, 2, base, [])
+        _w, _h, pixels = read_png_rgba(png)
+        self.assertEqual(sum(p[3] for row in pixels for p in row), 0)
+
+
+
+def read_png_rgba(payload):
+    """最小 RGBA 解码器（filter=0），只为校验叠加层。"""
+    assert payload[:8] == b'\x89PNG\r\n\x1a\n'
+    pos = 8
+    width = height = 0
+    idat = b''
+    while pos < len(payload):
+        length = struct.unpack('>I', payload[pos:pos + 4])[0]
+        tag = payload[pos + 4:pos + 8]
+        body = payload[pos + 8:pos + 8 + length]
+        if tag == b'IHDR':
+            width, height, depth, ctype = struct.unpack('>IIBB', body[:10])
+            assert depth == 8 and ctype == 6, 'not 8bit RGBA'
+        elif tag == b'IDAT':
+            idat += body
+        pos += 12 + length
+    raw = zlib.decompress(idat)
+    stride = width * 4
+    rows = []
+    for row in range(height):
+        start = row * (stride + 1)
+        assert raw[start] == 0, 'unexpected filter'
+        line = raw[start + 1:start + 1 + stride]
+        rows.append([tuple(line[i * 4:i * 4 + 4]) for i in range(width)])
+    return width, height, rows
+
+
+
 if __name__ == '__main__':
     unittest.main()

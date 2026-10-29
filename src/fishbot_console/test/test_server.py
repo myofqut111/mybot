@@ -26,6 +26,8 @@ class FakeBridge(object):
         self.logs.add('fake', 40, 'boom')
         self._reports = reports_dir
         self.calls = []
+        self.layers = b'\x89PNG-layers'
+        self.scan = [(1.25, -0.5), (2.0, 0.75)]
 
     def snapshot_status(self):
         return {'state': 'RUNNING', 'battery_v': 12.1, 'battery_band': 'ok',
@@ -83,6 +85,14 @@ class FakeBridge(object):
     def call_capture(self, timeout=3.0):
         self.calls.append(('capture',))
         return True, 'saved'
+
+    def layers_view(self):
+        self.calls.append(('layers',))
+        return self.layers
+
+    def scan_view(self):
+        self.calls.append(('scan',))
+        return list(self.scan), 0.2
 
     def mapping(self, action, name='map'):
         self.calls.append(('mapping', action, name))
@@ -171,6 +181,38 @@ class ServerCase(unittest.TestCase):
         _s, body, ctype = self.get('/api/frame.jpg?kind=raw')
         self.assertEqual(ctype, 'image/jpeg')
         self.assertTrue(body.startswith(b'\xff\xd8'))
+
+    def test_layers_png(self):
+        status, body, ctype = self.get('/api/layers.png')
+        self.assertEqual(status, 200)
+        self.assertEqual(ctype, 'image/png')
+        self.assertEqual(body, b'\x89PNG-layers')
+
+    def test_layers_missing_is_404(self):
+        saved = self.bridge.layers
+        self.bridge.layers = b''
+        try:
+            with self.assertRaises(urllib.error.HTTPError) as ctx:
+                self.get('/api/layers.png')
+            self.assertEqual(ctx.exception.code, 404)
+        finally:
+            self.bridge.layers = saved       # 同一个 bridge 被各用例复用
+
+    def test_scan_points(self):
+        status, body, _c = self.get('/api/scan')
+        self.assertEqual(status, 200)
+        data_ = json.loads(body.decode('utf-8'))
+        self.assertEqual(data_['frame'], 'map')
+        self.assertEqual(data_['points'], [[1.25, -0.5], [2.0, 0.75]])
+        self.assertLessEqual(len(data_['points']), 400)
+
+    def test_nav_with_yaw(self):
+        self.post('/api/nav', {'x': 1.0, 'y': 2.0, 'yaw': 0.5})
+        self.assertIn(('nav', 1.0, 2.0, 0.5), self.bridge.calls)
+
+    def test_nav_without_yaw_sends_none(self):
+        self.post('/api/nav', {'x': 1.0, 'y': 2.0})
+        self.assertIn(('nav', 1.0, 2.0, None), self.bridge.calls)
 
     def test_runs_and_events_empty(self):
         _s, body, _c = self.get('/api/runs')

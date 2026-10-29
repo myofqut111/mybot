@@ -24,11 +24,18 @@ from rclpy.qos import DurabilityPolicy, HistoryPolicy, QoSProfile, ReliabilityPo
 from geometry_msgs.msg import PoseWithCovarianceStamped
 from nav_msgs.msg import OccupancyGrid
 from rcl_interfaces.msg import Log
-from sensor_msgs.msg import Image
+from sensor_msgs.msg import Image, LaserScan
 from std_msgs.msg import Float32, String
 
 from . import map_render
 from .data import LogRing, normalize_status
+
+try:                                        # 点云要投到地图坐标系，靠 TF
+    import tf2_ros
+    from rclpy.duration import Duration
+except Exception:                           # pragma: no cover
+    tf2_ros = None
+    Duration = None
 
 try:                                        # 巡检动作，缺了只是不能发巡检
     from fishbot_patrol_interfaces.action import ExecutePatrol
@@ -58,6 +65,10 @@ class ConsoleBridge(Node):
         self.declare_parameter('image_topic', '/camera/camera/image_raw')
         self.declare_parameter('annotated_topic', '/yolo_detector/image_annotated')
         self.declare_parameter('map_topic', '/map')
+        self.declare_parameter('global_costmap_topic', '/global_costmap/costmap')
+        self.declare_parameter('local_costmap_topic', '/local_costmap/costmap')
+        self.declare_parameter('scan_topic', '/scan')
+        self.declare_parameter('scan_max_points', 400)
         self.declare_parameter('battery_topic', '/battery/voltage')
         self.declare_parameter('pose_topic', '/amcl_pose')
         self.declare_parameter('patrol_action', '/execute_patrol')
@@ -90,6 +101,24 @@ class ConsoleBridge(Node):
         self._anno_jpeg = b''
         self._anno_time = 0.0
         self._last_event = None
+        self._global_cost = None            # (data, meta)
+        self._local_cost = None
+        self._layers_png = b''
+        self._layers_version = 0            # 每次代价地图更新 +1
+        self._layers_built = -1             # 上次成图时的版本号（缓存依据）
+        self._scan_points = []              # [(x, y)]，已投到 map 坐标系
+        self._scan_time = 0.0
+        self._scan_max = int(self.get_parameter('scan_max_points').value)
+
+        self._tf_buffer = None
+        self._tf_listener = None
+        if tf2_ros is not None:
+            try:
+                self._tf_buffer = tf2_ros.Buffer()
+                self._tf_listener = tf2_ros.TransformListener(
+                    self._tf_buffer, self, spin_thread=False)
+            except Exception:               # pragma: no cover
+                self._tf_buffer = None
 
         self.logs = LogRing(capacity=int(self.get_parameter('max_log_lines').value))
         self._callbacks = ReentrantCallbackGroup()
@@ -126,6 +155,16 @@ class ConsoleBridge(Node):
             self._on_pose, 10, callback_group=self._callbacks)
         self.create_subscription(Log, '/rosout', self._on_log, 200,
                                  callback_group=self._callbacks)
+        self.create_subscription(
+            OccupancyGrid, self.get_parameter('global_costmap_topic').value,
+            self._on_global_costmap, map_qos, callback_group=self._callbacks)
+        self.create_subscription(
+            OccupancyGrid, self.get_parameter('local_costmap_topic').value,
+            self._on_local_costmap, map_qos, callback_group=self._callbacks)
+        self.create_subscription(
+            LaserScan, self.get_parameter('scan_topic').value,
+            self._on_scan, fast_qos, callback_group=self._callbacks)
+
 
         # 手动给初始位姿：和 RViz 的 "2D Pose Estimate" 发的是同一个话题、同一套协方差
         self._initial_pub = self.create_publisher(
@@ -180,6 +219,120 @@ class ConsoleBridge(Node):
         with self._lock:
             self._map_png = png
             self._map_meta = meta
+
+    # ---------------------------------------------------------- 代价地图与点云
+    def _store_costmap(self, msg, slot):
+        """代价地图只留最新的原始数组 + 几何，成图推迟到有人要看时再做。
+
+        刻意不在这里做逐格转换：局部代价地图 5~10 Hz，几百 k 格转一遍就是
+        几十毫秒，白烧 CPU。渲染时再按行跳过"整行都没代价"的情况。
+        """
+        try:
+            data = msg.data
+            width = int(msg.info.width)
+            height = int(msg.info.height)
+        except Exception:
+            return
+        if width <= 0 or height <= 0 or len(data) < width * height:
+            return
+        meta = map_render.map_meta(msg.info)
+        with self._lock:
+            if slot == 'global':
+                self._global_cost = (data, meta)
+            else:
+                self._local_cost = (data, meta)
+            self._layers_version += 1
+
+    def _on_global_costmap(self, msg):
+        self._store_costmap(msg, 'global')
+
+    def _on_local_costmap(self, msg):
+        self._store_costmap(msg, 'local')
+
+    def layers_view(self):
+        """把全局 + 局部代价地图叠成一张和底图同尺寸的 RGBA PNG。
+
+        缓存：只有代价地图更新过（version 变了）才重算，否则 5 Hz 轮询也
+        不会把 CPU 吃满。
+        """
+        with self._lock:
+            version = self._layers_version
+            if self._layers_png and self._layers_built == version:
+                return self._layers_png
+            meta = dict(self._map_meta or {})
+            layers = [item for item in (self._global_cost, self._local_cost)
+                      if item]
+        if not meta.get('width') or not layers:
+            return b''
+        try:
+            png = map_render.composite_layers(
+                int(meta['width']), int(meta['height']), meta, layers)
+        except Exception as error:
+            self.get_logger().warning('composite costmaps failed: %s' % error)
+            return b''
+        with self._lock:
+            self._layers_png = png
+            self._layers_built = version
+        return png
+
+    def _on_scan(self, msg):
+        """激光点投到 map 坐标系。TF 拿不到就整帧丢掉，绝不假装有数据。"""
+        ranges = list(msg.ranges)
+        count = len(ranges)
+        if count <= 0:
+            return
+        angle = float(msg.angle_min)
+        step = float(msg.angle_increment)
+        limit = float(msg.range_max or 0.0)
+        points = []
+        # 抽稀：一帧几百上千点没必要全画，抽到 scan_max_points 以内
+        stride = max(1, count // max(1, self._scan_max))
+        for index in range(0, count, stride):
+            distance = ranges[index]
+            if not (msg.range_min <= distance <= limit) or distance != distance:
+                continue
+            points.append((distance * math.cos(angle + index * step),
+                           distance * math.sin(angle + index * step)))
+        if not points:
+            with self._lock:
+                self._scan_points = []
+                self._scan_time = time.time()
+            return
+
+        frame = str(msg.header.frame_id or '')
+        if frame and frame != 'map' and self._tf_buffer is not None:
+            points = self._transform_points(points, frame, msg.header.stamp)
+            if points is None:
+                return                      # 变换不可用：保持上一帧，别清空
+        with self._lock:
+            self._scan_points = points
+            self._scan_time = time.time()
+
+    def _transform_points(self, points, source_frame, stamp):
+        if tf2_ros is None or Duration is None:
+            return None
+        try:
+            transform = self._tf_buffer.lookup_transform(
+                'map', source_frame.strip('/'), stamp,
+                Duration(seconds=0.05))
+        except Exception:
+            return None
+        tr = transform.transform.translation
+        quat = transform.transform.rotation
+        yaw = math.atan2(2.0 * (quat.w * quat.z + quat.x * quat.y),
+                         1.0 - 2.0 * (quat.y * quat.y + quat.z * quat.z))
+        cos_y, sin_y = math.cos(yaw), math.sin(yaw)
+        out = []
+        for x, y in points:
+            out.append((tr.x + x * cos_y - y * sin_y,
+                        tr.y + x * sin_y + y * cos_y))
+        return out
+
+    def scan_view(self):
+        with self._lock:
+            points = list(self._scan_points)
+            age = (time.time() - self._scan_time) if self._scan_time else -1.0
+        return points, age
 
     def _on_image(self, msg):
         data = self._encode(msg)

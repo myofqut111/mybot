@@ -44,6 +44,8 @@ section h2{font-size:13px;margin:0 0 8px;color:var(--dim);font-weight:600;
 #mapCanvas{max-width:none;cursor:crosshair;display:inline-block;
            image-rendering:pixelated}
 #mapWrap.mode-pose #mapCanvas{cursor:crosshair}
+.chk{display:flex;align-items:center;gap:5px;font-size:12px;color:var(--dim)}
+.chk input{width:auto}
 #mapHint{color:var(--dim);font-size:12px;padding:20px;text-align:center}
 .row{display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-top:8px}
 button{background:#22304a;color:var(--fg);border:1px solid var(--line);
@@ -91,13 +93,15 @@ th{color:var(--dim);font-weight:500}
     <h2>地图</h2>
     <div class="row" style="margin-top:0">
       <select id="mapMode" title="左键模式">
-        <option value="nav">左键 = 发导航目标</option>
+        <option value="nav">左键拖拽 = 发导航目标（带朝向）</option>
         <option value="pose">左键拖拽 = 设定初始位姿</option>
       </select>
       <button id="btnZoomOut" title="缩小">−</button>
       <span class="badge" id="zoomLabel">100%</span>
       <button id="btnZoomIn" title="放大">+</button>
       <button id="btnZoomFit">适应窗口</button>
+      <label class="chk"><input type="checkbox" id="chkCostmap" checked> 代价地图</label>
+      <label class="chk"><input type="checkbox" id="chkScan" checked> 雷达点云</label>
       <span id="mapModeHint" style="color:var(--dim);font-size:12px"></span>
     </div>
     <div id="mapWrap"><div id="mapHint">还没有收到 /map</div>
@@ -182,6 +186,11 @@ const $ = id => document.getElementById(id);
 let MAP = {width:0,height:0,resolution:0.05,origin_x:0,origin_y:0,
            min_x:0,max_x:0,min_y:0,max_y:0};
 let MAPIMG = null;
+let LAYERSIMG = null;        // 代价地图叠加层（RGBA，尺寸同底图）
+let SCAN = [];               // 雷达点（map 坐标系）
+let GOAL = null;             // 最近一次发的导航目标，画个绿箭头
+let NAVDRAG = null;          // 发目标时的拖拽状态（位置+朝向）
+let SUPPRESS_CLICK = false;  // 拖拽结束后浏览器还会补一个 click，要吞掉
 
 function toast(text){
   const el = $('toast'); el.textContent = text; el.style.opacity = 1;
@@ -238,10 +247,28 @@ function paint(){
   ctx.imageSmoothingEnabled = false;
   ctx.clearRect(0, 0, canvas.width, canvas.height);
   ctx.drawImage(MAPIMG, 0, 0);
+  // 代价地图层：和 RViz 一样压在底图上面，致命红、膨胀橙
+  if(LAYERSIMG && $('chkCostmap').checked){
+    ctx.globalAlpha = 0.9;
+    ctx.drawImage(LAYERSIMG, 0, 0, canvas.width, canvas.height);
+    ctx.globalAlpha = 1;
+  }
+  // 雷达点：屏幕上固定 2.2px，缩放时不变粗
+  if(SCAN.length && $('chkScan').checked){
+    const r = Math.max(1.2, 2.2 / Math.max(ZOOM, 0.2));
+    ctx.fillStyle = '#39d98a';
+    for(let i = 0; i < SCAN.length; i++){
+      const p = worldToPx(SCAN[i][0], SCAN[i][1]);
+      ctx.beginPath(); ctx.arc(p[0], p[1], r, 0, Math.PI * 2); ctx.fill();
+    }
+  }
   const pose = STATE && STATE.status && STATE.status.pose;
   if(pose) arrow(ctx, pose.x, pose.y, pose.yaw || 0, '#4c8dff');
+  if(GOAL) arrow(ctx, GOAL.x, GOAL.y, GOAL.yaw || 0, '#37d67a');
   if(DRAG && DRAG.yaw != null) arrow(ctx, DRAG.x, DRAG.y, DRAG.yaw, '#ffd166');
+  if(NAVDRAG && NAVDRAG.yaw != null) arrow(ctx, NAVDRAG.x, NAVDRAG.y, NAVDRAG.yaw, '#7be3a3');
 }
+
 function worldToPx(wx, wy){
   return [(wx - MAP.origin_x) / MAP.resolution,
           (MAP.height - 1) - (wy - MAP.origin_y) / MAP.resolution];
@@ -267,7 +294,7 @@ async function loadMap(){
     if(!res.ok) return;
     const blob = await res.blob();
     const img = new Image();
-    img.onload = ()=>{ MAPIMG = img; drawMap(); };
+    img.onload = ()=>{ MAPIMG = img; drawMap(); loadLayers(); };
     img.src = URL.createObjectURL(blob);
   }catch(e){}
 }
@@ -284,9 +311,9 @@ $('mapMode').addEventListener('change', updateMapMode);
 function updateMapMode(){
   const poseMode = $('mapMode').value === 'pose';
   $('mapWrap').classList.toggle('mode-pose', poseMode);
-  $('mapModeHint').textContent = poseMode
+$('mapModeHint').textContent = poseMode
     ? '在地图上按住左键拖一下：起点=位置，方向=朝向'
-    : '点一下地图就发过去';
+    : '在地图上按住左键拖一下：起点=目标点，方向=车头朝向（只点不拖也行）';
 }
 $('btnZoomIn').addEventListener('click', ()=>zoomBy(1.25));
 $('btnZoomOut').addEventListener('click', ()=>zoomBy(0.8));
@@ -298,22 +325,39 @@ $('mapWrap').addEventListener('wheel', ev=>{
 }, {passive: false});
 
 $('mapCanvas').addEventListener('mousedown', ev=>{
-  if(!MAPIMG || $('mapMode').value !== 'pose') return;
+  if(!MAPIMG) return;
+  const mode = $('mapMode').value;
   const w = evToWorld(ev);
-  DRAG = {x: w.x, y: w.y, yaw: 0, px: w.px, py: w.py};
+  if(mode === 'pose'){
+    DRAG = {x: w.x, y: w.y, yaw: 0, px: w.px, py: w.py};
+  }else{
+    NAVDRAG = {x: w.x, y: w.y, yaw: null, px: w.px, py: w.py};
+  }
   paint();
 });
 window.addEventListener('mousemove', ev=>{
-  if(!DRAG) return;
+  const active = DRAG || NAVDRAG;
+  if(!active) return;
   const canvas = $('mapCanvas');
   const rect = canvas.getBoundingClientRect();
   const px = (ev.clientX - rect.left) * (canvas.width / rect.width);
   const py = (ev.clientY - rect.top) * (canvas.height / rect.height);
-  const dx = px - DRAG.px, dy = py - DRAG.py;
-  if(Math.abs(dx) + Math.abs(dy) > 2) DRAG.yaw = Math.atan2(-dy, dx);
+  const dx = px - active.px, dy = py - active.py;
+  // 位移太小当“只点了一下”，不给朝向（RViz 里也是这样：拖多远指多少度）
+  if(Math.abs(dx) + Math.abs(dy) > 3) active.yaw = Math.atan2(-dy, dx);
   paint();
 });
 window.addEventListener('mouseup', async ()=>{
+  if(NAVDRAG){
+    const {x, y, yaw} = NAVDRAG;
+    NAVDRAG = null;
+    SUPPRESS_CLICK = true;               // 别让随后的 click 再发一次
+    setTimeout(()=>{ SUPPRESS_CLICK = false; }, 0);
+    GOAL = {x: x, y: y, yaw: yaw};
+    paint();
+    await sendNav(x, y, yaw);
+    return;
+  }
   if(!DRAG) return;
   const {x, y, yaw} = DRAG;
   DRAG = null; paint();
@@ -330,12 +374,38 @@ $('mapCanvas').addEventListener('click', ev=>{
   $('navX').value = w.x.toFixed(2); $('navY').value = w.y.toFixed(2);
   sendNav(w.x, w.y);
 });
-async function sendNav(x, y){
+async function sendNav(x, y, yaw){
+  const body = {x:x, y:y};
+  if(yaw != null) body.yaw = yaw;
   try{
-    const r = await api('/api/nav', {x:x, y:y});
+    const r = await api('/api/nav', body);
     toast(r.ok ? r.message : ('失败：' + r.message));
-  }catch(e){ toast('发送失败：' + e.message); }
+    if(!r.ok) GOAL = null;
+  }catch(e){ toast('发送失败：' + e.message); GOAL = null; }
 }
+
+/* ---------------- 代价地图与点云 ---------------- */
+async function loadLayers(){
+  if(!MAP.width) return;
+  try{
+    const res = await fetch('/api/layers.png?t=' + Date.now());
+    if(!res.ok){ LAYERSIMG = null; return; }   // 没有代价地图是正常状态
+    const blob = await res.blob();
+    const img = new Image();
+    img.onload = ()=>{ LAYERSIMG = img; paint(); };
+    img.src = URL.createObjectURL(blob);
+  }catch(e){}
+}
+async function pollScan(){
+  if(!MAP.width) return;
+  try{
+    const r = await api('/api/scan');
+    SCAN = (r && r.points) ? r.points : [];
+    if(MAPIMG && (SCAN.length || $('chkScan').checked)) paint();
+  }catch(e){}
+}
+$('chkCostmap').addEventListener('change', ()=>paint());
+$('chkScan').addEventListener('change', ()=>paint());
 
 /* ---------------- 状态轮询 ---------------- */
 let STATE = null;
@@ -494,6 +564,8 @@ setInterval(pollFrame, 700);
 setInterval(pollLogs, 2000);
 setInterval(pollRuns, 10000);
 setInterval(loadMap, 6000);
+setInterval(loadLayers, 1000);      // 代价地图每秒重取一次（服务端按版本缓存）
+setInterval(pollScan, 250);         // 点云要跟得上移动，4 Hz
 </script>
 </body>
 </html>
