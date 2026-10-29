@@ -122,7 +122,6 @@ ros2 launch fishbot_console console.launch.py port:=9000
 地图用 **Leaflet**（`L.CRS.Simple`，坐标就是米）而不是自己写 canvas：平移、
 光标锚定缩放、双指捏合、双击放大这些交互它都做好了，自己实现一遍只会做出
 "能用但手感不对"的版本。左键按模式分工：
-
 | 模式 | 左键拖拽 | 滚轮 / 双指 |
 | --- | --- | --- |
 | 平移 | 拖动地图 | 缩放（光标/手指中点不动） |
@@ -132,6 +131,31 @@ ros2 launch fishbot_console console.launch.py port:=9000
 蓝箭头是机器人（按 yaw 转），绿箭头是当前目标；拖的时候会实时显示角度，
 只点不拖就发一个朝向不变的目标。地图组件（`leaflet.js/css`、`roslib`）都
 **本地放在 `fishbot_console/static/`**，机器人没外网也能用，不碰任何 CDN。
+
+### 实时流（rosbridge）
+
+默认会顺带起 `rosbridge_websocket`：`/tf`、`/tf_static`、`/scan` 变成 WebSocket
+推送，车一动箭头和点云就是连续的（20+ Hz），不再是一秒几跳。页头那个
+「实时 已连」就是它。
+
+```bash
+sudo apt install ros-$ROS_DISTRO-rosbridge-suite     # 只装一次
+ros2 launch fishbot_console console.launch.py                       # 默认带实时流
+ros2 launch fishbot_console console.launch.py rosbridge:=false      # 不要它
+```
+
+它是**可选依赖**，整条链路都做了降级：
+
+| 情况 | 表现 |
+| --- | --- |
+| 装了 rosbridge | 页头「实时 已连」，点云/位姿走推送 |
+| 没装 / 端口不通 | 页头「实时 断开」，自动退回 4 Hz 轮询，功能一个不少 |
+| TF 还没到 | 这一帧点云不画（宁可不画，也不画错位置） |
+
+点云不在服务端画：服务端只把 `/scan` 的 TF 投影做在轮询路径上；实时路径是
+浏览器自己缓存 `/tf` 链、自己算 `map←laser`，画在一张 canvas 覆盖层上（几百个点
+用 `circleMarker` 会卡，画像素最省）。ROS 的 TF 用的是四元数，这里只需要平面位姿，
+所以每帧压成 yaw——省掉一整条矩阵链，也不会因为 roll/pitch 抖动把点抖歪。
 
 代价地图是自己编码的 RGBA PNG（同一套 `zlib` 代码，不引入图像库），
 服务端按"版本号"缓存：costmap 没更新就不重算，所以 1 Hz 轮询也不会烧 CPU。

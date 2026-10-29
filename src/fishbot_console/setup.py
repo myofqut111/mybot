@@ -7,7 +7,7 @@ package_name = 'fishbot_console'
 
 setup(
     name=package_name,
-    version='0.3.0',
+    version='0.4.0',
     packages=find_packages(exclude=['test']),
     # Leaflet / roslib 这些 JS 必须跟着包一起装：普通 colcon build 只拷 .py，
     # 不加 package_data 的话页面上 /static/leaflet.js 会 404，地图直接白屏。

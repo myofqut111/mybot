@@ -40,10 +40,12 @@ class TestPage(unittest.TestCase):
         self.assertEqual(external, [])
 
     def test_script_is_balanced(self):
-        # 一个内联脚本 + 一个 Leaflet 的 src 引用
+        # 一个内联脚本 + 三个外链（leaflet / roslib / eventemitter2）。
+        # 断言的是"开闭对得上"，不是"只有一个 script 标签"——多加一个 SDK
+        # 不该让这条测试红，漏掉闭合标签才该红。
         self.assertEqual(self.html.count('<script>'), 1)
-        self.assertEqual(self.html.count('<script src='), 1)
-        self.assertEqual(self.html.count('</script>'), 2)
+        self.assertEqual(self.html.count('<script src='), 3)
+        self.assertEqual(self.html.count('</script>'), 4)
         self.assertEqual(self.html.count('<style>'), 1)
         self.assertEqual(self.html.count('</style>'), 1)
 
@@ -84,6 +86,17 @@ class TestPage(unittest.TestCase):
         self.assertIn("LF.on('mousedown', onDown)", self.html)
         self.assertIn("LF.on('mouseup', onUp)", self.html)
         self.assertIn('sendNav(done.x, done.y, yaw)', self.html)
+
+    def test_live_stream_wired(self):
+        """rosbridge 实时流：组件要引进来，/tf 和 /scan 要真的订阅，还要能退回轮询。"""
+        self.assertIn('/static/roslib.min.js', self.html)
+        self.assertIn('/static/eventemitter2.min.js', self.html)
+        self.assertIn('id="bLive"', self.html)
+        self.assertIn('initLive', self.html)
+        self.assertIn("name:'/tf'", self.html)
+        self.assertIn("name:'/tf_static'", self.html)
+        self.assertIn("name:'/scan'", self.html)
+        self.assertIn('if(LIVE.ok) return', self.html)
 
     def test_teleop_has_deadman(self):
         # 手动控制必须有"松手即停"和页面失焦停，否则手机切走车会一直跑

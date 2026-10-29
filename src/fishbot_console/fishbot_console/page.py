@@ -87,6 +87,8 @@ th{color:var(--dim);font-weight:500}
 </style>
 <link rel="stylesheet" href="/static/leaflet.css">
 <script src="/static/leaflet.js"></script>
+<script src="/static/eventemitter2.min.js"></script>
+<script src="/static/roslib.min.js"></script>
 </head>
 <body>
 <header>
@@ -96,6 +98,7 @@ th{color:var(--dim);font-weight:500}
   <span class="badge" id="bPose">位姿 —</span>
   <span class="badge" id="bCam">相机 —</span>
   <span class="badge" id="bErr">错误 0</span>
+  <span class="badge" id="bLive" title="rosbridge 实时流">实时 —</span>
 </header>
 <div id="sysRow"></div>
 <div id="sysHint"></div>
@@ -355,6 +358,7 @@ async function loadLayers(){
 
 async function pollScan(){
   if(!MAPM.ready) return;
+  if(LIVE.ok) return;            // 实时流在，别和它抢
   if(!$('chkScan').checked){ LL.scan.clearLayers(); return; }
   let r;
   try{ r = await api('/api/scan'); }catch(e){ return; }
@@ -367,6 +371,7 @@ async function pollScan(){
       interactive:false}).addTo(LL.scan);
   }
 }
+
 
 async function pollPlan(){
   if(!MAPM.ready) return;
@@ -637,6 +642,202 @@ async function runAction(a){
 $('btnAsk').onclick = ask;
 $('askBox').addEventListener('keydown', e => { if(e.key === 'Enter') ask(); });
 
+/* ---------------- 实时流（rosbridge WebSocket） ---------------- */
+/* 轮询是 1~4 Hz，车一动点云就跳。接上 rosbridge 后 /tf 和 /scan 变成推送：
+   机器人箭头跟着动、点云跟着车走，手感才接近 RViz。
+   连不上就退回轮询——没装 rosbridge 的机器上页面不该变死。 */
+const LIVE = {
+  ros: null, ok: false, tries: 0, tfStamp: 0,
+  tf: {},          // child -> {parent,x,y,yaw}
+  points: [],      // 当前帧点云（map 坐标系 [x,y] 数组）
+  layer: null, canvas: null, ctx: null, dpr: 1,
+};
+
+function liveUrl(){
+  try{
+    const q = new URLSearchParams(location.search).get('rosbridge');
+    if(q) return q;
+  }catch(e){}
+  return 'ws://' + location.hostname + ':9090';
+}
+
+function quatYaw(q){
+  return Math.atan2(2 * (q.w * q.z + q.x * q.y),
+                    1 - 2 * (q.y * q.y + q.z * q.z));
+}
+
+/* TF 缓存：只要 2D，四元数压成 yaw */
+function tfStore(msg){
+  const list = msg.transforms || [];
+  for(let i = 0; i < list.length; i++){
+    const tr = list[i];
+    const parent = (tr.header.frame_id || '').replace(/^\//, '');
+    const child = (tr.child_frame_id || '').replace(/^\//, '');
+    if(!parent || !child) continue;
+    const p = tr.transform.translation, q = tr.transform.rotation;
+    LIVE.tf[child] = {parent:parent, x:p.x, y:p.y, yaw:quatYaw(q)};
+  }
+  LIVE.tfStamp = Date.now();
+}
+
+/* 把 frame 的位姿换算到 map：从 frame 一路沿 parent 往上乘 */
+function tfToWorld(frame){
+  let x = 0, y = 0, yaw = 0, cur = (frame || '').replace(/^\//, ''), guard = 0;
+  while(cur && cur !== 'map' && guard++ < 32){
+    const e = LIVE.tf[cur];
+    if(!e) return null;
+    const c = Math.cos(e.yaw), s = Math.sin(e.yaw);
+    const nx = e.x + c * x - s * y;
+    const ny = e.y + s * x + c * y;
+    x = nx; y = ny; yaw = e.yaw + yaw;
+    cur = e.parent;
+  }
+  if(cur !== 'map') return null;
+  return {x:x, y:y, yaw:yaw};
+}
+
+function robotPoseLive(){
+  const names = ['base_link', 'base_footprint', 'base_link_2d'];
+  for(let i = 0; i < names.length; i++){
+    const p = tfToWorld(names[i]);
+    if(p) return p;
+  }
+  return null;
+}
+
+/* 点云画在自建 canvas 上：几百个点用 circleMarker 会卡，直接画像素最省 */
+const ScanLayer = L.Layer.extend({
+  onAdd(map){
+    this._map = map;
+    this._canvas = L.DomUtil.create('canvas', 'leaflet-scan-canvas');
+    this._canvas.style.cssText = 'position:absolute;left:0;top:0;' +
+      'pointer-events:none;z-index:420;';
+    map.getPanes().overlayPane.appendChild(this._canvas);
+    map.on('move zoom viewreset resize', this._reset, this);
+    this._reset();
+  },
+  onRemove(map){
+    map.off('move zoom viewreset resize', this._reset, this);
+    if(this._canvas && this._canvas.parentNode){
+      this._canvas.parentNode.removeChild(this._canvas);
+    }
+  },
+  _reset(){
+    if(!this._map) return;
+    const size = this._map.getSize();
+    const topLeft = this._map.containerPointToLayerPoint([0, 0]);
+    L.DomUtil.setPosition(this._canvas, topLeft);
+    const dpr = window.devicePixelRatio || 1;
+    this._canvas.width = Math.max(1, size.x * dpr);
+    this._canvas.height = Math.max(1, size.y * dpr);
+    this._canvas.style.width = size.x + 'px';
+    this._canvas.style.height = size.y + 'px';
+    this._ctx = this._canvas.getContext('2d');
+    this._ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    this._draw();
+  },
+  setPoints(pts){
+    this._points = pts;
+    this._draw();
+  },
+  _draw(){
+    const ctx = this._ctx, map = this._map;
+    if(!ctx || !map) return;
+    const dpr = window.devicePixelRatio || 1;
+    ctx.clearRect(0, 0, this._canvas.width / dpr, this._canvas.height / dpr);
+    const pts = this._points || [];
+    if(!pts.length) return;
+    ctx.fillStyle = '#ff5b5b';
+    for(let i = 0; i < pts.length; i++){
+      const pt = map.latLngToContainerPoint([pts[i][1], pts[i][0]]);
+      ctx.fillRect(pt.x - 1, pt.y - 1, 2, 2);
+    }
+  },
+});
+
+function ensureScanLayer(){
+  if(!LF) return null;
+  if(!LIVE.layer){
+    LIVE.layer = new ScanLayer();
+    LIVE.layer.addTo(LF);
+  }
+  return LIVE.layer;
+}
+
+function onScanLive(msg){
+  const pose = tfToWorld(msg.header.frame_id || 'laser_frame');
+  if(!pose) return;              // TF 还没到，宁可不画也不画错位置
+  const ranges = msg.ranges || [];
+  const a0 = msg.angle_min, da = msg.angle_increment;
+  const rmin = msg.range_min, rmax = msg.range_max;
+  const c = Math.cos(pose.yaw), s = Math.sin(pose.yaw);
+  const pts = [];
+  for(let i = 0; i < ranges.length; i++){
+    const r = ranges[i];
+    if(!isFinite(r) || r < rmin || r > rmax) continue;
+    const a = a0 + i * da;
+    const px = r * Math.cos(a), py = r * Math.sin(a);
+    pts.push([pose.x + c * px - s * py, pose.y + s * px + c * py]);
+  }
+  LIVE.points = pts;
+  const layer = ensureScanLayer();
+  if(layer) layer.setPoints(pts);
+}
+
+function drawRobotLive(){
+  const pose = robotPoseLive();
+  if(!pose || !LF) return;
+  $('bPose').textContent = '位姿 ' + pose.x.toFixed(2) + ',' + pose.y.toFixed(2);
+  $('bPose').className = 'badge ok';
+  if(LL.robot){
+    LL.robot.clearLayers();
+    L.marker([pose.y, pose.x], {icon:robotIcon(pose.yaw),
+      interactive:false, keyboard:false}).addTo(LL.robot);
+  }
+}
+
+function subscribeLive(){
+  const ros = LIVE.ros;
+  if(!ros) return;
+  const opts = {messageType:'tf2_msgs/TFMessage', queue_length:1,
+                throttle_rate:0, compression:'cbor'};
+  const tf = new ROSLIB.Topic(Object.assign({ros:ros, name:'/tf'}, opts));
+  tf.subscribe(tfStore);
+  const tfs = new ROSLIB.Topic(Object.assign({ros:ros, name:'/tf_static'}, opts));
+  tfs.subscribe(tfStore);
+  const scan = new ROSLIB.Topic({ros:ros, name:'/scan',
+    messageType:'sensor_msgs/LaserScan', queue_length:1, throttle_rate:50,
+    compression:'cbor'});
+  scan.subscribe(onScanLive);
+  setInterval(drawRobotLive, 100);
+}
+
+function liveBadge(text, cls){
+  const el = $('bLive');
+  if(el){ el.textContent = '实时 ' + text; el.className = 'badge ' + (cls || ''); }
+}
+
+function initLive(){
+  if(typeof ROSLIB === 'undefined'){ liveBadge('无组件', 'warn'); return; }
+  const url = liveUrl();
+  try{
+    LIVE.ros = new ROSLIB.Ros({url:url});
+  }catch(e){ liveBadge('不可用', 'warn'); return; }
+  LIVE.ros.on('connection', function(){
+    LIVE.ok = true; LIVE.tries = 0;
+    liveBadge('已连', 'ok');
+    subscribeLive();
+  });
+  LIVE.ros.on('error', function(){ liveBadge('断开', 'warn'); });
+  LIVE.ros.on('close', function(){
+    LIVE.ok = false;
+    LIVE.layer = null;
+    liveBadge('断开', 'warn');
+    LIVE.tries = Math.min(LIVE.tries + 1, 6);
+    setTimeout(initLive, 1000 * LIVE.tries);
+  });
+}
+
 /* ---------------- 循环 ---------------- */
 updateMapMode();
 pollState(); loadMap(); pollFrame(); pollLogs(); pollRuns();
@@ -648,6 +849,7 @@ setInterval(loadMap, 6000);
 setInterval(loadLayers, 1000);      // 代价地图每秒重取一次（服务端按版本缓存）
 setInterval(pollScan, 250);         // 点云要跟得上移动，4 Hz
 setInterval(pollPlan, 700);         // 全局路径
+initLive();                          // 有 rosbridge 就切成推送，没有就继续轮询
 </script>
 </body>
 </html>
