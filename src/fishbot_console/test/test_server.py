@@ -28,6 +28,7 @@ class FakeBridge(object):
         self.calls = []
         self.layers = b'\x89PNG-layers'
         self.scan = [(1.25, -0.5), (2.0, 0.75)]
+        self.plan = [(0.0, 0.0), (1.0, 0.5), (2.0, 0.75)]
 
     def snapshot_status(self):
         return {'state': 'RUNNING', 'battery_v': 12.1, 'battery_band': 'ok',
@@ -93,6 +94,10 @@ class FakeBridge(object):
     def scan_view(self):
         self.calls.append(('scan',))
         return list(self.scan), 0.2
+
+    def plan_view(self):
+        self.calls.append(('plan',))
+        return list(self.plan), 0.3
 
     def mapping(self, action, name='map'):
         self.calls.append(('mapping', action, name))
@@ -205,6 +210,14 @@ class ServerCase(unittest.TestCase):
         self.assertEqual(data_['frame'], 'map')
         self.assertEqual(data_['points'], [[1.25, -0.5], [2.0, 0.75]])
         self.assertLessEqual(len(data_['points']), 400)
+
+    def test_plan_json(self):
+        status, body, _c = self.get('/api/plan.json')
+        self.assertEqual(status, 200)
+        payload = json.loads(body.decode('utf-8'))
+        self.assertEqual(payload['frame'], 'map')
+        self.assertEqual(payload['points'],
+                         [[0.0, 0.0], [1.0, 0.5], [2.0, 0.75]])
 
     def test_nav_with_yaw(self):
         self.post('/api/nav', {'x': 1.0, 'y': 2.0, 'yaw': 0.5})

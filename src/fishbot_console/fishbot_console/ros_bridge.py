@@ -22,7 +22,7 @@ from rclpy.node import Node
 from rclpy.qos import DurabilityPolicy, HistoryPolicy, QoSProfile, ReliabilityPolicy
 
 from geometry_msgs.msg import PoseWithCovarianceStamped
-from nav_msgs.msg import OccupancyGrid
+from nav_msgs.msg import OccupancyGrid, Path
 from rcl_interfaces.msg import Log
 from sensor_msgs.msg import Image, LaserScan
 from std_msgs.msg import Float32, String
@@ -69,6 +69,9 @@ class ConsoleBridge(Node):
         self.declare_parameter('local_costmap_topic', '/local_costmap/costmap')
         self.declare_parameter('scan_topic', '/scan')
         self.declare_parameter('scan_max_points', 400)
+        self.declare_parameter('plan_topic', '/plan')
+        self.declare_parameter('robot_length', 0.22)
+        self.declare_parameter('robot_width', 0.18)
         self.declare_parameter('battery_topic', '/battery/voltage')
         self.declare_parameter('pose_topic', '/amcl_pose')
         self.declare_parameter('patrol_action', '/execute_patrol')
@@ -109,6 +112,10 @@ class ConsoleBridge(Node):
         self._scan_points = []              # [(x, y)]，已投到 map 坐标系
         self._scan_time = 0.0
         self._scan_max = int(self.get_parameter('scan_max_points').value)
+        self._plan_points = []              # nav2 全局路径（map 系）
+        self._plan_time = 0.0
+        self._robot_length = float(self.get_parameter('robot_length').value)
+        self._robot_width = float(self.get_parameter('robot_width').value)
 
         self._tf_buffer = None
         self._tf_listener = None
@@ -164,6 +171,9 @@ class ConsoleBridge(Node):
         self.create_subscription(
             LaserScan, self.get_parameter('scan_topic').value,
             self._on_scan, fast_qos, callback_group=self._callbacks)
+        self.create_subscription(
+            Path, self.get_parameter('plan_topic').value,
+            self._on_plan, fast_qos, callback_group=self._callbacks)
 
 
         # 手动给初始位姿：和 RViz 的 "2D Pose Estimate" 发的是同一个话题、同一套协方差
@@ -334,6 +344,27 @@ class ConsoleBridge(Node):
             age = (time.time() - self._scan_time) if self._scan_time else -1.0
         return points, age
 
+    def _on_plan(self, msg):
+        """全局路径：只留 (x, y)，抽稀到 200 点以内够画了。"""
+        poses = list(getattr(msg, 'poses', []) or [])
+        step = max(1, len(poses) // 200)
+        points = []
+        for index in range(0, len(poses), step):
+            position = getattr(getattr(poses[index], 'pose', None),
+                               'position', None)
+            if position is None:
+                continue
+            points.append((float(position.x), float(position.y)))
+        with self._lock:
+            self._plan_points = points
+            self._plan_time = time.time()
+
+    def plan_view(self):
+        with self._lock:
+            points = list(self._plan_points)
+            age = (time.time() - self._plan_time) if self._plan_time else -1.0
+        return points, age
+
     def _on_image(self, msg):
         data = self._encode(msg)
         if data:
@@ -414,6 +445,9 @@ class ConsoleBridge(Node):
         status['pose'] = ({'x': pose[0], 'y': pose[1], 'yaw': pose[2],
                            'age_s': max(0.0, time.time() - pose[3])}
                           if pose else None)
+        # 车体外框的尺寸也给前端，地图上就能画出 RViz 里那个 footprint 方块
+        status['robot'] = {'length': self._robot_length,
+                           'width': self._robot_width}
         return status
 
     def map_view(self):

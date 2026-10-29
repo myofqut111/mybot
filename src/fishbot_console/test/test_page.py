@@ -16,6 +16,7 @@ REQUIRED_IDS = [
     'patrolRoute', 'patrolMode', 'patrolRepeat', 'btnPatrol',
     'btnPatrolCancel', 'mapName', 'btnMapStart', 'btnMapStop', 'btnMapSave',
     'logList', 'logLevel', 'runsBody', 'chatLog', 'askBox', 'btnAsk',
+    'chkCostmap', 'chkScan', 'chkPlan', 'mapCoord', 'zoomLabel',
 ]
 
 
@@ -57,6 +58,16 @@ class TestPage(unittest.TestCase):
         self.assertIn('/api/layers.png', self.html)
         self.assertIn('/api/scan', self.html)
         self.assertIn('LOADLAYERS', self.html.upper().replace('loadLayers', 'LOADLAYERS'))
+
+    def test_rviz_like_interaction(self):
+        """平移、光标锚定缩放、footprint、路径——这四样是"手感"的硬指标。"""
+        self.assertIn("addEventListener('wheel'", self.html)
+        self.assertIn('zoomBy(ev.deltaY < 0 ? 1.12 : 1 / 1.12', self.html)
+        self.assertIn('ev.button !== 1 && ev.button !== 2', self.html)  # 中键/右键平移
+        self.assertIn('function footprint', self.html)
+        self.assertIn('/api/plan.json', self.html)
+        self.assertIn('function pollPlan', self.html)
+        self.assertIn("addEventListener('touchmove'", self.html)        # 双指缩放
 
     def test_map_click_sends_nav(self):
         self.assertIn("getElementById('mapCanvas')", self.html.replace(

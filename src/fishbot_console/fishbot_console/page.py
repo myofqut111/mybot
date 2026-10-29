@@ -102,6 +102,8 @@ th{color:var(--dim);font-weight:500}
       <button id="btnZoomFit">适应窗口</button>
       <label class="chk"><input type="checkbox" id="chkCostmap" checked> 代价地图</label>
       <label class="chk"><input type="checkbox" id="chkScan" checked> 雷达点云</label>
+      <label class="chk"><input type="checkbox" id="chkPlan" checked> 全局路径</label>
+      <span id="mapCoord" class="chk">—</span>
       <span id="mapModeHint" style="color:var(--dim);font-size:12px"></span>
     </div>
     <div id="mapWrap"><div id="mapHint">还没有收到 /map</div>
@@ -188,6 +190,9 @@ let MAP = {width:0,height:0,resolution:0.05,origin_x:0,origin_y:0,
 let MAPIMG = null;
 let LAYERSIMG = null;        // 代价地图叠加层（RGBA，尺寸同底图）
 let SCAN = [];               // 雷达点（map 坐标系）
+let PLAN = [];               // nav2 全局路径（map 坐标系）
+let PAN = null;              // 中键/右键/双指拖动平移的状态
+let TOUCH = null;            // 双指缩放的中心与距离
 let GOAL = null;             // 最近一次发的导航目标，画个绿箭头
 let NAVDRAG = null;          // 发目标时的拖拽状态（位置+朝向）
 let SUPPRESS_CLICK = false;  // 拖拽结束后浏览器还会补一个 click，要吞掉
@@ -220,19 +225,38 @@ function fitZoom(){
   const z = Math.min(availW / MAP.width, availH / MAP.height);
   return Math.max(0.05, Math.min(4, z));
 }
-function zoomBy(factor){
+function zoomBy(factor, anchor){
   ZOOM_AUTO = false;
-  drawMapZoom(ZOOM * factor);
+  drawMapZoom(ZOOM * factor, anchor);
 }
-function drawMapZoom(z){
+function drawMapZoom(z, anchor){
   const canvas = $('mapCanvas');
-  ZOOM = Math.max(0.05, Math.min(8, z));   // 5% ~ 800%，再大就没意义了
+  const wrap = $('mapWrap');
   if(!MAPIMG || !MAP.width) return;
+  const oldZoom = ZOOM;
+  // 缩放前把"光标下面是哪个世界点"记成比例，缩放后再把滚动条挪回去，
+  // 这样光标咬着的那块地图不动——RViz 的滚轮就是这个手感。
+  let anchorFrac = null;
+  if(anchor){
+    const rect = wrap.getBoundingClientRect();
+    const cursorX = anchor.clientX - rect.left + wrap.scrollLeft;
+    const cursorY = anchor.clientY - rect.top + wrap.scrollTop;
+    anchorFrac = {fx: cursorX / (MAP.width * oldZoom || 1),
+                  fy: cursorY / (MAP.height * oldZoom || 1),
+                  dx: anchor.clientX - rect.left,
+                  dy: anchor.clientY - rect.top};
+  }
+  ZOOM = Math.max(0.05, Math.min(8, z));   // 5% ~ 800%，再大就没意义了
   canvas.style.width = Math.round(MAP.width * ZOOM) + 'px';
   canvas.style.height = Math.round(MAP.height * ZOOM) + 'px';
   $('zoomLabel').textContent = Math.round(ZOOM * 100) + '%';
+  if(anchorFrac){
+    wrap.scrollLeft = anchorFrac.fx * MAP.width * ZOOM - anchorFrac.dx;
+    wrap.scrollTop = anchorFrac.fy * MAP.height * ZOOM - anchorFrac.dy;
+  }
   paint();
 }
+
 function drawMap(){
   const canvas = $('mapCanvas');
   if(!MAPIMG || !MAP.width) return;
@@ -262,11 +286,41 @@ function paint(){
       ctx.beginPath(); ctx.arc(p[0], p[1], r, 0, Math.PI * 2); ctx.fill();
     }
   }
+  // 全局路径：画在点云下面、箭头上面，和 RViz 的 Path 一个层次
+  if(PLAN.length > 1 && $('chkPlan').checked){
+    ctx.beginPath();
+    for(let i = 0; i < PLAN.length; i++){
+      const p = worldToPx(PLAN[i][0], PLAN[i][1]);
+      if(i === 0) ctx.moveTo(p[0], p[1]); else ctx.lineTo(p[0], p[1]);
+    }
+    ctx.strokeStyle = '#ff9f43';
+    ctx.lineWidth = Math.max(1.5, 2.0 / Math.max(ZOOM, 0.2));
+    ctx.lineJoin = 'round';
+    ctx.stroke();
+  }
   const pose = STATE && STATE.status && STATE.status.pose;
-  if(pose) arrow(ctx, pose.x, pose.y, pose.yaw || 0, '#4c8dff');
+  if(pose){
+    const robot = (STATE.status && STATE.status.robot) || {};
+    footprint(ctx, pose.x, pose.y, pose.yaw || 0,
+              robot.length || 0.22, robot.width || 0.18);
+    arrow(ctx, pose.x, pose.y, pose.yaw || 0, '#4c8dff');
+  }
   if(GOAL) arrow(ctx, GOAL.x, GOAL.y, GOAL.yaw || 0, '#37d67a');
   if(DRAG && DRAG.yaw != null) arrow(ctx, DRAG.x, DRAG.y, DRAG.yaw, '#ffd166');
   if(NAVDRAG && NAVDRAG.yaw != null) arrow(ctx, NAVDRAG.x, NAVDRAG.y, NAVDRAG.yaw, '#7be3a3');
+}
+
+function footprint(ctx, wx, wy, yaw, length, width){
+  const p = worldToPx(wx, wy);
+  const hl = (length / MAP.resolution) / 2;
+  const hw = (width / MAP.resolution) / 2;
+  ctx.save();
+  ctx.translate(p[0], p[1]);
+  ctx.rotate(-yaw);
+  ctx.strokeStyle = '#4c8dff';
+  ctx.lineWidth = Math.max(1, 1.4 / Math.max(ZOOM, 0.2));
+  ctx.strokeRect(-hl, -hw, hl * 2, hw * 2);
+  ctx.restore();
 }
 
 function worldToPx(wx, wy){
@@ -319,13 +373,36 @@ $('btnZoomIn').addEventListener('click', ()=>zoomBy(1.25));
 $('btnZoomOut').addEventListener('click', ()=>zoomBy(0.8));
 $('btnZoomFit').addEventListener('click', ()=>{ ZOOM_AUTO = true; drawMap(); });
 $('mapWrap').addEventListener('wheel', ev=>{
-  if(!MAPIMG || !ev.ctrlKey && !ev.shiftKey && !ev.altKey) return;
-  ev.preventDefault();                    // 只有按住修饰键才抢滚轮，别毁掉页面滚动
-  zoomBy(ev.deltaY < 0 ? 1.1 : 1 / 1.1);
+  if(!MAPIMG) return;
+  ev.preventDefault();                    // 地图上滚轮就是缩放，别带着整页滚
+  zoomBy(ev.deltaY < 0 ? 1.12 : 1 / 1.12, {clientX: ev.clientX, clientY: ev.clientY});
 }, {passive: false});
+
+// 中键/右键拖动 = 平移（和 RViz 一样，左键留给发目标/给位姿）
+$('mapWrap').addEventListener('contextmenu', ev=>{
+  if(MAPIMG) ev.preventDefault();
+});
+$('mapCanvas').addEventListener('mousedown', ev=>{
+  if(ev.button !== 1 && ev.button !== 2) return;
+  ev.preventDefault();
+  PAN = {x: ev.clientX, y: ev.clientY,
+         left: $('mapWrap').scrollLeft, top: $('mapWrap').scrollTop};
+  $('mapWrap').style.cursor = 'grabbing';
+});
+window.addEventListener('mousemove', ev=>{
+  if(!PAN) return;
+  $('mapWrap').scrollLeft = PAN.left - (ev.clientX - PAN.x);
+  $('mapWrap').scrollTop = PAN.top - (ev.clientY - PAN.y);
+});
+window.addEventListener('mouseup', ev=>{
+  if(!PAN) return;
+  PAN = null;
+  $('mapWrap').style.cursor = '';
+});
 
 $('mapCanvas').addEventListener('mousedown', ev=>{
   if(!MAPIMG) return;
+  if(ev.button !== 0) return;      // 中键/右键留给平移
   const mode = $('mapMode').value;
   const w = evToWorld(ev);
   if(mode === 'pose'){
@@ -404,8 +481,60 @@ async function pollScan(){
     if(MAPIMG && (SCAN.length || $('chkScan').checked)) paint();
   }catch(e){}
 }
+async function pollPlan(){
+  if(!MAP.width) return;
+  try{
+    const r = await api('/api/plan.json');
+    const got = (r && r.points) ? r.points : [];
+    const changed = got.length !== PLAN.length;
+    PLAN = got;
+    if(MAPIMG && changed) paint();
+  }catch(e){}
+}
 $('chkCostmap').addEventListener('change', ()=>paint());
 $('chkScan').addEventListener('change', ()=>paint());
+$('chkPlan').addEventListener('change', ()=>paint());
+
+/* ---------------- 触屏：双指缩放 + 双指平移 ---------------- */
+function touchDist(touches){
+  const dx = touches[0].clientX - touches[1].clientX;
+  const dy = touches[0].clientY - touches[1].clientY;
+  return Math.hypot(dx, dy);
+}
+$('mapCanvas').addEventListener('touchstart', ev=>{
+  if(ev.touches.length !== 2){ return; }
+  DRAG = null; NAVDRAG = null;            // 双指开始，取消单指的操作
+  const wrap = $('mapWrap');
+  const rect = wrap.getBoundingClientRect();
+  const cx = (ev.touches[0].clientX + ev.touches[1].clientX) / 2;
+  const cy = (ev.touches[0].clientY + ev.touches[1].clientY) / 2;
+  TOUCH = {dist: touchDist(ev.touches), zoom: ZOOM,
+           cx: cx, cy: cy,
+           ox: cx - rect.left + wrap.scrollLeft,
+           oy: cy - rect.top + wrap.scrollTop,
+           dx: cx - rect.left, dy: cy - rect.top};
+  ev.preventDefault();
+}, {passive:false});
+$('mapCanvas').addEventListener('touchmove', ev=>{
+  if(!TOUCH || ev.touches.length !== 2) return;
+  ev.preventDefault();
+  const scale = touchDist(ev.touches) / (TOUCH.dist || 1);
+  const wrap = $('mapWrap');
+  drawMapZoom(TOUCH.zoom * scale, null);
+  // 双指中心对应的那块地图要跟着手指走
+  wrap.scrollLeft = TOUCH.ox * (ZOOM / TOUCH.zoom) - TOUCH.dx;
+  wrap.scrollTop = TOUCH.oy * (ZOOM / TOUCH.zoom) - TOUCH.dy;
+}, {passive:false});
+$('mapCanvas').addEventListener('touchend', ev=>{
+  if(ev.touches.length === 0) TOUCH = null;
+}, {passive:false});
+
+/* ---------------- 光标处的世界坐标（RViz 右下角那个） ---------------- */
+$('mapCanvas').addEventListener('mousemove', ev=>{
+  if(!MAPIMG || !MAP.width) return;
+  const w = evToWorld(ev);
+  $('mapCoord').textContent = w.x.toFixed(2) + ', ' + w.y.toFixed(2) + ' m';
+});
 
 /* ---------------- 状态轮询 ---------------- */
 let STATE = null;
@@ -566,6 +695,7 @@ setInterval(pollRuns, 10000);
 setInterval(loadMap, 6000);
 setInterval(loadLayers, 1000);      // 代价地图每秒重取一次（服务端按版本缓存）
 setInterval(pollScan, 250);         // 点云要跟得上移动，4 Hz
+setInterval(pollPlan, 700);         // 全局路径
 </script>
 </body>
 </html>

@@ -90,6 +90,12 @@ class ConsoleServer(object):
                         'age': round(age, 2),
                         'points': [[round(x, 2), round(y, 2)]
                                    for x, y in points]})
+                if path == '/api/plan.json':
+                    points, age = server.bridge.plan_view()
+                    return _json_response(self, {
+                        'frame': 'map', 'age': round(age, 2),
+                        'points': [[round(x, 3), round(y, 3)]
+                                   for x, y in points]})
                 if path == '/api/frame.jpg':
                     kind = (query.get('kind') or ['anno'])[0]
                     raw, _stamp = server.bridge.frame(kind == 'anno')
