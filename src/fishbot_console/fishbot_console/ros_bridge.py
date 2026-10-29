@@ -272,6 +272,56 @@ class ConsoleBridge(Node):
     def reports_dir(self):
         return self._reports_dir
 
+    def subsystems(self):
+        """每个面板依赖的东西到底在不在——页面顶部那排小灯就是它。
+
+        以前的做法是让面板空着，用户看不出是「没启动」还是「坏了」。
+        这里给每一项一个明确状态和一句怎么补的话。
+        """
+        with self._lock:
+            has_map = bool(self._map_png)
+            pose = self._pose
+            frame_stamp = self._frame_time
+        out = []
+
+        def add(key, label, ok, hint, detail=''):
+            out.append({'key': key, 'label': label, 'ok': bool(ok),
+                        'hint': '' if ok else hint, 'detail': detail})
+
+        # 地图：有 PNG 就说明 /map 至少来过一帧（transient_local，连上就能拿到）
+        add('map', '地图', has_map,
+            '没收到 /map：确认 slam_toolbox 或 map_server 在跑 '
+            '(ros2 topic hz /map)')
+
+        # 定位：AMCL 位姿是否新鲜
+        pose_age = (time.time() - pose[2]) if pose else None
+        add('pose', '定位', pose_age is not None and pose_age < 10.0,
+            '没有 /amcl_pose：确认 AMCL 起来了并给了初始位姿 '
+            '(RViz 的 2D Pose Estimate)',
+            '' if pose_age is None else '最后一条 %.1fs 前' % pose_age)
+
+        # 导航：action server 有没有人接
+        nav_ready = bool(self._nav_client is not None
+                         and self._nav_client.server_is_ready())
+        add('nav', '导航', nav_ready,
+            'navigate_to_pose 没有服务端：nav2 没起，或用 '
+            'ros2 launch fishbot_console robot.launch.py 一次性拉起')
+
+        # 巡检：action server
+        patrol_ready = bool(self._patrol_client is not None
+                            and self._patrol_client.server_is_ready())
+        add('patrol', '巡检', patrol_ready,
+            'execute_patrol 没有服务端：巡检执行器没起 '
+            '(ros2 launch fishbot_patrol_v2 patrol_v2.launch.py)')
+
+        # 相机：帧龄
+        age = (time.time() - frame_stamp) if frame_stamp else None
+        add('camera', '相机', age is not None and age < 3.0,
+            '没有图像：视觉节点没起，或两台机器不在同一个 ROS_DOMAIN_ID',
+            '' if age is None else '最后一帧 %.1fs 前' % age)
+
+        return out
+
     # ------------------------------------------------------------ 动作
     def send_nav(self, x, y, yaw=None):
         if self._nav_client is None:

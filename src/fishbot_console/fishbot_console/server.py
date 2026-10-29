@@ -174,6 +174,7 @@ class ConsoleServer(object):
         return {
             'status': status,
             'map': meta,
+            'subsystems': self.bridge.subsystems(),
             'camera': {
                 'raw_age_s': self.bridge.frame_age(False),
                 'anno_age_s': self.bridge.frame_age(True),

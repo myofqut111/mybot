@@ -254,12 +254,15 @@ def generate_launch_description():
     )
 
     # ------------------------- 5. 巡检系统（route/task manager + executor） -------------------------
+    # 注意：这里必须指向 fishbot_patrol_v2。旧版本指向 fishbot_patrol_executor 的
+    # patrol_system.launch.py，那是 v1 执行器——只要单独起过 patrol_v2，两代就会同时
+    # 存在，同一个 /patrol/task/request 出现两个发布者，回执对不上、点位被重复派发。
     patrol_system = GroupAction([
         IncludeLaunchDescription(
             PythonLaunchDescriptionSource(
                 os.path.join(
-                    get_package_share_directory('fishbot_patrol_executor'),
-                    'launch', 'patrol_system.launch.py'))),
+                    get_package_share_directory('fishbot_patrol_v2'),
+                    'launch', 'patrol_v2.launch.py'))),
     ], condition=IfCondition(enable_patrol))
 
     # ------------------------- 6. RViz（可选，需 sudo apt install ros-humble-nav2-bringup） -------------------------

@@ -26,6 +26,11 @@ header h1{font-size:15px;margin:0 8px 0 0;font-weight:600;letter-spacing:.5px}
 .badge.ok{color:var(--ok);border-color:#1e5c42}
 .badge.warn{color:var(--warn);border-color:#5c4a1e}
 .badge.err{color:var(--err);border-color:#5c2020}
+#sysRow{display:flex;flex-wrap:wrap;gap:8px;padding:6px 16px 0;background:var(--panel)}
+#sysRow:empty{display:none}
+#sysHint{padding:4px 16px 8px;background:var(--panel);color:var(--warn);
+         font-size:12px;line-height:1.6;border-bottom:1px solid var(--line)}
+#sysHint:empty{display:none}
 main{display:grid;gap:12px;padding:12px;
      grid-template-columns:minmax(320px,1.15fr) minmax(300px,1fr)}
 @media(max-width:900px){main{grid-template-columns:1fr}}
@@ -75,6 +80,8 @@ th{color:var(--dim);font-weight:500}
   <span class="badge" id="bCam">相机 —</span>
   <span class="badge" id="bErr">错误 0</span>
 </header>
+<div id="sysRow"></div>
+<div id="sysHint"></div>
 
 <main>
   <section>
@@ -250,8 +257,21 @@ async function pollState(){
     setBadge($('bErr'), '错误 ' + errs, errs ? 'err' : '');
     if(STATE.map && STATE.map.width && !MAPIMG) { MAP = STATE.map; loadMap(); }
     else if(STATE.map && STATE.map.width) MAP = STATE.map;
+    renderSubsystems(STATE.subsystems || []);
     drawMap();
   }catch(e){}
+}
+function renderSubsystems(items){
+  const row = $('sysRow'), hint = $('sysHint');
+  if(!row || !items.length){ if(row) row.textContent = ''; if(hint) hint.textContent = ''; return; }
+  row.innerHTML = items.map(function(it){
+    return '<span class="badge ' + (it.ok ? 'ok' : 'err') + '" title="'
+         + (it.detail || '') + '">' + (it.ok ? '✓ ' : '✗ ') + it.label + '</span>';
+  }).join('');
+  const missing = items.filter(function(it){ return !it.ok; });
+  hint.textContent = missing.length
+    ? '缺少：' + missing.map(function(it){ return it.label + '（' + it.hint + '）'; }).join('；')
+    : '';
 }
 async function pollFrame(){
   const kind = $('camKind').value;

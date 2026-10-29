@@ -43,6 +43,13 @@ class FakeBridge(object):
     def frame_age(self, annotated=False):
         return 0.5
 
+    def subsystems(self):
+        return [
+            {'key': 'map', 'label': '地图', 'ok': True, 'hint': '', 'detail': ''},
+            {'key': 'nav', 'label': '导航', 'ok': False,
+             'hint': 'nav2 没起', 'detail': ''},
+        ]
+
     def reports_dir(self):
         return self._reports
 
@@ -131,6 +138,16 @@ class ServerCase(unittest.TestCase):
         self.assertEqual(payload['status']['state'], 'RUNNING')
         self.assertEqual(payload['map']['max_x'], 0.0)
         self.assertIn('log_counts', payload)
+
+    def test_state_lists_missing_subsystems(self):
+        # 顶部那排小灯：缺什么要能一眼看出来，而不是面板空着让人猜
+        _status, body, _ctype = self.get('/api/state')
+        payload = json.loads(body.decode('utf-8'))
+        items = payload['subsystems']
+        self.assertEqual([i['key'] for i in items], ['map', 'nav'])
+        missing = [i for i in items if not i['ok']]
+        self.assertEqual([i['label'] for i in missing], ['导航'])
+        self.assertIn('nav2', missing[0]['hint'])
 
     def test_logs_and_filter(self):
         _s, body, _c = self.get('/api/logs?limit=10')
