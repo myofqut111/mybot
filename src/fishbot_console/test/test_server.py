@@ -29,11 +29,26 @@ class FakeBridge(object):
         self.layers = b'\x89PNG-layers'
         self.scan = [(1.25, -0.5), (2.0, 0.75)]
         self.plan = [(0.0, 0.0), (1.0, 0.5), (2.0, 0.75)]
+        self._estop = {'active': False, 'since': 0.0}
+
+    def estop(self):
+        self.calls.append(('estop',))
+        self._estop = {'active': True, 'since': 123.0}
+        return True, '已急停（nav 已取消，patrol 已取消）'
+
+    def release_estop(self):
+        self.calls.append(('release_estop',))
+        self._estop = {'active': False, 'since': 0.0}
+        return True, '已解除急停'
+
+    def estop_state(self):
+        return dict(self._estop)
 
     def snapshot_status(self):
         return {'state': 'RUNNING', 'battery_v': 12.1, 'battery_band': 'ok',
                 'route_name': 'main', 'point_id': 'p1', 'completed_points': 1,
-                'pose': {'x': 0.5, 'y': 0.5, 'age_s': 0.2}}
+                'pose': {'x': 0.5, 'y': 0.5, 'age_s': 0.2},
+                'estop': dict(self._estop)}
 
     def map_view(self):
         return map_render.grid_to_png([0, 100, 0, 100], 2, 2), {
@@ -305,6 +320,31 @@ class ServerCase(unittest.TestCase):
     def test_ask_nav_action(self):
         out = self.post('/api/ask', {'q': '去 x=1 y=2'})
         self.assertEqual(out['action'], {'type': 'nav', 'x': 1.0, 'y': 2.0})
+
+    # ---------------- 急停 ----------------
+    def test_estop_press_and_release(self):
+        out = self.post('/api/estop', {'active': True})
+        self.assertTrue(out['ok'])
+        self.assertTrue(out['estop']['active'])
+        self.assertIn(('estop',), self.bridge.calls)
+
+        out = self.post('/api/estop', {'active': False})
+        self.assertTrue(out['ok'])
+        self.assertFalse(out['estop']['active'])
+        self.assertIn(('release_estop',), self.bridge.calls)
+
+    def test_estop_without_body_means_press(self):
+        # 前端只发一个空对象也该按"急停"处理，不能静默无动作
+        out = self.post('/api/estop', {})
+        self.assertTrue(out['estop']['active'])
+        self.assertIn(('estop',), self.bridge.calls)
+
+    def test_state_reports_estop(self):
+        self.post('/api/estop', {'active': True})
+        status, body, _ctype = self.get('/api/state')
+        self.assertEqual(status, 200)
+        state = json.loads(body.decode('utf-8'))
+        self.assertTrue(state['status']['estop']['active'])
 
 
 class StaticAnswerCase(unittest.TestCase):

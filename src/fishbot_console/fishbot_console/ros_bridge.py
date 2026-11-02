@@ -185,6 +185,12 @@ class ConsoleBridge(Node):
         self._teleop_wz = 0.0
         self._teleop_seen = 0.0
         self.create_timer(0.1, self._teleop_tick)
+        # 急停状态：一旦按下，所有会动的入口（手动/导航/巡检/AI 动作）都被拦住，
+        # 直到显式解除。放在这儿而不是页面里，是因为页面可能卡住或网络断掉，
+        # 而"不让车动"这件事必须由服务端保证。
+        self._estop_lock = threading.Lock()
+        self._estop_active = False
+        self._estop_since = 0.0
         self._initial_pub = self.create_publisher(
             PoseWithCovarianceStamped, '/initialpose', 10)
 
@@ -456,6 +462,7 @@ class ConsoleBridge(Node):
         # 车体外框的尺寸也给前端，地图上就能画出 RViz 里那个 footprint 方块
         status['robot'] = {'length': self._robot_length,
                            'width': self._robot_width}
+        status['estop'] = self.estop_state()
         return status
 
     def map_view(self):
@@ -474,9 +481,64 @@ class ConsoleBridge(Node):
             return None
         return max(0.0, time.time() - stamp)
 
+    # ------------------------------------------------------------ 急停
+    def estop(self):
+        """一键停：清手动速度、打断导航与巡检、连发几帧零速。
+
+        在此之前唯一的安全网是 teleop 心跳超时，那只在"没人再按方向键"时生效；
+        导航还在跑、巡检还在执行的时候，人其实停不下来。
+        """
+        with self._estop_lock:
+            self._estop_active = True
+            self._estop_since = time.time()
+        with self._teleop_lock:
+            self._teleop_vx = self._teleop_wz = 0.0
+            self._teleop_seen = 0.0        # 立刻进入 tick 的"静默"分支
+        # 连发 3 帧零速：有的底盘运动控制器会对自己插值，单帧可能被吃掉
+        for _ in range(3):
+            self._publish_zero()
+            time.sleep(0.02)
+
+        done = []
+        ok, _ = self.cancel_nav()
+        done.append('nav %s' % ('已取消' if ok else '无目标'))
+        ok, _ = self.cancel_patrol()
+        done.append('patrol %s' % ('已取消' if ok else '无任务'))
+        self.logs.add('console', 40, 'ESTOP pressed: %s' % '; '.join(done))
+        return True, '已急停（%s）' % '，'.join(done)
+
+    def release_estop(self):
+        with self._estop_lock:
+            was_active = self._estop_active
+            self._estop_active = False
+            self._estop_since = 0.0
+        if was_active:
+            self.logs.add('console', 20, 'ESTOP released')
+        return True, '已解除急停，可以重新操作' if was_active else '当前不在急停状态'
+
+    def estop_state(self):
+        with self._estop_lock:
+            return {'active': self._estop_active, 'since': self._estop_since}
+
+    def _blocked(self, what):
+        """会动的入口统一走这里：急停中直接拒绝，返回 (False, 原因)。"""
+        if self.estop_state()['active']:
+            return False, '急停中：%s 被拦下，先解除急停' % what
+        return None
+
+    def _publish_zero(self):
+        message = Twist()
+        try:
+            self._teleop_pub.publish(message)
+        except Exception:
+            pass
+
     # ------------------------------------------------------------ 手动控制
     def set_teleop(self, vx, wz):
         """页面按住方向键时每 100 ms 刷新一次目标速度。"""
+        with self._estop_lock:
+            if self._estop_active:
+                return          # 急停中不接受任何速度，包括"继续按着"
         with self._teleop_lock:
             self._teleop_vx = float(vx)
             self._teleop_wz = float(wz)
@@ -578,6 +640,9 @@ class ConsoleBridge(Node):
             x, y, math.degrees(yaw))
 
     def send_nav(self, x, y, yaw=None):
+        blocked = self._blocked('导航')
+        if blocked:
+            return blocked
         if self._nav_client is None:
             return False, '没有 nav2（nav2_msgs 未安装）'
         if not self._nav_client.wait_for_server(timeout_sec=2.0):
@@ -620,6 +685,9 @@ class ConsoleBridge(Node):
         return True, '已发送取消请求'
 
     def start_patrol(self, route='', mode=0, repeat=1):
+        blocked = self._blocked('巡检')
+        if blocked:
+            return blocked
         if self._patrol_client is None:
             return False, '没有巡检动作接口（fishbot_patrol_interfaces 未安装）'
         if not self._patrol_client.wait_for_server(timeout_sec=2.0):

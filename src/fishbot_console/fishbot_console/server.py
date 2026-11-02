@@ -197,6 +197,19 @@ class ConsoleServer(object):
 
             def _dispatch(self, path, payload):
                 server_ = server
+                if path == '/api/estop':
+                    body = payload or {}
+                    # 显式带 active 就按它来；不带就当"按一下急停"
+                    wanted = body.get('active')
+                    if wanted is None:
+                        ok, message = server_.bridge.estop()
+                    elif wanted:
+                        ok, message = server_.bridge.estop()
+                    else:
+                        ok, message = server_.bridge.release_estop()
+                    return _json_response(
+                        self, {'ok': ok, 'message': message,
+                               'estop': server_.bridge.estop_state()})
                 if path == '/api/nav':
                     x = float(payload.get('x'))
                     y = float(payload.get('y'))

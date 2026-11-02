@@ -18,6 +18,7 @@ REQUIRED_IDS = [
     'logList', 'logLevel', 'runsBody', 'chatLog', 'askBox', 'btnAsk',
     'teleopPad', 'teleSpeed', 'teleLabel',
     'chkCostmap', 'chkScan', 'chkPlan', 'mapCoord', 'zoomLabel',
+    'btnEstop', 'estopBar',
 ]
 
 
@@ -111,6 +112,28 @@ class TestPage(unittest.TestCase):
         for name in ('leaflet.js', 'leaflet.css'):
             self.assertTrue(os.path.isfile(os.path.join(static, name)),
                             'missing static asset %s' % name)
+
+    def test_estop_button_and_shortcut(self):
+        """急停必须是"真按钮 + 快捷键 + 走服务端"三件事齐备。
+
+        只在页面上画个红方块不算数：真正拦住车的是后端；请求失败要把按钮
+        状态回退，否则会出现"页面显示已停、车还在动"这种最坏情况。
+        """
+        self.assertIn('id="btnEstop"', self.html)
+        self.assertIn('id="estopBar"', self.html)
+        self.assertIn("'/api/estop'", self.html)
+        self.assertIn('estopToggle', self.html)
+        self.assertIn("e.key === 'Escape'", self.html)
+        # 请求失败要回退按钮状态
+        self.assertIn('applyEstopUI(!wanted)', self.html)
+        # 急停中禁用会动的按钮
+        self.assertIn('btnSendNav', self.html)
+
+    def test_estop_state_comes_from_server(self):
+        # 状态以服务端为准，而不是按了按钮就一直显示"已停"
+        self.assertIn('STATE.status', self.html)
+        self.assertIn('.estop', self.html)
+        self.assertIn('applyEstopUI(!!es.active)', self.html)
 
 
 if __name__ == '__main__':

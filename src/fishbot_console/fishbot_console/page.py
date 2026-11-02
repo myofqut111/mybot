@@ -26,6 +26,19 @@ header h1{font-size:15px;margin:0 8px 0 0;font-weight:600;letter-spacing:.5px}
 .badge.ok{color:var(--ok);border-color:#1e5c42}
 .badge.warn{color:var(--warn);border-color:#5c4a1e}
 .badge.err{color:var(--err);border-color:#5c2020}
+/* 急停按钮：固定在右上角，永远可见，手机上拇指能够到；比“取消”按钮更显眼，
+   因为演示时最怕的是“找不到停下来的地方” */
+button.estop{margin-left:auto;padding:7px 18px;border-radius:8px;cursor:pointer;
+       font-size:14px;font-weight:700;letter-spacing:1px;color:#fff;
+       background:#b3222c;border:1px solid #e0475a;
+       box-shadow:0 0 0 2px rgba(224,71,90,.18)}
+button.estop:hover{background:#cc2a36}
+button.estop.on{background:#5a1116;border-color:#e0475a;color:#ffb3bb;
+       animation:estopPulse 1.1s ease-in-out infinite}
+@keyframes estopPulse{0%,100%{box-shadow:0 0 0 2px rgba(224,71,90,.18)}
+                      50%{box-shadow:0 0 0 6px rgba(224,71,90,.05)}}
+.estop-bar{padding:8px 16px;background:#3d1116;color:#ffb3bb;font-weight:600;
+       border-bottom:1px solid #6b1f27;font-size:13px}
 #sysRow{display:flex;flex-wrap:wrap;gap:8px;padding:6px 16px 0;background:var(--panel)}
 #sysRow:empty{display:none}
 #sysHint{padding:4px 16px 8px;background:var(--panel);color:var(--warn);
@@ -99,7 +112,11 @@ th{color:var(--dim);font-weight:500}
   <span class="badge" id="bCam">相机 —</span>
   <span class="badge" id="bErr">错误 0</span>
   <span class="badge" id="bLive" title="rosbridge 实时流">实时 —</span>
+  <button id="btnEstop" class="estop" title="急停：立即停车并打断导航/巡检（快捷键 Esc）">急停</button>
 </header>
+<div id="estopBar" class="estop-bar" hidden>
+  ⛔ 已急停 —— 车已停、导航与巡检已打断。确认现场安全后点右上角按钮解除。
+</div>
 <div id="sysRow"></div>
 <div id="sysHint"></div>
 
@@ -516,12 +533,65 @@ async function pollState(){
     const counts = STATE.log_counts || {};
     const errs = (counts.ERROR||0) + (counts.FATAL||0);
     setBadge($('bErr'), '错误 ' + errs, errs ? 'err' : '');
+    // 急停状态以服务端为准：页面上的红按钮只是"请求"，真正拦车的是后端
+    const es = (STATE.status || {}).estop || {};
+    applyEstopUI(!!es.active);
     if(STATE.map && STATE.map.width && !MAPIMG) { MAP = STATE.map; loadMap(); }
     else if(STATE.map && STATE.map.width) MAP = STATE.map;
     renderSubsystems(STATE.subsystems || []);
     drawMap();
   }catch(e){}
 }
+/* ---------------- 急停 ----------------
+   两条路径都走服务端：按钮点击和 Esc 都只是"发请求"，真正保证车停下的是
+   POST /api/estop —— 页面卡住、rosbridge 掉线都不影响它。
+   再按一次 = 解除（必须人明确点，不会自己恢复）。 */
+let ESTOP_ON = false;
+function applyEstopUI(on){
+  if(on === ESTOP_ON) return;
+  ESTOP_ON = on;
+  const btn = $('btnEstop'), bar = $('estopBar');
+  if(btn){
+    btn.textContent = on ? '已急停 · 解除' : '急停';
+    btn.classList.toggle('on', on);
+  }
+  if(bar) bar.hidden = !on;
+  // 急停中把"会动"的按钮全部置灰，避免以为点了没反应
+  ['btnSendNav','btnPatrol','btnCancelNav'].forEach(function(id){
+    const el = $(id);
+    if(el){ el.disabled = on; el.title = on ? '急停中，先解除' : ''; }
+  });
+  if(typeof LIVE !== 'undefined' && LIVE) LIVE.estop = on;
+}
+
+async function estopToggle(){
+  const wanted = !ESTOP_ON;
+  applyEstopUI(wanted);           // 先给即时反馈，避免网络慢时以为没点中
+  try{
+    const r = await fetch('/api/estop', {
+      method:'POST', headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({active: wanted}),
+    });
+    const j = await r.json();
+    if(j && j.estop) applyEstopUI(!!j.estop.active);
+    note(j && j.message ? j.message : (wanted ? '已急停' : '已解除'));
+  }catch(e){
+    applyEstopUI(!wanted);        // 请求失败就回退，绝不让按钮显示"已停"而车还在动
+    note('急停请求失败：' + e);
+  }
+  pollState();
+}
+
+$('btnEstop').addEventListener('click', estopToggle);
+document.addEventListener('keydown', function(e){
+  // Esc 急停：演示时手忙脚乱时比找按钮快；只按 Esc，不劫持输入框里的 Esc
+  const tag = (e.target && e.target.tagName) || '';
+  if(e.key === 'Escape' && tag !== 'INPUT' && tag !== 'TEXTAREA'){
+    e.preventDefault();
+    estopToggle();
+  }
+});
+
 function renderSubsystems(items){
   const row = $('sysRow'), hint = $('sysHint');
   if(!row || !items.length){ if(row) row.textContent = ''; if(hint) hint.textContent = ''; return; }
