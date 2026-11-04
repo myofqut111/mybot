@@ -17,7 +17,8 @@ import threading
 import time
 
 import rclpy
-from geometry_msgs.msg import TransformStamped, Twist
+from geometry_msgs.msg import (PoseWithCovarianceStamped, TransformStamped,
+                               Twist)
 from nav_msgs.msg import OccupancyGrid, Odometry
 from rclpy.node import Node
 from rclpy.qos import (DurabilityPolicy, HistoryPolicy, QoSProfile,
@@ -101,6 +102,11 @@ class MockRobot(Node):
             OccupancyGrid, 'global_costmap/costmap', _latched_qos())
         self._local_costmap_pub = self.create_publisher(
             OccupancyGrid, 'local_costmap/costmap', _latched_qos())
+
+        # 假 AMCL：控制台的「定位」探针看的是 /amcl_pose。没有它，地图上有车却
+        # 报「定位 ×（确认 AMCL 起来了）」，验证时很容易误判成真的没定位。
+        self._amcl_pub = self.create_publisher(
+            PoseWithCovarianceStamped, 'amcl_pose', 10)
 
         self.create_subscription(Twist, 'cmd_vel', self._on_cmd, 10)
 
@@ -268,6 +274,7 @@ class MockRobot(Node):
         stamp = self.get_clock().now().to_msg()
         self._publish_tf(stamp, pose)
         self._publish_odom(stamp, pose, vx, wz)
+        self._publish_amcl(stamp, pose)
 
     def _publish_tf(self, stamp, pose):
         x, y, yaw = pose
@@ -304,6 +311,23 @@ class MockRobot(Node):
         odom.twist.twist.linear.x = float(vx)
         odom.twist.twist.angular.z = float(wz)
         self._odom_pub.publish(odom)
+
+    def _publish_amcl(self, stamp, pose):
+        """假装 AMCL 报了定位。协方差给个 0.02（约 14 cm 标准差）。"""
+        msg = PoseWithCovarianceStamped()
+        msg.header.stamp = stamp
+        msg.header.frame_id = 'map'
+        msg.pose.pose.position.x = pose[0]
+        msg.pose.pose.position.y = pose[1]
+        quat = mock_world.quaternion_of_yaw(pose[2])
+        msg.pose.pose.orientation.z = quat['z']
+        msg.pose.pose.orientation.w = quat['w']
+        cov = [0.0] * 36
+        cov[0] = 0.02
+        cov[7] = 0.02
+        cov[35] = 0.02
+        msg.pose.covariance = cov
+        self._amcl_pub.publish(msg)
 
     def _publish_scan(self):
         with self._lock:

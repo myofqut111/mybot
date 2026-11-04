@@ -285,6 +285,9 @@ class ConsoleServer(object):
         _png, meta = self.bridge.map_view()
         if meta.get('width'):
             meta = dict(meta)
+            # ready 是页面的契约字段：没有它，前端会一直显示"还没有收到 /map"。
+            # 之前只有 width/height，地图因此永远不出来。
+            meta['ready'] = True
             meta['min_x'] = meta['origin_x']
             meta['max_x'] = meta['origin_x'] + meta['width'] * meta['resolution']
             meta['min_y'] = meta['origin_y']
@@ -292,6 +295,9 @@ class ConsoleServer(object):
         return {
             'status': status,
             'map': meta,
+            # 页面在顶层读 pose 画车（`st.pose`），而它实际存在 status 里，
+            # 以前只给 status 一份，导致车在路上跑、地图上却没有车标。
+            'pose': status.get('pose'),
             'subsystems': self.bridge.subsystems(),
             'camera': {
                 'raw_age_s': self.bridge.frame_age(False),

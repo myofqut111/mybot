@@ -29,6 +29,28 @@ class TestBatteryBand(unittest.TestCase):
             self.assertEqual(data.battery_band(value), data.BATTERY_UNKNOWN)
 
 
+class TestPoseAge(unittest.TestCase):
+    """时间戳下标写错过两次（取成 yaw），单独钉住。"""
+
+    def test_uses_timestamp_not_yaw(self):
+        # yaw=0.0 时若误取 pose[2]，"年龄"会是约 1.8e9 秒
+        self.assertAlmostEqual(data.pose_age((1.0, 2.0, 0.0, 1000.0), 1000.5),
+                               0.5, places=6)
+
+    def test_yaw_does_not_affect_age(self):
+        self.assertAlmostEqual(data.pose_age((1.0, 2.0, 3.0, 1000.0), 1002.0),
+                               2.0, places=6)
+
+    def test_missing_pose(self):
+        self.assertIsNone(data.pose_age(None))
+        self.assertIsNone(data.pose_age(()))
+        self.assertIsNone(data.pose_age((1.0, 2.0)))
+
+    def test_clock_skew_never_negative(self):
+        # 时间戳略超前（两机时钟不同步）不能返回负数，否则新鲜度判断会反着来
+        self.assertEqual(data.pose_age((0.0, 0.0, 0.0, 1010.0), 1000.0), 0.0)
+
+
 class TestNormalizeStatus(unittest.TestCase):
     def test_empty(self):
         out = data.normalize_status('')

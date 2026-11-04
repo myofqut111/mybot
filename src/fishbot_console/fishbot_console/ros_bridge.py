@@ -28,6 +28,7 @@ from sensor_msgs.msg import Image, LaserScan
 from std_msgs.msg import Float32, String
 
 from . import map_render
+from . import data
 from .data import LogRing, normalize_status
 
 try:                                        # 点云要投到地图坐标系，靠 TF
@@ -588,8 +589,8 @@ class ConsoleBridge(Node):
             '没收到 /map：确认 slam_toolbox 或 map_server 在跑 '
             '(ros2 topic hz /map)')
 
-        # 定位：AMCL 位姿是否新鲜
-        pose_age = (time.time() - pose[2]) if pose else None
+        # 定位：AMCL 位姿是否新鲜（下标取错会把 yaw 当时间戳，见 data.pose_age）
+        pose_age = data.pose_age(pose)
         add('pose', '定位', pose_age is not None and pose_age < 10.0,
             '没有 /amcl_pose：确认 AMCL 起来了并给了初始位姿 '
             '(RViz 的 2D Pose Estimate)',

@@ -156,6 +156,25 @@ class LogRing(object):
         return list(items)
 
 
+# ---------------------------------------------------------------- 位姿
+def pose_age(pose, now=None):
+    """位姿的年龄（秒）。
+
+    pose 是 `(x, y, yaw, 时间戳)` 四元组——**时间戳在下标 3，不是 2**。
+    这个下标已经写错过两次：把 yaw 当时间戳，算出约 1.8e9 秒，"定位"灯
+    永远是红的、页面看着像坏了。收成一个函数，只此一处取下标。
+    """
+    if not pose:
+        return None
+    try:
+        stamp = float(pose[3])
+    except (IndexError, KeyError, TypeError, ValueError):
+        return None
+    if now is None:
+        now = time.time()
+    return max(0.0, float(now) - stamp)
+
+
 # ---------------------------------------------------------------- 报告
 def read_json(path):
     try:

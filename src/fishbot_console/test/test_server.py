@@ -187,8 +187,18 @@ class ServerCase(unittest.TestCase):
         _status, body, _ctype = self.get('/api/state')
         payload = json.loads(body.decode('utf-8'))
         self.assertEqual(payload['status']['state'], 'RUNNING')
+        # 前端画地图要的是 map.ready 与 min/max；只给 width 时地图永远不显示。
+        self.assertTrue(payload['map']['ready'])
         self.assertEqual(payload['map']['max_x'], 0.0)
         self.assertIn('log_counts', payload)
+
+    def test_state_exposes_top_level_pose(self):
+        # 页面在顶层读 st.pose 画车；以前只给 status.pose，结果车在身上跑、
+        # 地图上却没有车标。这条守的是那个契约。
+        _status, body, _ctype = self.get('/api/state')
+        payload = json.loads(body.decode('utf-8'))
+        self.assertEqual(payload['pose'], payload['status']['pose'])
+        self.assertEqual(payload['pose']['x'], 0.5)
 
     def test_state_lists_missing_subsystems(self):
         # 顶部那排小灯：缺什么要能一眼看出来，而不是面板空着让人猜
