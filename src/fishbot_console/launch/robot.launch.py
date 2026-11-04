@@ -40,7 +40,7 @@ def generate_launch_description():
     nav = LaunchConfiguration('nav')
     patrol = LaunchConfiguration('patrol')
     rviz = LaunchConfiguration('rviz')
-    port = LaunchConfiguration('port')
+    http_port = LaunchConfiguration('http_port')
     host = LaunchConfiguration('host')
 
     console_params = PathJoinSubstitution(
@@ -74,7 +74,7 @@ def generate_launch_description():
         respawn=True,
         respawn_delay=2.0,
         parameters=[console_params,
-                    {'http_port': port, 'http_host': host}],
+                    {'http_port': http_port, 'http_host': host}],
     )
 
     return LaunchDescription([
@@ -88,7 +88,7 @@ def generate_launch_description():
                               description='是否起巡检栈（路线/任务管理器 + 执行器）'),
         DeclareLaunchArgument('rviz', default_value='false',
                               description='是否顺便起 RViz（要装 nav2-bringup）'),
-        DeclareLaunchArgument('port', default_value='8080',
+        DeclareLaunchArgument('http_port', default_value='8080',
                               description='控制台端口'),
         DeclareLaunchArgument('host', default_value='0.0.0.0',
                               description='监听地址，0.0.0.0 = 局域网可访问'),

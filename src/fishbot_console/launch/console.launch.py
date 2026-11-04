@@ -4,7 +4,7 @@
 
 用法：
   ros2 launch fishbot_console console.launch.py
-  ros2 launch fishbot_console console.launch.py port:=9000
+  ros2 launch fishbot_console console.launch.py http_port:=9000
   ros2 launch fishbot_console console.launch.py rosbridge:=false   # 不要实时流
 
 rosbridge 用来把 /tf 和 /scan 推给浏览器（页头那个"实时 已连"）。
@@ -73,7 +73,7 @@ def generate_launch_description() -> LaunchDescription:
         ]
 
     return LaunchDescription([
-        DeclareLaunchArgument('port', default_value='8080'),
+        DeclareLaunchArgument('http_port', default_value='8080'),
         DeclareLaunchArgument('host', default_value='0.0.0.0'),
         DeclareLaunchArgument(
             'rosbridge', default_value='true',
@@ -90,7 +90,7 @@ def generate_launch_description() -> LaunchDescription:
                 params,
                 # 端口必须是 int：LaunchConfiguration 求值出来是字符串，
                 # 直接塞给声明为整型的参数会 InvalidParameterTypeException。
-                {'http_port': ParameterValue(LaunchConfiguration('port'),
+                {'http_port': ParameterValue(LaunchConfiguration('http_port'),
                                              value_type=int),
                  'http_host': ParameterValue(LaunchConfiguration('host'),
                                              value_type=str)},

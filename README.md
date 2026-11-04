@@ -100,7 +100,7 @@ ros2 service call /patrol/resume std_srvs/srv/Trigger
 
 ```bash
 ros2 launch fishbot_console console.launch.py          # 默认 8080
-ros2 launch fishbot_console console.launch.py port:=9000
+ros2 launch fishbot_console console.launch.py http_port:=9000   # 换端口
 ```
 
 然后打开 `http://<机器人IP>:8080`。

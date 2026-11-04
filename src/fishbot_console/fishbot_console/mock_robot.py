@@ -79,6 +79,10 @@ class MockRobot(Node):
         self._goal = None
         self._last_tick = time.monotonic()
 
+        # 假代价地图的参数：0.4 m 全局膨胀 + 4 m 局部窗口 0.2 m 膨胀
+        self._inflate_cells = max(1, int(round(0.40 / self._resolution)))
+        self._local_half = max(2, int(round(2.0 / self._resolution)))
+        self._local_inflate = max(1, int(round(0.20 / self._resolution)))
         self._tf_pub = TransformBroadcaster(self)
         self._tf_static_pub = StaticTransformBroadcaster(self)
         self._odom_pub = self.create_publisher(Odometry, 'odom', _sensor_qos())
@@ -91,10 +95,21 @@ class MockRobot(Node):
         self._status_pub = self.create_publisher(
             String, 'patrol/execution/status', _latched_qos())
 
+        # 假代价地图：验证阶段没有 nav2，而膨胀带是判断 RViz 对齐做没做对最直观的
+        # 东西——缺了它，「代价地图」那个勾选框就永远是空的。
+        self._costmap_pub = self.create_publisher(
+            OccupancyGrid, 'global_costmap/costmap', _latched_qos())
+        self._local_costmap_pub = self.create_publisher(
+            OccupancyGrid, 'local_costmap/costmap', _latched_qos())
+
         self.create_subscription(Twist, 'cmd_vel', self._on_cmd, 10)
 
         self._publish_static_tf()
         self._publish_map()
+        # 全局代价只算一次：墙格不多，膨胀 0.4 m 也就几十万次操作
+        self._global_cost = mock_world.inflate(
+            self._data, self._w, self._h, self._inflate_cells)
+        self._publish_costmaps()
 
         self.create_timer(1.0 / self._tick_hz, self._tick)
         self.create_timer(1.0 / self._scan_hz, self._publish_scan)
@@ -198,6 +213,39 @@ class MockRobot(Node):
         grid.data = [int(v) for v in self._data]
         self._map_pub.publish(grid)
 
+    def _make_grid(self, data, width, height, origin_x, origin_y):
+        grid = OccupancyGrid()
+        grid.header.stamp = self.get_clock().now().to_msg()
+        grid.header.frame_id = 'map'
+        grid.info.resolution = self._resolution
+        grid.info.width = width
+        grid.info.height = height
+        grid.info.origin.position.x = origin_x
+        grid.info.origin.position.y = origin_y
+        grid.info.origin.orientation.w = 1.0
+        grid.data = [int(v) for v in data]
+        return grid
+
+    def _publish_costmaps(self):
+        """发全局 + 局部代价地图，局部那张跟着车走。"""
+        self._costmap_pub.publish(self._make_grid(
+            self._global_cost, self._w, self._h,
+            self._meta['origin_x'], self._meta['origin_y']))
+
+        half = self._local_half
+        cx = int(round((self._pose[0] - self._meta['origin_x'])
+                       / self._resolution)) - half
+        cy = int(round((self._pose[1] - self._meta['origin_y'])
+                       / self._resolution)) - half
+        window = mock_world.crop(self._data, self._w, self._h,
+                                 cx, cy, 2 * half, 2 * half)
+        cost = mock_world.inflate(window, 2 * half, 2 * half,
+                                  self._local_inflate)
+        self._local_costmap_pub.publish(self._make_grid(
+            cost, 2 * half, 2 * half,
+            self._meta['origin_x'] + cx * self._resolution,
+            self._meta['origin_y'] + cy * self._resolution))
+
     def _on_cmd(self, msg: Twist):
         # 有导航目标时以目标为准，手动控制不会把车拽走
         with self._lock:
@@ -295,6 +343,7 @@ class MockRobot(Node):
                        % ('RUNNING' if moving else 'IDLE',
                           'true' if moving else 'false'))
         self._status_pub.publish(status)
+        self._publish_costmaps()
 
 
 def main(args=None):

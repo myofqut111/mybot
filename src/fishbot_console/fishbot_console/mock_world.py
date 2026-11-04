@@ -114,6 +114,54 @@ def scan_msg_fields(angles, ranges, range_min=0.05, range_max=8.0):
             'ranges': cleaned}
 
 
+# ---------------------------------------------------------------- 代价地图
+def inflate(data, width, height, radius_cells, max_cost=90):
+    """把墙周围的格子标成代价（模拟 nav2 的膨胀层）。
+
+    墙本身保持 100（致命），越远代价越低，至少 1；空地不动。
+    用“在每个墙格周围盖盒子”而不是对每个空格做窗口最小值，因为墙格很少（百分之几）。
+    """
+    out = [int(v) for v in data]
+    r = int(radius_cells)
+    if r <= 0:
+        return out
+    span = 2 * r + 1
+    for index, value in enumerate(data):
+        if value != WALL:
+            continue
+        cx, cy = index % width, index // width
+        for dy in range(-r, r + 1):
+            y = cy + dy
+            if y < 0 or y >= height:
+                continue
+            base = y * width
+            remain = r - abs(dy)
+            for dx in range(-remain, remain + 1):
+                x = cx + dx
+                if x < 0 or x >= width:
+                    continue
+                dist = max(abs(dx), abs(dy))
+                cost = int(round(max_cost * (r - dist + 1) / float(span)))
+                slot = base + x
+                if cost > out[slot]:
+                    out[slot] = cost
+    return out
+
+
+def crop(data, width, height, x0, y0, out_w, out_h, fill=WALL):
+    """从地图里切一块（越界用 fill 补），返回 (data, w, h)。"""
+    out = []
+    for row in range(out_h):
+        sy = y0 + row
+        for col in range(out_w):
+            sx = x0 + col
+            if sx < 0 or sy < 0 or sx >= width or sy >= height:
+                out.append(fill)
+            else:
+                out.append(data[sy * width + sx])
+    return out
+
+
 # ---------------------------------------------------------------- 运动
 def wrap_angle(angle):
     """归一到 (-pi, pi]，避免 yaw 越滚越大导致画出来的车头方向跳。"""
