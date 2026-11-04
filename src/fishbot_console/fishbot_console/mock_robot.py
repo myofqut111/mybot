@@ -80,6 +80,21 @@ class MockRobot(Node):
         self._goal = None
         self._last_tick = time.monotonic()
 
+        # 假车也要有"身体"：半径 0.18 m。障碍按这个半径膨胀，撞上就滑/停。
+        # 之前只判中心点、而且根本没有碰撞检查，于是车会直接穿过隔断墙。
+        self._robot_radius = 0.18
+        radius_cells = max(1, int(round(self._robot_radius / self._resolution)))
+        self._blocked = mock_world.blocked_grid(
+            self._data, self._w, self._h, radius_cells)
+        # 规划用更宽的膨胀（多 10 cm）：贴着的弧线会切角，路径留点余量才不撞。
+        self._plan_blocked = mock_world.blocked_grid(
+            self._data, self._w, self._h, radius_cells + 2)
+        self._nav_goal_xy = None
+        self._nav_retries = 0
+        self._path = []                  # 待跟随的路径点（世界坐标）
+        self._nav_state = 'idle'         # idle / running / done / failed / canceled
+        self._nav_detail = ''
+
         # 假代价地图的参数：0.4 m 全局膨胀 + 4 m 局部窗口 0.2 m 膨胀
         self._inflate_cells = max(1, int(round(0.40 / self._resolution)))
         self._local_half = max(2, int(round(2.0 / self._resolution)))
@@ -163,18 +178,54 @@ class MockRobot(Node):
                   mock_world.yaw_of_quaternion(pose.orientation))
         self.get_logger().info(
             'mock nav goal -> (%.2f, %.2f)' % (target[0], target[1]))
+
+        # 先规划：真车走的是 nav2 的全局路径，假车直着走就会穿墙
         with self._lock:
+            start = self._pose
+        start_cell = mock_world.world_to_cell(
+            start[0], start[1], self._resolution,
+            self._meta['origin_x'], self._meta['origin_y'])
+        goal_cell = mock_world.world_to_cell(
+            target[0], target[1], self._resolution,
+            self._meta['origin_x'], self._meta['origin_y'])
+        cells = mock_world.astar(self._plan_blocked, self._w, self._h,
+                                 start_cell, goal_cell)
+        if not cells:
+            self.get_logger().warning(
+                'mock nav: 目标不可达（在障碍里或被围住），拒绝执行')
+            goal_handle.abort()
+            return action.Result()
+
+        cells = mock_world.simplify_path(cells, self._plan_blocked,
+                                         self._w, self._h)
+        points = mock_world.cells_to_points(
+            cells, self._resolution,
+            self._meta['origin_x'], self._meta['origin_y'])
+        points.append((target[0], target[1]))
+        with self._lock:
+            self._path = points
             self._goal = target
+            self._nav_goal_xy = (target[0], target[1])
+            self._nav_retries = 0
+            self._nav_state = 'running'
+            self._nav_detail = ''
+        self.get_logger().info(
+            'mock nav: 规划出 %d 个路径点' % len(cells))
+
         try:
             while rclpy.ok():
                 if goal_handle.is_cancel_requested:
                     with self._lock:
                         self._goal = None
+                        self._path = []
+                        self._nav_state = 'canceled'
                     goal_handle.canceled()
                     self.get_logger().info('mock nav canceled')
                     return action.Result()
                 with self._lock:
+                    state = self._nav_state
                     current = self._pose
+                    detail = self._nav_detail
                 remaining = math.hypot(current[0] - target[0],
                                        current[1] - target[1])
                 feedback = action.Feedback()
@@ -183,16 +234,22 @@ class MockRobot(Node):
                     goal_handle.publish_feedback(feedback)
                 except Exception:                       # noqa: BLE001
                     pass
-                if remaining <= 0.15:
-                    with self._lock:
-                        self._goal = None
+                if state == 'done' and remaining <= 0.25:
                     goal_handle.succeed()
                     self.get_logger().info('mock nav reached')
+                    return action.Result()
+                if state == 'failed':
+                    # 撞墙了：真车会绕，假车会在这里报失败——报失败比装作到了强
+                    self.get_logger().warning('mock nav failed: %s' % detail)
+                    goal_handle.abort()
                     return action.Result()
                 time.sleep(0.1)
         finally:
             with self._lock:
                 self._goal = None
+                self._path = []
+                if self._nav_state == 'running':
+                    self._nav_state = 'idle'
 
     # ------------------------------------------------------------ 发布
     def _publish_static_tf(self):
@@ -258,17 +315,66 @@ class MockRobot(Node):
             if self._goal is None:
                 self._cmd = (float(msg.linear.x), float(msg.angular.z))
 
+    def _replan(self):
+        """从当前位姿重新规划到本次导航目标。调用方必须已持 self._lock。"""
+        if self._nav_goal_xy is None:
+            return False
+        start_cell = mock_world.world_to_cell(
+            self._pose[0], self._pose[1], self._resolution,
+            self._meta['origin_x'], self._meta['origin_y'])
+        goal_cell = mock_world.world_to_cell(
+            self._nav_goal_xy[0], self._nav_goal_xy[1], self._resolution,
+            self._meta['origin_x'], self._meta['origin_y'])
+        cells = mock_world.astar(self._plan_blocked, self._w, self._h,
+                                 start_cell, goal_cell)
+        if not cells:
+            return False
+        cells = mock_world.simplify_path(cells, self._plan_blocked,
+                                         self._w, self._h)
+        points = mock_world.cells_to_points(
+            cells, self._resolution,
+            self._meta['origin_x'], self._meta['origin_y'])
+        points.append(self._nav_goal_xy)
+        self._path = points
+        return True
+
     def _tick(self):
         now = time.monotonic()
-        dt = min(0.2, max(0.0, now - self._last_tick))
+        # 首帧 dt 要压住：节点起来后第一次 tick 可能隔了几百毫秒，乘上速度就是
+        # 一次肉眼可见的"飞出去"（0.45 m/s × 0.5 s = 22 cm 的瞬移）。
+        dt = min(0.15, max(0.0, now - self._last_tick))
         self._last_tick = now
         with self._lock:
-            goal = self._goal
-            if goal is not None:
-                vx, wz = mock_world.approach(self._pose, goal)
+            if self._path:
+                target = self._path[0]
+                vx, wz = mock_world.approach(
+                    self._pose, target, max_v=0.35, stop_dist=0.05)
+                if math.hypot(self._pose[0] - target[0],
+                              self._pose[1] - target[1]) < 0.22:
+                    self._path.pop(0)
+                    if not self._path:
+                        self._nav_state = 'done'
             else:
                 vx, wz = self._cmd
-            self._pose = mock_world.step(self._pose, vx, wz, dt)
+            new_pose, hit = mock_world.step_guarded(
+                self._pose, vx, wz, dt, self._blocked, self._w, self._h,
+                self._resolution, self._meta['origin_x'],
+                self._meta['origin_y'])
+            if hit and (abs(vx) > 1e-6 or abs(wz) > 1e-6):
+                # 撞上了：先按真实导航的做法重新规划（假车也不能一撞就死），
+                # 重试 3 次还不行才判失败——否则一个小角落就让整次任务废掉。
+                self._cmd = (0.0, 0.0)
+                if self._path and self._nav_goal_xy is not None:
+                    self._nav_retries += 1
+                    if self._nav_retries <= 3 and self._replan():
+                        self._nav_detail = ('撞到障碍后重新规划 (%d/3)'
+                                            % self._nav_retries)
+                    else:
+                        self._nav_detail = ('被障碍挡住 (%.2f, %.2f)'
+                                            % (self._pose[0], self._pose[1]))
+                        self._nav_state = 'failed'
+                        self._path = []
+            self._pose = new_pose
             pose = self._pose
 
         stamp = self.get_clock().now().to_msg()
