@@ -160,6 +160,25 @@ class ServerCase(unittest.TestCase):
         self.assertIn('text/html', ctype)
         self.assertIn('fishbot 控制台', body.decode('utf-8'))
 
+    def test_client_log_records_browser_error(self):
+        """浏览器异常要能落到服务端日志，否则前端报错只能靠猜。"""
+        before = json.loads(self.get('/api/logs?limit=200')[1].decode('utf-8'))
+        count_before = len(before.get('items') or [])
+        body = self.post('/api/client_log',
+                         {'level': 'ERROR', 'text': 'ReferenceError: x is not defined'})
+        self.assertTrue(body.get('ok'))
+        after = json.loads(self.get('/api/logs?limit=200')[1].decode('utf-8'))
+        items = after.get('items') or []
+        self.assertEqual(len(items), count_before + 1)
+        self.assertEqual(items[-1]['node'], 'browser')
+        self.assertEqual(items[-1]['level'], 'ERROR')
+        self.assertIn('ReferenceError', items[-1]['text'])
+
+    def test_client_log_rejects_empty(self):
+        with self.assertRaises(urllib.error.HTTPError) as ctx:
+            self.post('/api/client_log', {'text': ''})
+        self.assertEqual(ctx.exception.code, 400)
+
     def test_favicon_is_404_json(self):
         with self.assertRaises(urllib.error.HTTPError) as ctx:
             self.get('/favicon.ico')
@@ -211,12 +230,17 @@ class ServerCase(unittest.TestCase):
         self.assertIn('nav2', missing[0]['hint'])
 
     def test_logs_and_filter(self):
+        # 不锁条目总数：LogRing 在整个用例类里共用，别的用例往里面写日志
+        # （比如浏览器异常回传）不该让这条用例变红。只验"种子日志在、过滤生效"。
         _s, body, _c = self.get('/api/logs?limit=10')
         payload = json.loads(body.decode('utf-8'))
-        self.assertEqual(len(payload['items']), 2)
+        texts = [i['text'] for i in payload['items']]
+        self.assertIn('hello', texts)
+        self.assertIn('boom', texts)
         _s, body, _c = self.get('/api/logs?level=ERROR')
         payload = json.loads(body.decode('utf-8'))
-        self.assertEqual([i['text'] for i in payload['items']], ['boom'])
+        self.assertIn('boom', [i['text'] for i in payload['items']])
+        self.assertNotIn('hello', [i['text'] for i in payload['items']])
 
     def test_map_png_is_png(self):
         status, body, ctype = self.get('/api/map.png')

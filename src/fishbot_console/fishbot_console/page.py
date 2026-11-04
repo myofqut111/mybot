@@ -263,6 +263,27 @@ async function api(path, body){
 }
 function setBadge(el, text, cls){ el.textContent = text; el.className = 'badge ' + (cls||''); }
 
+// 把浏览器里的异常送回服务端日志。前端报错在页面上看不见，没有这条就只能
+// 靠"截图 + 猜"；有了它，/api/logs 里能直接看到 JS 栈。
+let CLIENT_LOGGED = 0;
+function reportClientError(text){
+  if(CLIENT_LOGGED > 20) return;         // 防止死循环式刷屏
+  CLIENT_LOGGED++;
+  try{
+    fetch('/api/client_log', {method:'POST',
+      headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({level:'ERROR', text: String(text).slice(0, 500)})});
+  }catch(e){ /* 日志都发不出去就算了，别二次报错 */ }
+}
+window.addEventListener('error', ev => {
+  reportClientError((ev.message || 'error') + ' @' + (ev.filename || '?') +
+                    ':' + (ev.lineno || 0));
+});
+window.addEventListener('unhandledrejection', ev => {
+  const r = ev.reason;
+  reportClientError('unhandled rejection: ' + ((r && (r.stack || r.message)) || r));
+});
+
 /* ---------------- 地图（Leaflet，手感对齐 RViz） ---------------- */
 const MAPM = {ready:false, key:'', w:0, h:0, res:0.05, ox:0, oy:0, yaw:0,
               fitted:false};
@@ -333,7 +354,12 @@ async function loadMap(){
   const key = [w, h, res, ox, oy].join(',');
   if(key !== MAPM.key){
     MAPM.key = key;
-    Object.assign(MAP, {ready:true, w:w, h:h, res:res, ox:ox, oy:oy});
+    // 早期这里赋给的是遗留对象 MAP，而 mapBounds() 读的是 MAPM，于是
+    // w/h/res/ox/oy 全是 0 → 叠加层边界退化成 [[0,0],[0,0]]，图叠加到 0 尺寸
+    // 的矩形上，看起来就是"没有地图"（提示文字却已经隐藏了）。元数据必须写 MAPM。
+    Object.assign(MAPM, {ready:true, w:w, h:h, res:res, ox:ox, oy:oy});
+    MAP = {width:w, height:h, resolution:res, origin_x:ox, origin_y:oy,
+           ready:true};
     if(LL.img){ LF.removeLayer(LL.img); }
     LL.img = L.imageOverlay('/api/map.png?t=' + Date.now(), mapBounds(),
                             {opacity:1}).addTo(LF);

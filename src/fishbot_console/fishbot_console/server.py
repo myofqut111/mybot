@@ -221,6 +221,17 @@ class ConsoleServer(object):
 
             def _dispatch(self, path, payload):
                 server_ = server
+                if path == '/api/client_log':
+                    # 浏览器里的 JS 异常打回服务端日志。没有这条，前端出错
+                    # 只能靠"截图 + 猜"，而 console 报错在页面上是看不见的。
+                    body = payload or {}
+                    text = str(body.get('text') or '')[:500]
+                    if not text:
+                        return _json_response(self, {'ok': False}, 400)
+                    level = 40 if str(body.get('level') or 'ERROR').upper() \
+                        in ('ERROR', 'FATAL') else 30
+                    server_.bridge.logs.add('browser', level, text)
+                    return _json_response(self, {'ok': True})
                 if path == '/api/estop':
                     body = payload or {}
                     # 显式带 active 就按它来；不带就当"按一下急停"

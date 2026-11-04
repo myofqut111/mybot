@@ -92,6 +92,22 @@ class TestPage(unittest.TestCase):
         self.assertIn('setMaxBounds(mapBounds().pad(', self.html)
         self.assertIn('if(!MAPM.fitted)', self.html)
 
+    def test_map_meta_goes_to_mapm(self):
+        """地图元数据必须写到 MAPM：mapBounds() 读的是它。
+
+        曾经写成 Object.assign(MAP, ...)，MAP 是个遗留对象，于是 MAPM 里
+        w/h/res/ox/oy 一直是 0，叠加层边界退化成 [[0,0],[0,0]] —— 页面提示
+        已经隐藏、地图却没有，用户看到的就是"没有地图"。
+        """
+        self.assertIn('Object.assign(MAPM', self.html)
+        self.assertNotIn('Object.assign(MAP,', self.html)
+
+    def test_browser_errors_are_reported(self):
+        """前端异常要回传服务端，否则页面上的报错只能靠截图猜。"""
+        self.assertIn('/api/client_log', self.html)
+        self.assertIn("addEventListener('error'", self.html)
+        self.assertIn("addEventListener('unhandledrejection'", self.html)
+
     def test_map_click_sends_nav(self):
         # 换 Leaflet 之后不再手写 canvas 事件，改由 Leaflet 的 mousedown/mouseup
         # 回调驱动：按下定位置、拖出朝向、松手发目标。
