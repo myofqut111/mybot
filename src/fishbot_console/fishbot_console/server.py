@@ -16,6 +16,27 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from . import ai, data
 from .page import HTML
 
+# rosbridge 的默认 WebSocket 端口。控制台的 HTTP 端口撞上它时给专门提示——
+# 那不是"旧实例没退"，而是同一套 launch 里的 rosbridge 先占住了。
+# launch 那边的 ROSBRIDGE_PORT 也是 9090，两处要一起改。
+ROSBRIDGE_PORT = 9090
+
+
+def busy_port_message(port):
+    """端口被占时的报错文案。抽成纯函数，好在本机直接测（不需要真占端口）。"""
+    hint = ''
+    if int(port) == ROSBRIDGE_PORT:
+        # 9090 是 rosbridge 的默认端口。控制台的 HTTP 端口撞上它，几乎一定是
+        # 启动命令里写了 port:=9090 —— 那不是"旧实例没退"，而是同一套 launch
+        # 里的 rosbridge 先占住了。不点明的话，用户会去 pkill 一个不存在的进程。
+        hint = ('\n注意：%d 是 rosbridge 的端口，不是控制台的。'
+                '控制台请用 8080（默认）或 8090。' % ROSBRIDGE_PORT)
+    return ('端口 %d 已被占用，控制台起不来。'
+            '先看是谁占着：ss -ltnp | grep \':%d\' ；'
+            '如果是上一个控制台没退干净：pkill -f robot_console ；'
+            '换端口：ros2 launch fishbot_console console.launch.py '
+            'port:=9000%s' % (int(port), int(port), hint))
+
 AI_TIMEOUT = 25.0
 
 def _static_dir():
@@ -358,11 +379,7 @@ class ConsoleServer(object):
                                                       errno.EACCES)
                     or getattr(error, 'winerror', None) in (10048, 10013))
             if busy:
-                raise RuntimeError(
-                    '端口 %d 已被占用，控制台起不来。先看看是不是上一个实例还没退：'
-                    'pkill -f robot_console ；或者换个端口启动：'
-                    'ros2 launch fishbot_console console.launch.py port:=9000'
-                    % int(port)) from error
+                raise RuntimeError(busy_port_message(int(port))) from error
             raise RuntimeError(
                 '无法监听 %s:%d（%s）' % (host, int(port), error)) from error
         self.httpd.daemon_threads = True

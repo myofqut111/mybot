@@ -382,6 +382,19 @@ class TestPortInUse(unittest.TestCase):
         self.assertIn(str(port), message)
         self.assertIn('port:=9000', message)
         self.assertIn('pkill -f robot_console', message)
+        self.assertIn('ss -ltnp', message)
+
+    def test_port_9090_gets_rosbridge_hint(self):
+        """9090 撞车几乎一定是命令里写了 port:=9090，不是旧实例没退。
+
+        报错必须直接把这句话说出来，否则用户会去 pkill 一个不存在的进程。
+        直接测文案函数：Windows 上 SO_REUSEADDR 允许两个 socket 同端口，
+        真去占 9090 反而不报错，那个用例在任何平台上都测不稳。
+        """
+        message = server.busy_port_message(server.ROSBRIDGE_PORT)
+        self.assertIn('rosbridge', message)
+        self.assertIn('8080', message)
+        self.assertNotIn('rosbridge', server.busy_port_message(8080))
 
     def test_free_port_binds(self):
         service = server.ConsoleServer(FakeBridge())
