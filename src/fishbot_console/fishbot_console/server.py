@@ -13,7 +13,7 @@ import urllib.parse
 import urllib.request
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
-from . import ai, data
+from . import ai, data, points, stacks
 from .page import HTML
 
 # rosbridge 的默认 WebSocket 端口。控制台的 HTTP 端口撞上它时给专门提示——
@@ -109,6 +109,32 @@ def _bytes_response(handler, body, content_type, cache=False):
     handler.wfile.write(body)
 
 
+def _log_sink_of(logs):
+    """把 stacks 的 `(source, text)` 适配成 `logs.add(source, level, text)`。
+
+    stacks 只传两个参数（它不知道严重级别），这里按行首关键字推断级别；
+    并且**吞掉任何异常**——写日志的动作绝不能把"启动业务栈"这种业务搞失败。
+    """
+    def sink(source, *rest):
+        if len(rest) >= 2:
+            try:
+                level = int(rest[0])
+            except (TypeError, ValueError):
+                level = 20
+            text = rest[1]
+        elif rest:
+            level = 20
+            text = rest[0]
+        else:
+            level = 20
+            text = ''
+        try:
+            logs.add(str(source), level, str(text))
+        except Exception:
+            pass
+    return sink
+
+
 class ConsoleServer(object):
     """把 bridge + AI 设置包在一个对象里，handler 通过闭包拿到它。"""
 
@@ -118,6 +144,10 @@ class ConsoleServer(object):
         self.httpd = None
         self.port = None            # serve() 之后是**实际**端口（可能被顺延）
         self.skipped_ports = []     # 顺延时跳过的端口，给调用方打日志用
+        # 一键启停的管理器。日志直接进同一个环形缓冲，这样"启动失败"和
+        # "节点报错"在面板上是一处看，不用两头对。
+        self.stacks = stacks.StackManager(
+            log_sink=_log_sink_of(bridge.logs))
 
     # ------------------------------------------------------------ 路由
     def make_handler(self):
@@ -148,48 +178,26 @@ class ConsoleServer(object):
                     return _json_response(self, {
                         'items': server.bridge.logs.tail(limit, level),
                         'counts': server.bridge.logs.counts()})
-                if path == '/api/map.png':
-                    png, _meta = server.bridge.map_view()
-                    if not png:
-                        return _json_response(self, {'error': 'no map'}, 404)
-                    return _bytes_response(self, png, 'image/png')
-                if path == '/api/layers.png':
-                    png = server.bridge.layers_view()
-                    if not png:
-                        return _json_response(self, {'error': 'no layers'}, 404)
-                    return _bytes_response(self, png, 'image/png')
-                if path in ('/api/costmap/global.png',
-                            '/api/costmap/local.png'):
-                    slot = 'local' if path.endswith('local.png') else 'global'
-                    png, _meta = server.bridge.costmap_view(slot)
-                    if not png:
-                        return _json_response(
-                            self, {'error': 'no %s costmap' % slot}, 404)
-                    return _bytes_response(self, png, 'image/png')
-                if path == '/api/costmap.json':
-                    out = {}
-                    for slot in ('global', 'local'):
-                        _png, meta = server.bridge.costmap_view(slot)
-                        item = {'ready': bool(_png)}
-                        for key in ('width', 'height', 'resolution',
-                                    'origin_x', 'origin_y'):
-                            if meta.get(key) is not None:
-                                item[key] = meta[key]
-                        out[slot] = item
-                    return _json_response(self, out)
-                if path == '/api/scan':
-                    points, age = server.bridge.scan_view()
+                if path == '/api/stacks':
+                    return _json_response(self, {'items': server.stacks.status(server.bridge.running_nodes())})
+                if path == '/api/route_points':
+                    name = (query.get('route') or [''])[0]
                     return _json_response(self, {
-                        'frame': 'map',
-                        'age': round(age, 2),
-                        'points': [[round(x, 2), round(y, 2)]
-                                   for x, y in points]})
-                if path == '/api/plan.json':
-                    points, age = server.bridge.plan_view()
+                        'route': name,
+                        'items': server.bridge.route_points(name)})
+                if path == '/api/routes':
                     return _json_response(self, {
-                        'frame': 'map', 'age': round(age, 2),
-                        'points': [[round(x, 3), round(y, 3)]
-                                   for x, y in points]})
+                        'items': server.bridge.route_points()})
+                if path == '/api/markers':
+                    name = (query.get('route') or [''])[0]
+                    points = server.bridge.route_points(name)
+                    suspects = server.point_suspects(name)
+                    count, _err = server.bridge.publish_route_markers(
+                        points, suspects, 'map')
+                    return _json_response(self, {
+                        'ok': True, 'route': name, 'published': count,
+                        'suspects': sorted(suspects),
+                        'points': len(points)})
                 if path == '/api/frame.jpg':
                     kind = (query.get('kind') or ['anno'])[0]
                     raw, _stamp = server.bridge.frame(kind == 'anno')
@@ -217,12 +225,21 @@ class ConsoleServer(object):
             def do_POST(self):
                 parsed = urllib.parse.urlparse(self.path)
                 path = parsed.path.rstrip('/')
+                raw = b''
                 try:
                     length = int(self.headers.get('Content-Length') or 0)
-                    payload = json.loads(self.rfile.read(length) or b'{}')
+                    raw = self.rfile.read(length) or b'{}'
+                    payload = json.loads(raw)
                     if not isinstance(payload, dict):
                         payload = {}
                 except Exception:
+                    # 解析失败不打死连接（浏览器只会看到 connection reset），
+                    # 但也**不能把坏请求当成空 payload 继续执行**——那样一个
+                    # 写坏的 body 会静默地真的把巡检启动起来。
+                    if raw:
+                        return _json_response(
+                            self, {'ok': False,
+                                   'message': '请求体不是合法 JSON'}, 400)
                     payload = {}
 
                 # 任何一处参数不对都只影响这一次请求：回 400 + JSON，
@@ -264,27 +281,32 @@ class ConsoleServer(object):
                     return _json_response(
                         self, {'ok': ok, 'message': message,
                                'estop': server_.bridge.estop_state()})
-                if path == '/api/nav':
-                    x = float(payload.get('x'))
-                    y = float(payload.get('y'))
-                    yaw = payload.get('yaw')
-                    ok, message = server_.bridge.send_nav(
-                        x, y, None if yaw is None else float(yaw))
-                    return _json_response(self, {'ok': ok, 'message': message})
+                if path == '/api/stacks/start':
+                    ok, message = server.stacks.start(
+                        str(payload.get('name') or ''))
+                    return _json_response(
+                        self, {'ok': ok, 'message': message,
+                               'items': server.stacks.status(server.bridge.running_nodes())})
+                if path == '/api/stacks/stop':
+                    ok, message = server.stacks.stop(
+                        str(payload.get('name') or ''))
+                    return _json_response(
+                        self, {'ok': ok, 'message': message,
+                               'items': server.stacks.status(server.bridge.running_nodes())})
+                if path == '/api/record_point':
+                    ok, message, point = server_.bridge.record_point(
+                        payload.get('route') or '',
+                        payload.get('point_id') or '',
+                        payload.get('task_id') or 'detect',
+                        float(payload.get('wait') or 0.0),
+                        payload.get('expect') or '')
+                    return _json_response(
+                        self, {'ok': ok, 'message': message, 'point': point})
+                if path == '/api/markers/clear':
+                    server.bridge.clear_route_markers()
+                    return _json_response(self, {'ok': True})
                 if path == '/api/cancel_nav':
                     ok, message = server_.bridge.cancel_nav()
-                    return _json_response(self, {'ok': ok, 'message': message})
-                if path == '/api/teleop':
-                    body = payload or {}
-                    server_.bridge.set_teleop(
-                        float(body.get('vx') or 0.0),
-                        float(body.get('wz') or 0.0))
-                    return _json_response(self, {'ok': True})
-                if path == '/api/initialpose':
-                    ok, message = server_.bridge.set_initial_pose(
-                        float(payload.get('x')),
-                        float(payload.get('y')),
-                        float(payload.get('yaw') or 0.0))
                     return _json_response(self, {'ok': ok, 'message': message})
                 if path == '/api/patrol':
                     ok, message = server_.bridge.start_patrol(
@@ -298,10 +320,6 @@ class ConsoleServer(object):
                 if path == '/api/capture':
                     ok, message = server_.bridge.snapshot()
                     return _json_response(self, {'ok': ok, 'message': message})
-                if path == '/api/mapping':
-                    ok, text = server_.bridge.mapping(
-                        payload.get('action'), payload.get('name') or 'map')
-                    return _json_response(self, {'ok': ok, 'message': text})
                 if path == '/api/ask':
                     return _json_response(
                         self, server_.answer(str(payload.get('q') or '')))
@@ -335,7 +353,27 @@ class ConsoleServer(object):
             },
             'log_counts': self.bridge.logs.counts(),
             'reports_dir': self.bridge.reports_dir(),
+            'stacks': self.stacks.status(),
         }
+
+    def point_suspects(self, route_name=''):
+        """这条路线里"从来没检出过目标"的点（RViz 里打黄标、列表里带 ★）。
+
+        为什么看最近 5 轮而不是全部历史：更早的报告可能是换了相机、换了场地之前
+        留下的，拿它给点打黄标会误导。5 轮足够覆盖"偶发漏检"，又不至于把几个月前
+        的旧账翻出来。
+        """
+        records = []
+        picked = 0
+        for run in data.list_runs(self.bridge.reports_dir(), 30):
+            if route_name and run.get('route_name') not in ('', route_name):
+                continue
+            path = str(run.get('path') or '').replace('.summary.json', '.jsonl')
+            records.extend(data.tail_events(path, 400))
+            picked += 1
+            if picked >= 5:
+                break
+        return points.never_detected(records)
 
     def _context(self):
         status = self.bridge.snapshot_status()

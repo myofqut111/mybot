@@ -96,7 +96,7 @@ ros2 service call /patrol/resume std_srvs/srv/Trigger
 
 ## Web 控制台
 
-浏览器里操作整机，不用记命令。手机连同一个网就能开。
+浏览器里做**业务**：启停、看状态、看报告、看摄像头、下发巡检。地图、导航、建图这些专业操作交给 **RViz**，一键启停里点「导航」会自动把 RViz 一起拉起来（`rviz:=true`）。
 
 ```bash
 ros2 launch fishbot_console console.launch.py          # 默认 8080
@@ -107,30 +107,37 @@ ros2 launch fishbot_console console.launch.py http_port:=9000   # 换端口
 
 | 面板 | 能做什么 |
 | --- | --- |
-| 地图 | Leaflet 渲染（1 单位 = 1 米），拖一下就发导航目标（位置+朝向），也能拖出初始位姿 |
-| 代价地图 | 全局 + 局部 costmap 叠在底图上（致命红、膨胀橙），可以勾掉 |
-| 雷达点云 | `/scan` 投影到 map 坐标系画成点，4 Hz 刷新，可以勾掉 |
-| 全局路径 | `/plan` 画成绿色折线，可以勾掉 |
-| 手动控制 | 按住方向键走（W/A/S/D 也行），松手、切页面、断网 0.6 s 内自动停 |
+| 一键启停 | 导航 / 建图 / 巡检 / 看门狗 四行，每行有状态灯、开始、停止；导航与建图互斥，点第二次会被拒绝并给出原因 |
+| 状态徽标 | 连接、电量、位姿、相机、错误数，以及 `map/pose/nav/patrol/camera` 六个子系统 |
+| 急停 | 常驻红色按钮，按一下立刻停（服务端拦截，不依赖这个页面）；`Esc` 解除 |
 | 摄像头 | 检测标注图 / 原始图切换，一键抓拍存盘 |
 | 巡检 | 选路线、模式、轮数，开始 / 停止 |
-| 建图 | 起停 SLAM、存图 |
-| 日志 | `/rosout` 实时滚动，按 WARN/ERROR 过滤，红色计数字段会顶在页头 |
-| 历史 | 最近几轮结果（耗时、成功数、召回），以及当前轮的逐点事件 |
+| 录点 | 用当前位置记一个巡检点（可标 expect 有/无），随后写进路线 |
+| 报告 | 按路线、时间筛选历史；单次运行的逐点结果与事件 |
+| 日志 | `/rosout` 实时滚动，按 WARN/ERROR 过滤，错误数顶在页头；也能收到浏览器端的异常 |
 | AI 助手 | 自然语言发指令，动作要过白名单（见下） |
 
-地图用 **Leaflet**（`L.CRS.Simple`，坐标就是米）而不是自己写 canvas：平移、
-光标锚定缩放、双指捏合、双击放大这些交互它都做好了，自己实现一遍只会做出
-"能用但手感不对"的版本。左键按模式分工：
-| 模式 | 左键拖拽 | 滚轮 / 双指 |
-| --- | --- | --- |
-| 平移 | 拖动地图 | 缩放（光标/手指中点不动） |
-| 发目标 | 按下定位置、拖出朝向、松手发出 | 缩放 |
-| 设初始位姿 | 同样手势，松手就是 2D Pose Estimate | 缩放 |
+为什么这么分工：控制台做的是"**点了会发生什么、出了事怎么看出来**"，这些不需要三维场景；而地图上拖目标、设初始位姿、存图这些，RViz 已经做了十年，用 Leaflet 复刻一遍只会做出"能用但手感不对"的版本（0.4.x 就是这么过来的：拖拽橡皮筋回弹、代价地图两层叠在一张图上滑走、mapBounds 被强改导致地图空白）。把专业操作交回去，控制台的每一行代码都能被非专业用户直接用到。
 
-蓝箭头是机器人（按 yaw 转），绿箭头是当前目标；拖的时候会实时显示角度，
-只点不拖就发一个朝向不变的目标。地图组件（`leaflet.js/css`、`roslib`）都
-**本地放在 `fishbot_console/static/`**，机器人没外网也能用，不碰任何 CDN。
+巡检点位**只在 RViz 里显示**（黄色 ★ + 编号），按当前路线名过滤，删单点的操作也留在 RViz 的「Publish Point」里——控制台只负责"记一个点"，不做点编辑。
+
+### HTTP 接口
+
+| 接口 | 方法 | 说明 |
+| --- | --- | --- |
+| `/api/state` | GET | 连接、电量、位姿、子系统、栈状态、急停态 |
+| `/api/stacks` | GET | 四个栈的状态（含每个 probe 的期望/实际） |
+| `/api/stacks/start`、`/stop` | POST | `{"name": "nav"}` |
+| `/api/estop` | POST | 进入 / 解除急停 |
+| `/api/routes`、`/api/route_points` | GET | 路线列表与点位 |
+| `/api/record_point` | POST | 记点（`name`、`point_id`、`expect`） |
+| `/api/markers`、`/markers/clear` | GET/POST | 点位 Marker 的发布与清除 |
+| `/api/frame.jpg` | GET | 最新一帧（`?kind=raw|anno`） |
+| `/api/runs`、`/api/events` | GET | 历史运行与逐点事件 |
+| `/api/logs`、`/api/client_log` | GET/POST | 服务端与浏览器端日志 |
+| `/api/patrol`、`/patrol/cancel`、`/cancel_nav` | POST | 下发与取消 |
+| `/api/capture` | POST | 抓拍存盘 |
+| `/api/ask` | POST | AI 助手 |
 
 ### 实时流（rosbridge）
 

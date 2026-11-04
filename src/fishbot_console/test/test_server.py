@@ -250,84 +250,10 @@ class ServerCase(unittest.TestCase):
         self.assertIn('boom', [i['text'] for i in payload['items']])
         self.assertNotIn('hello', [i['text'] for i in payload['items']])
 
-    def test_map_png_is_png(self):
-        status, body, ctype = self.get('/api/map.png')
-        self.assertEqual(status, 200)
-        self.assertEqual(ctype, 'image/png')
-        self.assertTrue(body.startswith(b'\x89PNG'))
-
     def test_frame_jpeg(self):
         _s, body, ctype = self.get('/api/frame.jpg?kind=raw')
         self.assertEqual(ctype, 'image/jpeg')
         self.assertTrue(body.startswith(b'\xff\xd8'))
-
-    def test_layers_png(self):
-        status, body, ctype = self.get('/api/layers.png')
-        self.assertEqual(status, 200)
-        self.assertEqual(ctype, 'image/png')
-        self.assertEqual(body, b'\x89PNG-layers')
-
-    def test_layers_missing_is_404(self):
-        saved = self.bridge.layers
-        self.bridge.layers = b''
-        try:
-            with self.assertRaises(urllib.error.HTTPError) as ctx:
-                self.get('/api/layers.png')
-            self.assertEqual(ctx.exception.code, 404)
-        finally:
-            self.bridge.layers = saved       # 同一个 bridge 被各用例复用
-
-    def test_costmap_json_lists_two_layers(self):
-        status, body, _ctype = self.get('/api/costmap.json')
-        self.assertEqual(status, 200)
-        payload = json.loads(body.decode('utf-8'))
-        self.assertEqual(sorted(payload.keys()), ['global', 'local'])
-        for slot in ('global', 'local'):
-            self.assertTrue(payload[slot]['ready'])
-            self.assertEqual(payload[slot]['width'], 200)
-            self.assertAlmostEqual(payload[slot]['resolution'], 0.05)
-
-    def test_costmap_png_per_slot(self):
-        for slot in ('global', 'local'):
-            status, body, ctype = self.get('/api/costmap/%s.png' % slot)
-            self.assertEqual(status, 200)
-            self.assertEqual(ctype, 'image/png')
-            self.assertEqual(body, b'\x89PNG-layers')
-
-    def test_costmap_png_missing_is_404(self):
-        saved = self.bridge.layers
-        self.bridge.layers = b''
-        try:
-            for slot in ('global', 'local'):
-                with self.assertRaises(urllib.error.HTTPError) as ctx:
-                    self.get('/api/costmap/%s.png' % slot)
-                self.assertEqual(ctx.exception.code, 404)
-        finally:
-            self.bridge.layers = saved
-
-    def test_scan_points(self):
-        status, body, _c = self.get('/api/scan')
-        self.assertEqual(status, 200)
-        data_ = json.loads(body.decode('utf-8'))
-        self.assertEqual(data_['frame'], 'map')
-        self.assertEqual(data_['points'], [[1.25, -0.5], [2.0, 0.75]])
-        self.assertLessEqual(len(data_['points']), 400)
-
-    def test_plan_json(self):
-        status, body, _c = self.get('/api/plan.json')
-        self.assertEqual(status, 200)
-        payload = json.loads(body.decode('utf-8'))
-        self.assertEqual(payload['frame'], 'map')
-        self.assertEqual(payload['points'],
-                         [[0.0, 0.0], [1.0, 0.5], [2.0, 0.75]])
-
-    def test_nav_with_yaw(self):
-        self.post('/api/nav', {'x': 1.0, 'y': 2.0, 'yaw': 0.5})
-        self.assertIn(('nav', 1.0, 2.0, 0.5), self.bridge.calls)
-
-    def test_nav_without_yaw_sends_none(self):
-        self.post('/api/nav', {'x': 1.0, 'y': 2.0})
-        self.assertIn(('nav', 1.0, 2.0, None), self.bridge.calls)
 
     def test_runs_and_events_empty(self):
         _s, body, _c = self.get('/api/runs')
@@ -340,11 +266,6 @@ class ServerCase(unittest.TestCase):
         self.assertEqual(json.loads(body.decode('utf-8'))['items'][0]['x'], 1.0)
 
     # ---------------- 动作接口 ----------------
-    def test_nav_roundtrip(self):
-        out = self.post('/api/nav', {'x': 1.5, 'y': -2.0})
-        self.assertTrue(out['ok'])
-        self.assertEqual(self.bridge.calls[-1], ('nav', 1.5, -2.0, None))
-
     def test_patrol_roundtrip(self):
         out = self.post('/api/patrol',
                         {'route': 'main', 'mode': 1, 'repeat': 3})
@@ -355,27 +276,9 @@ class ServerCase(unittest.TestCase):
         self.assertTrue(self.post('/api/cancel_nav', {})['ok'])
         self.assertTrue(self.post('/api/patrol/cancel', {})['ok'])
 
-    def test_initial_pose_roundtrip(self):
-        # 地图上拖一下 -> /api/initialpose -> /initialpose（等价 RViz 的 2D Pose Estimate）
-        out = self.post('/api/initialpose', {'x': 1.25, 'y': -0.5, 'yaw': 1.57})
-        self.assertTrue(out['ok'])
-        self.assertEqual(self.bridge.calls[-1], ('initialpose', 1.25, -0.5, 1.57))
-
-    def test_initial_pose_defaults_yaw(self):
-        # 只点不拖时 yaw 缺省为 0，不能因为没传就 500
-        out = self.post('/api/initialpose', {'x': 0.0, 'y': 0.0})
-        self.assertTrue(out['ok'])
-        self.assertEqual(self.bridge.calls[-1][3], 0.0)
-
-    def test_capture_and_mapping(self):
-        self.assertTrue(self.post('/api/capture', {})['ok'])
-        out = self.post('/api/mapping', {'action': 'save', 'name': 'lab'})
-        self.assertTrue(out['ok'])
-        self.assertEqual(self.bridge.calls[-1], ('mapping', 'save', 'lab'))
-
     def test_bad_json_body_does_not_crash(self):
         request = urllib.request.Request(
-            self.url('/api/nav'), data=b'not json',
+            self.url('/api/patrol'), data=b'not json',
             headers={'Content-Type': 'application/json'})
         with self.assertRaises(urllib.error.HTTPError) as ctx:
             urllib.request.urlopen(request, timeout=5)
@@ -494,6 +397,45 @@ class TestPortInUse(unittest.TestCase):
             self.assertTrue(httpd.daemon_threads)
         finally:
             httpd.server_close()
+
+
+class TestLogSink(unittest.TestCase):
+    """stacks 只传 (source, text)；适配器必须吃下 2 参调用。
+
+    这是真踩过的坑：适配器写成固定 3 参，业务栈起来了但接口回 400
+    「参数不合法」，看日志的人会以为没启动成功。
+    """
+
+    def test_two_arg_call_is_accepted(self):
+        seen = []
+
+        class Logs(object):
+            def add(self, source, level, text):
+                seen.append((source, level, text))
+
+        sink = server._log_sink_of(Logs())
+        sink('nav', 'INFO: 起来了')
+        self.assertEqual(seen, [('nav', 20, 'INFO: 起来了')])
+
+    def test_three_arg_call_keeps_level(self):
+        seen = []
+
+        class Logs(object):
+            def add(self, source, level, text):
+                seen.append((source, level, text))
+
+        sink = server._log_sink_of(Logs())
+        sink('nav', 40, '炸了')
+        self.assertEqual(seen, [('nav', 40, '炸了')])
+
+    def test_sink_never_raises(self):
+        class Boom(object):
+            def add(self, *args):
+                raise RuntimeError('boom')
+
+        sink = server._log_sink_of(Boom())
+        sink('nav', 'x')        # 不能抛
+        sink('nav', 40, 'y')
 
 
 if __name__ == '__main__':

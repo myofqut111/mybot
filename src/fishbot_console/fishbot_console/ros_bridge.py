@@ -58,6 +58,17 @@ try:                                        # 取路线（只为显示名字/点
 except Exception:                           # pragma: no cover
     GetRoute = None
 
+try:                                        # 录点（点位化巡检的入口）
+    from fishbot_patrol_interfaces.srv import RecordPoint
+except Exception:                           # pragma: no cover
+    RecordPoint = None
+
+try:                                        # 路线点位在 RViz 里显示
+    from visualization_msgs.msg import Marker, MarkerArray
+except Exception:                           # pragma: no cover
+    Marker = None
+    MarkerArray = None
+
 
 class ConsoleBridge(Node):
     def __init__(self):
@@ -77,6 +88,8 @@ class ConsoleBridge(Node):
         self.declare_parameter('cmd_vel_topic', '/cmd_vel')
         self.declare_parameter('teleop_timeout_sec', 0.6)
         self.declare_parameter('pose_topic', '/amcl_pose')
+        self.declare_parameter('marker_topic', '/console/route_points')
+        self.declare_parameter('record_service', '/patrol_route/record_point')
         self.declare_parameter('patrol_action', '/execute_patrol')
         self.declare_parameter('nav_action', '/navigate_to_pose')
         self.declare_parameter('route_service', '/patrol_route/get')
@@ -175,18 +188,6 @@ class ConsoleBridge(Node):
             self._on_pose, 10, callback_group=self._callbacks)
         self.create_subscription(Log, '/rosout', self._on_log, 200,
                                  callback_group=self._callbacks)
-        self.create_subscription(
-            OccupancyGrid, self.get_parameter('global_costmap_topic').value,
-            self._on_global_costmap, map_qos, callback_group=self._callbacks)
-        self.create_subscription(
-            OccupancyGrid, self.get_parameter('local_costmap_topic').value,
-            self._on_local_costmap, map_qos, callback_group=self._callbacks)
-        self.create_subscription(
-            LaserScan, self.get_parameter('scan_topic').value,
-            self._on_scan, fast_qos, callback_group=self._callbacks)
-        self.create_subscription(
-            Path, self.get_parameter('plan_topic').value,
-            self._on_plan, fast_qos, callback_group=self._callbacks)
 
 
         # 手动给初始位姿：和 RViz 的 "2D Pose Estimate" 发的是同一个话题、同一套协方差
@@ -231,6 +232,23 @@ class ConsoleBridge(Node):
         self._patrol_goal_handle = None
         self._snapshot_dir = os.path.expanduser('~/console_snapshots')
         self._ssh = os.environ.get('CONSOLE_SSH', '')
+
+        # 路线点位 marker：只在 RViz 看，所以这里只发、不画。
+        # transient_local 是必要的——RViz 常常在控制台之后才打开，用 volatile
+        # 的话它永远收不到已经发过的那一帧。
+        self._marker_pub = None
+        if MarkerArray is not None:
+            self._marker_pub = self.create_publisher(
+                MarkerArray, self.get_parameter('marker_topic').value,
+                QoSProfile(reliability=ReliabilityPolicy.RELIABLE,
+                           durability=DurabilityPolicy.TRANSIENT_LOCAL,
+                           history=HistoryPolicy.KEEP_LAST, depth=1))
+        # 录点：直接调 route_manager 的 record_point，服务端记一笔
+        self._record_client = None
+        if RecordPoint is not None:
+            self._record_client = self.create_client(
+                RecordPoint, self.get_parameter('record_service').value,
+                callback_group=self._callbacks)
 
     # ------------------------------------------------------------ 回调
     def _on_status(self, msg):
@@ -858,6 +876,119 @@ class ConsoleBridge(Node):
         self.logs.add('console', 20 if ok else 40,
                       'mapping %s -> %s' % (action, 'ok' if ok else 'fail'))
         return ok, text
+
+    # ------------------------------------------------------------ 栈 / 点位
+    def running_nodes(self):
+        """当前图里活着的节点名（不带命名空间前缀的短名）。
+
+        栈健康判断靠这个，而不是靠"launch 父进程还活着"——父进程在、子节点
+        全死了，是最常见也最坑的"看起来在跑"。
+        """
+        try:
+            return set(self.get_node_names())
+        except Exception:                    # 图查询失败不应该炸掉接口
+            return set()
+
+    def record_point(self, route_name, point_id='', task_id='detect',
+                     wait_seconds=0.0, expect=''):
+        """调 route_manager 的 record_point 记一个点。
+
+        为什么不在控制台自己算位姿再写文件：route_manager 才是路线的唯一所有者，
+        它还要处理"定位是否可信""点 id 是否重复""frame 是否一致"这些规则。绕开它
+        直接写 json，迟早和它自己的校验打架。
+        """
+        if self._record_client is None:
+            return False, 'record_point 服务不可用（缺 RecordPoint 消息类型）', None
+        if not self._record_client.wait_for_service(timeout_sec=2.0):
+            return False, 'route_manager 不在线（/patrol_route/record_point）', None
+        request = RecordPoint.Request()
+        request.route_name = str(route_name or '')
+        request.point_id = str(point_id or '')
+        request.task_id = str(task_id or 'detect')
+        request.wait_seconds = float(wait_seconds or 0.0)
+        request.expect = str(expect or '')
+        future = self._record_client.call_async(request)
+        end = time.time() + 5.0
+        while time.time() < end and not future.done():
+            time.sleep(0.02)
+        if not future.done():
+            return False, '录点超时（5s）', None
+        try:
+            response = future.result()
+        except Exception as error:
+            return False, '录点失败：%s' % error, None
+        point = getattr(response, 'point', None)
+        detail = None
+        if point is not None:
+            detail = {
+                'point_id': str(getattr(point, 'point_id', '')),
+                'x': float(getattr(getattr(getattr(point, 'pose', None),
+                                           'position', None), 'x', 0.0)),
+                'y': float(getattr(getattr(getattr(point, 'pose', None),
+                                           'position', None), 'y', 0.0)),
+            }
+        return bool(response.success), str(response.message or ''), detail
+
+    def publish_route_markers(self, points, suspects=(), frame_id='map'):
+        """把路线点位发到 /console/route_points，供 RViz 的 MarkerArray 显示。"""
+        from . import points as points_mod
+        specs = points_mod.marker_specs(points, suspects)
+        if self._marker_pub is None:
+            return 0, 'MarkerArray 不可用（缺 visualization_msgs）'
+        array = MarkerArray()
+        stamp = self.get_clock().now().to_msg()
+        marker_id = 0
+        for spec in specs:
+            if Marker is None:
+                break
+            sphere = Marker()
+            sphere.header.frame_id = frame_id
+            sphere.header.stamp = stamp
+            sphere.ns = 'route_points'
+            sphere.id = marker_id
+            sphere.type = Marker.SPHERE
+            sphere.action = Marker.ADD
+            sphere.pose.position.x = spec['x']
+            sphere.pose.position.y = spec['y']
+            sphere.pose.position.z = 0.0
+            sphere.pose.orientation.w = 1.0
+            sphere.scale.x = sphere.scale.y = sphere.scale.z = spec['diameter']
+            if spec['color'] == points_mod.SUSPECT:
+                sphere.color.r, sphere.color.g = 1.0, 0.85   # 黄
+            else:
+                sphere.color.r, sphere.color.g = 0.95, 0.25  # 红
+            sphere.color.a = 0.85
+            array.markers.append(sphere)
+            marker_id += 1
+
+            label = Marker()
+            label.header.frame_id = frame_id
+            label.header.stamp = stamp
+            label.ns = 'route_point_labels'
+            label.id = marker_id
+            label.type = Marker.TEXT_VIEW_FACING
+            label.action = Marker.ADD
+            label.pose.position.x = spec['x']
+            label.pose.position.y = spec['y']
+            label.pose.position.z = 0.35
+            label.pose.orientation.w = 1.0
+            label.scale.z = 0.20
+            label.text = spec['text']
+            if spec['color'] == points_mod.SUSPECT:
+                label.color.r, label.color.g = 1.0, 0.85
+            else:
+                label.color.r, label.color.g = 0.95, 0.35
+            label.color.a = 1.0
+            array.markers.append(label)
+            marker_id += 1
+        self._marker_pub.publish(array)
+        return len(specs), ''
+
+    def clear_route_markers(self):
+        """发一个空的 MarkerArray 把 RViz 里的点清掉。"""
+        if self._marker_pub is None:
+            return
+        self._marker_pub.publish(MarkerArray())
 
     def start(self):
         self._executor = MultiThreadedExecutor(num_threads=4)
