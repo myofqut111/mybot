@@ -65,6 +65,54 @@ def undefined_names(path):
     return problems
 
 
+def missing_instance_attrs(path):
+    """返回 [(名字, 行号)]：`self.xxx` 用了，但这个类里从没赋值过也没定义成方法。
+
+    这类错误和缺 import 同源，但更隐蔽——`NameError` 会指到一个拼错的全局名，
+    而 `AttributeError: 'X' object has no attribute '_cmd_vel_topic'` 看起来像
+    "rclpy 的锅"，实际是 declare_parameter 之后忘了读进 self。
+
+    真实事故：`cmd_vel_topic` / `teleop_timeout_sec` 两个参数声明了却没赋值，
+    `ConsoleBridge.__init__` 里一 create_publisher 就 AttributeError，整个控制台
+    起不来；132 个用例全绿，因为 ros_bridge 在本机根本 import 不了。
+    """
+    with open(path, encoding='utf-8') as handle:
+        source = handle.read()
+    tree = ast.parse(source, filename=path)
+
+    defined = set()
+    for node in ast.walk(tree):
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            defined.add(node.name)
+        if isinstance(node, ast.Assign):
+            for target in node.targets:
+                if (isinstance(target, ast.Attribute)
+                        and isinstance(target.value, ast.Name)
+                        and target.value.id == 'self'):
+                    defined.add(target.attr)
+        if isinstance(node, ast.AnnAssign):
+            target = node.target
+            if (isinstance(target, ast.Attribute)
+                    and isinstance(target.value, ast.Name)
+                    and target.value.id == 'self'):
+                defined.add(target.attr)
+        if isinstance(node, ast.Attribute) and isinstance(node.value, ast.Name):
+            # with self._lock: 这类用法不算定义，只关心 Store
+            if node.value.id == 'self' and isinstance(node.ctx, ast.Store):
+                defined.add(node.attr)
+
+    problems = []
+    for node in ast.walk(tree):
+        if (isinstance(node, ast.Attribute)
+                and isinstance(node.value, ast.Name)
+                and node.value.id == 'self'
+                and isinstance(node.ctx, ast.Load)
+                and node.attr.startswith('_')
+                and node.attr not in defined):
+            problems.append((node.attr, node.lineno))
+    return problems
+
+
 def module_files():
     files = []
     for dirpath, dirs, names in os.walk(PKG_DIR):
@@ -90,6 +138,35 @@ class TestNoUndefinedNames(unittest.TestCase):
                 for func, name, line in sorted(problems, key=lambda i: i[2]):
                     failures.append('%s:%d %s 在 %s() 里' % (rel, line, name, func))
         self.assertEqual([], failures, '\n'.join(failures))
+
+    def test_no_missing_instance_attrs(self):
+        failures = []
+        for path in module_files():
+            problems = missing_instance_attrs(path)
+            if problems:
+                rel = os.path.relpath(path, ROOT)
+                for name, line in sorted(problems, key=lambda i: i[1]):
+                    failures.append('%s:%d self.%s 从未赋值' % (rel, line, name))
+        self.assertEqual([], failures, '\n'.join(failures))
+
+    def test_catches_a_real_missing_attr(self):
+        """反向验证：声明了参数却没读进 self，必须报出来。"""
+        import tempfile
+        source = ('class A:\n'
+                  '    def __init__(self):\n'
+                  '        self._topic = "/cmd_vel"\n'
+                  '    def go(self):\n'
+                  '        return self._topic, self._missing\n')
+        with tempfile.NamedTemporaryFile('w', suffix='.py', delete=False,
+                                         encoding='utf-8') as handle:
+            handle.write(source)
+            path = handle.name
+        try:
+            problems = missing_instance_attrs(path)
+        finally:
+            os.unlink(path)
+        self.assertEqual(1, len(problems))
+        self.assertEqual('_missing', problems[0][0])
 
     def test_catches_a_real_missing_import(self):
         """反向验证：故意缺 import 时这个检查必须报出来。"""

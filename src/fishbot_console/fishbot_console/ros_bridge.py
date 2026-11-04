@@ -94,6 +94,11 @@ class ConsoleBridge(Node):
         self._crit_v = float(self.get_parameter('battery_crit_v').value)
         self._reports_dir = os.path.expanduser(
             str(self.get_parameter('reports_dir').value))
+        # 这两个是遥控链路上的关键参数：漏赋值不是"默认值"而是 AttributeError，
+        # 而且发生在 __init__ 里，表现为整个控制台一起退出。
+        self._cmd_vel_topic = str(self.get_parameter('cmd_vel_topic').value)
+        self._teleop_timeout_sec = float(
+            self.get_parameter('teleop_timeout_sec').value)
 
         self._lock = threading.Lock()
         self._status_raw = ''
