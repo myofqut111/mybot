@@ -14,7 +14,7 @@ import traceback
 import rclpy
 
 from .ros_bridge import ConsoleBridge
-from .server import ConsoleServer
+from .server import ROSBRIDGE_PORT, ConsoleServer
 
 
 def _settings(node):
@@ -44,9 +44,19 @@ def main(args=None):
 
         server = ConsoleServer(bridge, _settings(bridge))
         httpd = server.serve(host, port)
+        actual = int(server.port or port)
+        if actual != port:
+            bridge.get_logger().warn(
+                '端口 %d 被占用（更可能是上一次的 socket 还没释放），'
+                '已自动顺延到 %d。浏览器请打开 http://%s:%d'
+                % (port, actual, host, actual))
+        if actual == ROSBRIDGE_PORT:
+            bridge.get_logger().warn(
+                '%d 是 rosbridge 的端口，浏览器里实时流会连不上；'
+                '控制台建议用 8080/8090。' % actual)
         bridge.get_logger().info(
             'console listening on http://%s:%d （把 0.0.0.0 换成机器人 IP 即可）'
-            % (host, port))
+            % (host, actual))
 
         stop = threading.Event()
 

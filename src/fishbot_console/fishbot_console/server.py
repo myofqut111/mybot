@@ -116,6 +116,8 @@ class ConsoleServer(object):
         self.bridge = bridge
         self.settings = settings or {}
         self.httpd = None
+        self.port = None            # serve() 之后是**实际**端口（可能被顺延）
+        self.skipped_ports = []     # 顺延时跳过的端口，给调用方打日志用
 
     # ------------------------------------------------------------ 路由
     def make_handler(self):
@@ -365,22 +367,39 @@ class ConsoleServer(object):
         return (choices[0].get('message') or {}).get('content') or ''
 
     # ------------------------------------------------------------ 启动
-    def serve(self, host='0.0.0.0', port=8080):
-        try:
-            self.httpd = ThreadingHTTPServer((host, int(port)),
-                                             self.make_handler())
-        except OSError as error:
-            # 端口被占是现场最常见的启动失败之一：上一个控制台没退干净，
-            # 或者 8080 上本来就有别的服务。把"换端口"的完整命令写进错误里，
-            # 比抛一个光秃秃的 errno 98 有用得多。
-            # Windows 上同一个原因报的是 WSAEACCES(10013) 而不是 EADDRINUSE，
-            # 所以两种都要认。
-            busy = (getattr(error, 'errno', None) in (errno.EADDRINUSE,
-                                                      errno.EACCES)
-                    or getattr(error, 'winerror', None) in (10048, 10013))
-            if busy:
-                raise RuntimeError(busy_port_message(int(port))) from error
-            raise RuntimeError(
-                '无法监听 %s:%d（%s）' % (host, int(port), error)) from error
-        self.httpd.daemon_threads = True
-        return self.httpd
+    def serve(self, host='0.0.0.0', port=8080, tries=10):
+        """绑定端口；被占用时往后顺延，真的一个都占不上才抛。
+
+        为什么要自动顺延：端口冲突是纯环境问题，跟"控制台能不能用"无关。
+        现场出现过"没人占 9090 但一启动就报被占用"的情况（上一次进程的 socket
+        还在 TIME_WAIT，或者同一个 launch 里的 rosbridge 先抢到），让用户去
+        pkill / 换命令行都很绕。顺延一个端口、把实际端口打出来，问题就消失了；
+        真的一个都不通（比如权限不够）再报错，那时报错才有用。
+        """
+        first = int(port)
+        last_error = None
+        self.skipped_ports = []
+        for offset in range(max(1, int(tries))):
+            candidate = first + offset
+            try:
+                self.httpd = ThreadingHTTPServer((host, candidate),
+                                                 self.make_handler())
+            except OSError as error:
+                # Windows 上同一个原因报的是 WSAEACCES(10013) 而不是 EADDRINUSE
+                busy = (getattr(error, 'errno', None) in (errno.EADDRINUSE,
+                                                          errno.EACCES)
+                        or getattr(error, 'winerror', None) in (10048, 10013))
+                last_error = error
+                if busy and offset + 1 < int(tries):
+                    self.skipped_ports.append(candidate)
+                    continue
+                if busy:
+                    raise RuntimeError(
+                        busy_port_message(first)) from error
+                raise RuntimeError(
+                    '无法监听 %s:%d（%s）' % (host, candidate, error)) from error
+            self.port = candidate
+            self.httpd.daemon_threads = True
+            return self.httpd
+        raise RuntimeError('没有可用端口（%s）' % last_error)
+

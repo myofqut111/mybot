@@ -364,9 +364,29 @@ class StaticAnswerCase(unittest.TestCase):
 
 
 class TestPortInUse(unittest.TestCase):
-    """端口被占用时的报错：必须能照着日志把问题解决掉。"""
+    """端口被占用时的行为：能顺延就顺延，顺延不了才报错。"""
 
-    def test_busy_port_raises_readable_error(self):
+    def test_busy_port_falls_back_to_next(self):
+        """端口被占不该让控制台起不来——顺延一个端口，把实际端口报出来。"""
+        import socket
+        holder = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        holder.bind(('127.0.0.1', 0))
+        holder.listen(1)
+        busy_port = holder.getsockname()[1]
+        try:
+            service = server.ConsoleServer(FakeBridge())
+            httpd = service.serve('127.0.0.1', busy_port)
+        finally:
+            holder.close()
+        try:
+            self.assertNotEqual(service.port, busy_port)
+            self.assertGreater(service.port, busy_port)
+            self.assertIn(busy_port, service.skipped_ports)
+        finally:
+            httpd.server_close()
+
+    def test_busy_port_raises_when_no_room(self):
+        """只允许试一个端口时，被占就必须报错，且文案要能照做。"""
         import socket
         sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         sock.bind(('127.0.0.1', 0))
@@ -375,7 +395,7 @@ class TestPortInUse(unittest.TestCase):
         try:
             service = server.ConsoleServer(FakeBridge())
             with self.assertRaises(RuntimeError) as caught:
-                service.serve('127.0.0.1', port)
+                service.serve('127.0.0.1', port, tries=1)
         finally:
             sock.close()
         message = str(caught.exception)

@@ -7,7 +7,7 @@ package_name = 'fishbot_console'
 
 setup(
     name=package_name,
-    version='0.4.5',
+    version='0.4.6',
     packages=find_packages(exclude=['test']),
     # Leaflet / roslib 杩欎簺 JS 蹇呴』璺熺潃鍖呬竴璧疯锛氭櫘閫?colcon build 鍙嫹 .py锛?    # 涓嶅姞 package_data 鐨勮瘽椤甸潰涓?/static/leaflet.js 浼?404锛屽湴鍥剧洿鎺ョ櫧灞忋€?    package_data={package_name: ['static/*']},
     data_files=[
