@@ -264,7 +264,8 @@ async function api(path, body){
 function setBadge(el, text, cls){ el.textContent = text; el.className = 'badge ' + (cls||''); }
 
 /* ---------------- 地图（Leaflet，手感对齐 RViz） ---------------- */
-const MAPM = {ready:false, key:'', w:0, h:0, res:0.05, ox:0, oy:0, yaw:0};
+const MAPM = {ready:false, key:'', w:0, h:0, res:0.05, ox:0, oy:0, yaw:0,
+              fitted:false};
 const CANVAS_R = L.canvas({padding:0.4});
 const LL = {};
 let LF = null, DRAG = null;
@@ -274,6 +275,9 @@ function ensureMap(){
   LF = L.map('map', {crs:L.CRS.Simple, zoomControl:false,
                      attributionControl:false, doubleClickZoom:false,
                      zoomSnap:0.25, zoomDelta:0.5, minZoom:-4, maxZoom:8,
+                     // 默认 maxBoundsViscosity=0 是"橡皮筋"：拖出边界一松手就弹回原位。
+                     // 那是 RViz 里没有的手感，用户会以为拖不动。设成 1 变成硬边界。
+                     maxBoundsViscosity:1.0,
                      renderer:CANVAS_R});
   LL.plan = L.layerGroup().addTo(LF);
   LL.scan = L.layerGroup().addTo(LF);
@@ -335,8 +339,14 @@ async function loadMap(){
                             {opacity:1}).addTo(LF);
     LL.img.bringToBack();
     if(LL.cost){ LF.removeLayer(LL.cost); LL.cost = null; }
-    LF.setMaxBounds(mapBounds());
-    LF.fitBounds(mapBounds());
+    // 留出半张地图的余量：贴着地图边缘时拖不动、也放不下工具栏。
+    LF.setMaxBounds(mapBounds().pad(0.6));
+    // 只在"第一次拿到地图"时自动适应窗口。地图每 6 s 会重取一次，如果每次都
+    // 重新 fitBounds，用户刚拖好的视角就会被抢回去——这正是"拖完又跳回来"。
+    if(!MAPM.fitted){
+      MAPM.fitted = true;
+      LF.fitBounds(mapBounds());
+    }
   }
   drawRobot(st);
   MAPM.yaw = (st.pose && st.pose.yaw) || 0;

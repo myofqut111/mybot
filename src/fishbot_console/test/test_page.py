@@ -81,6 +81,17 @@ class TestPage(unittest.TestCase):
         self.assertIn("LF.on('mouseup', onUp)", self.html)
         self.assertIn('chkCostmap', self.html)
         self.assertIn('chkScan', self.html)
+
+    def test_map_drag_is_not_rubber_band(self):
+        """拖完弹回原位，是 maxBoundsViscosity 默认值 0 造成的。
+
+        用户在 RViz 里没有这种手感，会直接认为"拖不动"。这三条是修法的全部：
+        硬边界（viscosity=1）、边界留余量（pad）、只在首次自动适应窗口。
+        """
+        self.assertIn('maxBoundsViscosity:1.0', self.html.replace(' ', ''))
+        self.assertIn('setMaxBounds(mapBounds().pad(', self.html)
+        self.assertIn('if(!MAPM.fitted)', self.html)
+
     def test_map_click_sends_nav(self):
         # 换 Leaflet 之后不再手写 canvas 事件，改由 Leaflet 的 mousedown/mouseup
         # 回调驱动：按下定位置、拖出朝向、松手发目标。
