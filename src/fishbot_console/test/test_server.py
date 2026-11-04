@@ -320,6 +320,18 @@ class ServerCase(unittest.TestCase):
         self.assertTrue(state['status']['estop']['active'])
 
 
+    def test_state_carries_estop(self):
+        """刷新页面后按钮和红色提示条要能还原。
+
+        这条是补作业：/api/state 之前没带 estop，刷新后按钮显示没停、
+        提示条也消失，而服务端其实还在以 20 Hz 发零速。
+        """
+        _code, body, _ctype = self.get('/api/state')
+        payload = json.loads(body)
+        self.assertIn('estop', payload)
+        self.assertIn('active', payload['estop'])
+
+
 class StaticAnswerCase(unittest.TestCase):
     """不需要起服务的部分：answer() 的分支。"""
 
@@ -436,6 +448,7 @@ class TestLogSink(unittest.TestCase):
         sink = server._log_sink_of(Boom())
         sink('nav', 'x')        # 不能抛
         sink('nav', 40, 'y')
+
 
 
 if __name__ == '__main__':

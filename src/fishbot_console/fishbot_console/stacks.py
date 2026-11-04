@@ -68,7 +68,7 @@ def default_stacks():
             starts_rviz=True),
         StackSpec(
             'patrol', '巡检', 'fishbot_patrol_v2', 'patrol_v2.launch.py',
-            probes=('patrol_route_manager', 'patrol_task_manager',
+            probes=('route_manager', 'patrol_task_manager',
                     'patrol_executor_v2'),
             args=['nav:=false', 'console:=false'],
             description='路线管理器 + 任务管理器 + 执行器。导航没起时只能排队。'),

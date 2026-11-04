@@ -212,6 +212,18 @@ class LogCase(unittest.TestCase):
         manager._stacks['nav'].thread.join(timeout=2.0)
         self.assertIn('INFO: 起来了', manager.logs('nav', 10))
 
+    def test_patrol_probes_match_real_node_names(self):
+        """巡检栈的探测名必须和真实节点名一致。
+
+        patrol_route_manager 是想当然写出来的，真实节点叫 
+oute_manager。
+        后果不是崩溃，而是面板永远显示半启动，看的人以为巡检没起来。
+        """
+        spec = {item.name: item for item in stacks.default_stacks()}['patrol']
+        self.assertEqual(
+            spec.probes,
+            ('route_manager', 'patrol_task_manager', 'patrol_executor_v2'))
+
 
 if __name__ == '__main__':
     unittest.main(verbosity=2)

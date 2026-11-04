@@ -537,12 +537,15 @@ async function pollLogs(){
   box.innerHTML = '';
   items.forEach(item => {
     const t = (item.ts || item.time || '').toString();
-    const lv = Number(item.level || 20);
+    const LV = {DEBUG:10, INFO:20, WARN:30, ERROR:40, FATAL:50};
+    const lv = typeof item.level === 'number' ? item.level
+      : (LV[String(item.level || 'INFO').toUpperCase()] || 20);
     const div = document.createElement('div');
     div.className = 'lv' + lv;
     const stamp = t.length > 11 ? t.slice(11, 19) : t;
-    div.textContent = stamp + ' ' + (item.source || '') + ' ' +
+    div.textContent = stamp + ' ' + (item.node || item.source || '') + ' ' +
       (item.text || item.message || '');
+    div.title = (item.node || item.source || '');
     box.appendChild(div);
   });
   if (atBottom) box.scrollTop = box.scrollHeight;

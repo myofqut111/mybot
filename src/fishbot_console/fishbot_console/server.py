@@ -341,6 +341,8 @@ class ConsoleServer(object):
             meta['min_y'] = meta['origin_y']
             meta['max_y'] = meta['origin_y'] + meta['height'] * meta['resolution']
         return {
+            # 急停状态要在刷新后能还原，否则按钮和红色提示条会「看着没停」
+            'estop': self.bridge.estop_state(),
             'status': status,
             'map': meta,
             # 页面在顶层读 pose 画车（`st.pose`），而它实际存在 status 里，
