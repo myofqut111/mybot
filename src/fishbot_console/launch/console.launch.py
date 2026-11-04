@@ -18,6 +18,7 @@ from launch.conditions import IfCondition
 from launch.launch_description_sources import AnyLaunchDescriptionSource
 from launch.substitutions import LaunchConfiguration
 from launch_ros.actions import Node
+from launch_ros.parameter_descriptions import ParameterValue
 from launch_ros.substitutions import FindPackageShare
 
 ROSBRIDGE_PORT = '9090'
@@ -87,8 +88,12 @@ def generate_launch_description() -> LaunchDescription:
             respawn_delay=2.0,
             parameters=[
                 params,
-                {'http_port': LaunchConfiguration('port'),
-                 'http_host': LaunchConfiguration('host')},
+                # 端口必须是 int：LaunchConfiguration 求值出来是字符串，
+                # 直接塞给声明为整型的参数会 InvalidParameterTypeException。
+                {'http_port': ParameterValue(LaunchConfiguration('port'),
+                                             value_type=int),
+                 'http_host': ParameterValue(LaunchConfiguration('host'),
+                                             value_type=str)},
             ],
         ),
     ])

@@ -363,5 +363,35 @@ class StaticAnswerCase(unittest.TestCase):
         self.assertEqual(server.ConsoleServer._chat.__name__, '_chat')
 
 
+class TestPortInUse(unittest.TestCase):
+    """端口被占用时的报错：必须能照着日志把问题解决掉。"""
+
+    def test_busy_port_raises_readable_error(self):
+        import socket
+        sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        sock.bind(('127.0.0.1', 0))
+        sock.listen(1)
+        port = sock.getsockname()[1]
+        try:
+            service = server.ConsoleServer(FakeBridge())
+            with self.assertRaises(RuntimeError) as caught:
+                service.serve('127.0.0.1', port)
+        finally:
+            sock.close()
+        message = str(caught.exception)
+        self.assertIn(str(port), message)
+        self.assertIn('port:=9000', message)
+        self.assertIn('pkill -f robot_console', message)
+
+    def test_free_port_binds(self):
+        service = server.ConsoleServer(FakeBridge())
+        httpd = service.serve('127.0.0.1', 0)
+        try:
+            self.assertIsNotNone(service.httpd)
+            self.assertTrue(httpd.daemon_threads)
+        finally:
+            httpd.server_close()
+
+
 if __name__ == '__main__':
     unittest.main()

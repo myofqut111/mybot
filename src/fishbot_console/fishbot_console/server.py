@@ -5,6 +5,7 @@
 用标准库 http.server —— 机器人上不需要再装 Flask，而且这点并发量
 （一个人、手机 + 电脑）根本用不上多进程。
 """
+import errno
 import json
 import os
 import urllib.error
@@ -344,7 +345,25 @@ class ConsoleServer(object):
 
     # ------------------------------------------------------------ 启动
     def serve(self, host='0.0.0.0', port=8080):
-        self.httpd = ThreadingHTTPServer((host, int(port)),
-                                         self.make_handler())
+        try:
+            self.httpd = ThreadingHTTPServer((host, int(port)),
+                                             self.make_handler())
+        except OSError as error:
+            # 端口被占是现场最常见的启动失败之一：上一个控制台没退干净，
+            # 或者 8080 上本来就有别的服务。把"换端口"的完整命令写进错误里，
+            # 比抛一个光秃秃的 errno 98 有用得多。
+            # Windows 上同一个原因报的是 WSAEACCES(10013) 而不是 EADDRINUSE，
+            # 所以两种都要认。
+            busy = (getattr(error, 'errno', None) in (errno.EADDRINUSE,
+                                                      errno.EACCES)
+                    or getattr(error, 'winerror', None) in (10048, 10013))
+            if busy:
+                raise RuntimeError(
+                    '端口 %d 已被占用，控制台起不来。先看看是不是上一个实例还没退：'
+                    'pkill -f robot_console ；或者换个端口启动：'
+                    'ros2 launch fishbot_console console.launch.py port:=9000'
+                    % int(port)) from error
+            raise RuntimeError(
+                '无法监听 %s:%d（%s）' % (host, int(port), error)) from error
         self.httpd.daemon_threads = True
         return self.httpd

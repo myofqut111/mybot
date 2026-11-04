@@ -9,6 +9,7 @@ import os
 import signal
 import sys
 import threading
+import traceback
 
 import rclpy
 
@@ -33,44 +34,61 @@ def _settings(node):
 
 def main(args=None):
     rclpy.init(args=args)
-    bridge = ConsoleBridge()
-    host = str(bridge.get_parameter('http_host').value)
-    port = int(bridge.get_parameter('http_port').value)
-    bridge.start()
-
-    server = ConsoleServer(bridge, _settings(bridge))
-    httpd = server.serve(host, port)
-    bridge.get_logger().info(
-        'console listening on http://%s:%d （把 0.0.0.0 换成机器人 IP 即可）'
-        % (host, port))
-
-    stop = threading.Event()
-
-    def _on_signal(_signum, _frame):
-        stop.set()
-
-    signal.signal(signal.SIGINT, _on_signal)
-    signal.signal(signal.SIGTERM, _on_signal)
-
-    thread = threading.Thread(target=httpd.serve_forever, daemon=True)
-    thread.start()
+    bridge = None
+    httpd = None
     try:
+        bridge = ConsoleBridge()
+        host = str(bridge.get_parameter('http_host').value)
+        port = int(bridge.get_parameter('http_port').value)
+        bridge.start()
+
+        server = ConsoleServer(bridge, _settings(bridge))
+        httpd = server.serve(host, port)
+        bridge.get_logger().info(
+            'console listening on http://%s:%d （把 0.0.0.0 换成机器人 IP 即可）'
+            % (host, port))
+
+        stop = threading.Event()
+
+        def _on_signal(_signum, _frame):
+            stop.set()
+
+        signal.signal(signal.SIGINT, _on_signal)
+        signal.signal(signal.SIGTERM, _on_signal)
+
+        thread = threading.Thread(target=httpd.serve_forever, daemon=True)
+        thread.start()
         while not stop.is_set():
             stop.wait(0.3)
+        return 0
+    except Exception:
+        # launch 只会显示 "process has died [exit code 1]"，真正的栈在上面几行，
+        # 用户经常只贴最后一行。这里把栈完整打到 stderr，并给一条能照做的提示。
+        traceback.print_exc()
+        if bridge is not None:
+            bridge.get_logger().error(
+                'console failed to start, see the traceback above')
+        else:
+            sys.stderr.write(
+                '控制台启动失败。常见原因：端口被占用（换 port:=9000）、'
+                'rosbridge/ROS 环境没 source、参数类型不对。\n')
+        return 1
     finally:
-        bridge.get_logger().info('console shutting down')
-        try:
-            httpd.shutdown()
-        except Exception:
-            pass
-        bridge.shutdown()
-        try:
-            bridge.destroy_node()
-        except Exception:
-            pass
+        if bridge is not None:
+            bridge.get_logger().info('console shutting down')
+        if httpd is not None:
+            try:
+                httpd.shutdown()
+            except Exception:
+                pass
+        if bridge is not None:
+            bridge.shutdown()
+            try:
+                bridge.destroy_node()
+            except Exception:
+                pass
         if rclpy.ok():
             rclpy.shutdown()
-    return 0
 
 
 if __name__ == '__main__':
