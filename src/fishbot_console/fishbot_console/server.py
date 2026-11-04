@@ -158,6 +158,25 @@ class ConsoleServer(object):
                     if not png:
                         return _json_response(self, {'error': 'no layers'}, 404)
                     return _bytes_response(self, png, 'image/png')
+                if path in ('/api/costmap/global.png',
+                            '/api/costmap/local.png'):
+                    slot = 'local' if path.endswith('local.png') else 'global'
+                    png, _meta = server.bridge.costmap_view(slot)
+                    if not png:
+                        return _json_response(
+                            self, {'error': 'no %s costmap' % slot}, 404)
+                    return _bytes_response(self, png, 'image/png')
+                if path == '/api/costmap.json':
+                    out = {}
+                    for slot in ('global', 'local'):
+                        _png, meta = server.bridge.costmap_view(slot)
+                        item = {'ready': bool(_png)}
+                        for key in ('width', 'height', 'resolution',
+                                    'origin_x', 'origin_y'):
+                            if meta.get(key) is not None:
+                                item[key] = meta[key]
+                        out[slot] = item
+                    return _json_response(self, out)
                 if path == '/api/scan':
                     points, age = server.bridge.scan_view()
                     return _json_response(self, {

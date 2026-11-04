@@ -133,7 +133,8 @@ th{color:var(--dim);font-weight:500}
       <span class="badge" id="zoomLabel">100%</span>
       <button id="btnZoomIn" title="放大">+</button>
       <button id="btnZoomFit">适应窗口</button>
-      <label class="chk"><input type="checkbox" id="chkCostmap" checked> 代价地图</label>
+      <label class="chk"><input type="checkbox" id="chkCostmap" checked> 代价地图(全局)</label>
+      <label class="chk"><input type="checkbox" id="chkCostmapLocal"> 代价地图(局部)</label>
       <label class="chk"><input type="checkbox" id="chkScan" checked> 雷达点云</label>
       <label class="chk"><input type="checkbox" id="chkPlan" checked> 全局路径</label>
       <span id="mapCoord" class="chk">—</span>
@@ -288,7 +289,7 @@ window.addEventListener('unhandledrejection', ev => {
 const MAPM = {ready:false, key:'', w:0, h:0, res:0.05, ox:0, oy:0, yaw:0,
               fitted:false};
 const CANVAS_R = L.canvas({padding:0.4});
-const LL = {};
+const LL = {cost:{global:null, local:null}, costKey:{global:null, local:null}};
 let LF = null, DRAG = null;
 
 function ensureMap(){
@@ -405,19 +406,50 @@ function drawMapZoom(){ /* Leaflet 自己处理缩放 */ }
 function fitZoom(){ if(LF && MAPM.ready) LF.fitBounds(mapLLBounds()); }
 function zoomBy(factor){ if(LF) LF.setZoom(LF.getZoom() + Math.log2(factor)); }
 
+const BLANK_GIF = 'data:image/gif;base64,' +
+  'R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7';
+
+// 代价地图的 meta（分辨率/原点/尺寸）-> Leaflet bounds（[lat=y, lng=x]）
+function layerBounds(m){
+  const res = m.resolution || 0.05;
+  const ox = m.origin_x || 0;
+  const oy = m.origin_y || 0;
+  return [[oy, ox], [oy + (m.height || 0) * res, ox + (m.width || 0) * res]];
+}
+
+// 全局层=整张地图，静止不动；局部层=跟着车走的滑动窗口，所以默认不勾。
+// 两层各自用自己那层的 meta 定位，绝不能合成一张图——否则局部层会在地图上滑。
 async function loadLayers(){
   if(!MAPM.ready) return;
-  if(!$('chkCostmap').checked){
-    if(LL.cost){ LF.removeLayer(LL.cost); LL.cost = null; }
+  const want = {global: $('chkCostmap').checked,
+                local: $('chkCostmapLocal').checked};
+  if(!want.global && !want.local){
+    dropCost('global'); dropCost('local');
     return;
   }
-  if(!LL.cost){
-    LL.cost = L.imageOverlay(
-      'data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7',
-      mapBounds(), {opacity:0.85, interactive:false}).addTo(LF);
+  let meta = null;
+  try{ meta = await api('/api/costmap.json'); }catch(e){ return; }
+  if(!meta) return;
+  for(const slot of ['global', 'local']){
+    const info = meta[slot] || {};
+    if(!want[slot] || !info.ready){ dropCost(slot); continue; }
+    const key = [info.width, info.height, info.resolution,
+                 info.origin_x, info.origin_y].join(',');
+    if(!LL.cost[slot] || LL.costKey[slot] !== key){
+      dropCost(slot);
+      LL.cost[slot] = L.imageOverlay(
+        BLANK_GIF, layerBounds(info),
+        {opacity: slot === 'local' ? 0.75 : 0.85, interactive:false}).addTo(LF);
+      LL.costKey[slot] = key;
+    }
+    const element = LL.cost[slot].getElement();
+    if(element) element.src = '/api/costmap/' + slot + '.png?t=' + Date.now();
   }
-  const element = LL.cost.getElement();
-  if(element) element.src = '/api/layers.png?t=' + Date.now();
+}
+
+function dropCost(slot){
+  if(LL.cost[slot]){ LF.removeLayer(LL.cost[slot]); LL.cost[slot] = null; }
+  LL.costKey[slot] = null;
 }
 
 async function pollScan(){
@@ -471,6 +503,7 @@ $('btnZoomIn').addEventListener('click', () => zoomBy(1.4));
 $('btnZoomOut').addEventListener('click', () => zoomBy(1 / 1.4));
 $('btnZoomFit').addEventListener('click', () => fitZoom());
 $('chkCostmap').addEventListener('change', () => paint());
+$('chkCostmapLocal').addEventListener('change', () => paint());
 $('chkScan').addEventListener('change', () => paint());
 $('chkPlan').addEventListener('change', () => paint());
 

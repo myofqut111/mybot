@@ -117,6 +117,11 @@ class ConsoleBridge(Node):
         self._layers_png = b''
         self._layers_version = 0            # 每次代价地图更新 +1
         self._layers_built = -1             # 上次成图时的版本号（缓存依据）
+        # 单个代价地图各自成图、各自定位。合成一张会让"局部代价地图的移动窗口"
+        # 跟着车在地图上滑动，看起来就是地图在漂。
+        self._cost_version = {'global': 0, 'local': 0}
+        self._cost_png = {'global': b'', 'local': b''}
+        self._cost_built = {'global': -1, 'local': -1}
         self._scan_points = []              # [(x, y)]，已投到 map 坐标系
         self._scan_time = 0.0
         self._scan_max = int(self.get_parameter('scan_max_points').value)
@@ -272,6 +277,8 @@ class ConsoleBridge(Node):
             else:
                 self._local_cost = (data, meta)
             self._layers_version += 1
+            if slot in self._cost_version:
+                self._cost_version[slot] += 1
 
     def _on_global_costmap(self, msg):
         self._store_costmap(msg, 'global')
@@ -280,30 +287,42 @@ class ConsoleBridge(Node):
         self._store_costmap(msg, 'local')
 
     def layers_view(self):
-        """把全局 + 局部代价地图叠成一张和底图同尺寸的 RGBA PNG。
+        """兼容旧接口：只返回全局代价地图（不再把局部层合进来）。"""
+        return self.costmap_view('global')[0]
 
-        缓存：只有代价地图更新过（version 变了）才重算，否则 5 Hz 轮询也
-        不会把 CPU 吃满。
+    def costmap_view(self, slot='global'):
+        """返回 (png, meta)：单个代价地图按自己的尺寸与原点成图。
+
+        为什么不把两层合成一张：局部代价地图是跟着车走的滑动窗口，一旦和全局
+        层画进同一张"按地图坐标系对齐"的图里，它就会在地图上滑来滑去——看起来
+        就是地图在漂。分开渲染、各用自己的 meta 定位，才和 RViz 一致。
         """
+        if slot not in ('global', 'local'):
+            raise ValueError('slot must be global or local')
         with self._lock:
-            version = self._layers_version
-            if self._layers_png and self._layers_built == version:
-                return self._layers_png
-            meta = dict(self._map_meta or {})
-            layers = [item for item in (self._global_cost, self._local_cost)
-                      if item]
-        if not meta.get('width') or not layers:
-            return b''
+            item = self._global_cost if slot == 'global' else self._local_cost
+            version = self._cost_version.get(slot, 0)
+            if self._cost_png.get(slot) and self._cost_built.get(slot) == version:
+                return self._cost_png[slot], (dict(item[1]) if item else {})
+            snapshot = (item[0], dict(item[1])) if item else None
+        if snapshot is None:
+            return b'', {}
+        data, meta = snapshot
+        width = int(meta.get('width') or 0)
+        height = int(meta.get('height') or 0)
+        if width <= 0 or height <= 0:
+            return b'', {}
         try:
-            png = map_render.composite_layers(
-                int(meta['width']), int(meta['height']), meta, layers)
+            flat = b''.join(map_render.costmap_rows(data, width, height))
+            png = map_render.write_png(width, height, flat, color_type=6)
         except Exception as error:
-            self.get_logger().warning('composite costmaps failed: %s' % error)
-            return b''
+            self.get_logger().warning(
+                'render costmap %s failed: %s' % (slot, error))
+            return b'', {}
         with self._lock:
-            self._layers_png = png
-            self._layers_built = version
-        return png
+            self._cost_png[slot] = png
+            self._cost_built[slot] = version
+        return png, meta
 
     def _on_scan(self, msg):
         """激光点投到 map 坐标系。TF 拿不到就整帧丢掉，绝不假装有数据。"""

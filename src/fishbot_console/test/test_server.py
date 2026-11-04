@@ -106,6 +106,14 @@ class FakeBridge(object):
         self.calls.append(('layers',))
         return self.layers
 
+    def costmap_view(self, slot='global'):
+        self.calls.append(('costmap', slot))
+        if not self.layers:
+            return b'', {}
+        return self.layers, {'width': 200, 'height': 200,
+                             'resolution': 0.05,
+                             'origin_x': 0.0, 'origin_y': 0.0}
+
     def scan_view(self):
         self.calls.append(('scan',))
         return list(self.scan), 0.2
@@ -268,6 +276,34 @@ class ServerCase(unittest.TestCase):
             self.assertEqual(ctx.exception.code, 404)
         finally:
             self.bridge.layers = saved       # 同一个 bridge 被各用例复用
+
+    def test_costmap_json_lists_two_layers(self):
+        status, body, _ctype = self.get('/api/costmap.json')
+        self.assertEqual(status, 200)
+        payload = json.loads(body.decode('utf-8'))
+        self.assertEqual(sorted(payload.keys()), ['global', 'local'])
+        for slot in ('global', 'local'):
+            self.assertTrue(payload[slot]['ready'])
+            self.assertEqual(payload[slot]['width'], 200)
+            self.assertAlmostEqual(payload[slot]['resolution'], 0.05)
+
+    def test_costmap_png_per_slot(self):
+        for slot in ('global', 'local'):
+            status, body, ctype = self.get('/api/costmap/%s.png' % slot)
+            self.assertEqual(status, 200)
+            self.assertEqual(ctype, 'image/png')
+            self.assertEqual(body, b'\x89PNG-layers')
+
+    def test_costmap_png_missing_is_404(self):
+        saved = self.bridge.layers
+        self.bridge.layers = b''
+        try:
+            for slot in ('global', 'local'):
+                with self.assertRaises(urllib.error.HTTPError) as ctx:
+                    self.get('/api/costmap/%s.png' % slot)
+                self.assertEqual(ctx.exception.code, 404)
+        finally:
+            self.bridge.layers = saved
 
     def test_scan_points(self):
         status, body, _c = self.get('/api/scan')

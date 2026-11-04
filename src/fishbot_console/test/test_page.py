@@ -18,6 +18,7 @@ REQUIRED_IDS = [
     'logList', 'logLevel', 'runsBody', 'chatLog', 'askBox', 'btnAsk',
     'teleopPad', 'teleSpeed', 'teleLabel',
     'chkCostmap', 'chkScan', 'chkPlan', 'mapCoord', 'zoomLabel',
+    'chkCostmapLocal',
     'btnEstop', 'estopBar',
 ]
 
@@ -62,7 +63,10 @@ class TestPage(unittest.TestCase):
         """RViz 对齐的三样东西必须真的在页面里，否则只是后端有接口。"""
         self.assertIn('id="chkCostmap"', self.html)
         self.assertIn('id="chkScan"', self.html)
-        self.assertIn('/api/layers.png', self.html)
+        # 两层各自用自己那层的 meta 定位，所以页面必须按层取图和 meta，
+        # 不能再让服务端合成一张（合成会让局部层在地图上滑）。
+        self.assertIn('/api/costmap.json', self.html)
+        self.assertIn("'/api/costmap/' + slot + '.png", self.html)
         self.assertIn('/api/scan', self.html)
         self.assertIn('LOADLAYERS', self.html.upper().replace('loadLayers', 'LOADLAYERS'))
 
