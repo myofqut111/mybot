@@ -11,12 +11,12 @@ rosbridge 用来把 /tf 和 /scan 推给浏览器（页头那个"实时 已连"�
 它是**可选依赖**：没装 rosbridge_server 时这里只打一条警告，控制台照常起，
 页面自动退回轮询，同一份代码在装了/没装的两台机器上都能跑。
 """
+from ament_index_python.packages import get_package_share_directory
 from launch import LaunchDescription
-from launch.actions import (DeclareLaunchArgument, IncludeLaunchDescription,
-                            LogInfo)
+from launch.actions import DeclareLaunchArgument, IncludeLaunchDescription, LogInfo
 from launch.conditions import IfCondition
-from launch.launch_description_sources import PythonLaunchDescriptionSource
-from launch.substitutions import (LaunchConfiguration, PathJoinSubstitution)
+from launch.launch_description_sources import AnyLaunchDescriptionSource
+from launch.substitutions import LaunchConfiguration
 from launch_ros.actions import Node
 from launch_ros.substitutions import FindPackageShare
 
@@ -24,24 +24,37 @@ ROSBRIDGE_PORT = '9090'
 
 
 def _rosbridge_include():
-    """装了 rosbridge_server 返回 (include, None)，没装返回 (None, 原因)。"""
+    """装了 rosbridge_server 返回 (include, None)，没装返回 (None, 原因)。
+
+    两个坑都在这一个函数里：
+
+    1. rosbridge 官方的 launch 是 **.xml**，必须用 AnyLaunchDescriptionSource
+       按后缀分派。用 PythonLaunchDescriptionSource 去解析会直接抛
+       `invalid syntax (rosbridge_websocket_launch.xml, line 1)` —— 之前就是这么炸的。
+    2. 探测"包装没装"必须**当场**做（get_package_share_directory 会真抛异常），
+       不能用 FindPackageShare 这种惰性替换：那样 try/except 永远不触发，
+       没装的时候不会走警告分支，而是到运行期才崩。
+    """
     try:
-        share = FindPackageShare('rosbridge_server')
-        source = PathJoinSubstitution([share, 'launch',
-                                       'rosbridge_websocket_launch.xml'])
+        get_package_share_directory('rosbridge_server')
+    except Exception as error:              # PackageNotFoundError 等
+        return None, '%s' % error
+
+    try:
         include = IncludeLaunchDescription(
-            PythonLaunchDescriptionSource(source),
+            AnyLaunchDescriptionSource((FindPackageShare('rosbridge_server')
+                                        / 'launch'
+                                        / 'rosbridge_websocket_launch.xml')),
             launch_arguments={'port': ROSBRIDGE_PORT}.items(),
             condition=IfCondition(LaunchConfiguration('rosbridge')),
         )
-        return include, None
-    except Exception as error:      # 包不存在 / 找不到 launch 文件
+    except Exception as error:
         return None, '%s' % error
+    return include, None
 
 
-def generate_launch_description():
-    params = PathJoinSubstitution(
-        [FindPackageShare('fishbot_console'), 'config', 'console.yaml'])
+def generate_launch_description() -> LaunchDescription:
+    params = FindPackageShare('fishbot_console') / 'config' / 'console.yaml'
 
     include, reason = _rosbridge_include()
     if include is not None:

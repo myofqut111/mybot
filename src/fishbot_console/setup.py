@@ -18,7 +18,10 @@ setup(
         (os.path.join('share', package_name, 'config'), glob('config/*.yaml')),
         (os.path.join('share', package_name, 'launch'),
          glob('launch/*.launch.py')),
-        (os.path.join('share', package_name, 'static'), glob('static/*')),
+        # static 只走 package_data 一处。装两份（package_data + share）在
+        # --symlink-install 下会多建一套符号链接：之前就因为 install 里留了
+        # 一条悬空链接，build 报 No such file or directory: .../launch/mock.launch.py。
+        # server._static_dir() 优先找包目录，找不到才退回 share，所以这里不用再装。
     ],
     install_requires=['setuptools'],
     zip_safe=True,

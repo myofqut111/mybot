@@ -27,7 +27,6 @@ setup(
     maintainer_email='dev@example.com',
     description='Patrol execution with resumable progress, failure policies and JSONL reports.',
     license='Apache-2.0',
-    tests_require=['pytest'],
     entry_points={
         'console_scripts': [
             'patrol_executor_v2 = fishbot_patrol_v2.node:main',

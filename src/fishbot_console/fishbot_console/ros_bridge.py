@@ -21,7 +21,7 @@ from rclpy.executors import MultiThreadedExecutor
 from rclpy.node import Node
 from rclpy.qos import DurabilityPolicy, HistoryPolicy, QoSProfile, ReliabilityPolicy
 
-from geometry_msgs.msg import Pose, TwistWithCovarianceStamped
+from geometry_msgs.msg import Pose, PoseWithCovarianceStamped, Twist
 from nav_msgs.msg import OccupancyGrid, Path
 from rcl_interfaces.msg import Log
 from sensor_msgs.msg import Image, LaserScan
