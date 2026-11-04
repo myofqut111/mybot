@@ -89,7 +89,8 @@ class TestPage(unittest.TestCase):
         硬边界（viscosity=1）、边界留余量（pad）、只在首次自动适应窗口。
         """
         self.assertIn('maxBoundsViscosity:1.0', self.html.replace(' ', ''))
-        self.assertIn('setMaxBounds(mapBounds().pad(', self.html)
+        # 注意用 box.pad()：mapBounds() 是普通数组，数组没有 .pad()
+        self.assertIn('setMaxBounds(box.pad(', self.html)
         self.assertIn('if(!MAPM.fitted)', self.html)
 
     def test_map_meta_goes_to_mapm(self):
@@ -107,6 +108,27 @@ class TestPage(unittest.TestCase):
         self.assertIn('/api/client_log', self.html)
         self.assertIn("addEventListener('error'", self.html)
         self.assertIn("addEventListener('unhandledrejection'", self.html)
+
+    def test_map_bounds_not_treated_as_latlngbounds(self):
+        """mapBounds() 返回普通数组：不能直接 .pad()。
+
+        浏览器日志实测：`mapBounds(...).pad is not a function at loadMap` —— 它把
+        后面的 setMaxBounds/fitBounds 全打断了，于是"图加上了但视野没定位"，
+        页面依旧一片空白。要用 L.latLngBounds 包一层。
+        """
+        self.assertNotIn('mapBounds().pad', self.html)
+        self.assertIn('mapLLBounds()', self.html)
+        self.assertIn('L.latLngBounds(mapBounds())', self.html)
+        # 没有初始视野时调 fitBounds 会报 "Set map center and zoom first."
+        self.assertIn('setView(', self.html)
+
+    def test_no_undefined_helper_calls(self):
+        """页面里被调用的助手函数必须真的定义过（note() 就曾漏定义）。"""
+        for name in ('toast', 'api', 'setBadge', 'bubble', 'ensureMap',
+                     'mapBounds', 'mapLLBounds', 'robotIcon', 'goalIcon'):
+            self.assertIn('function %s(' % name, self.html,
+                          'helper %s is never defined' % name)
+        self.assertNotIn('note(', self.html)
 
     def test_map_click_sends_nav(self):
         # 换 Leaflet 之后不再手写 canvas 事件，改由 Leaflet 的 mousedown/mouseup

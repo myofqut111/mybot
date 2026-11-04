@@ -507,10 +507,12 @@ class ConsoleBridge(Node):
 
         done = []
         ok, _ = self.cancel_nav()
-        done.append('nav %s' % ('已取消' if ok else '无目标'))
+        done.append('nav %s' % ('已取消' if ok else '本就没在导航'))
         ok, _ = self.cancel_patrol()
-        done.append('patrol %s' % ('已取消' if ok else '无任务'))
-        self.logs.add('console', 40, 'ESTOP pressed: %s' % '; '.join(done))
+        done.append('patrol %s' % ('已取消' if ok else '本就没在巡检'))
+        # 急停本身是正常操作，不该记 ERROR：空转时按一下，页头的"错误"计数
+        # 会 +1，用户会以为系统出故障了。真出事要报警的是"刹车没发出去"。
+        self.logs.add('console', 20, 'ESTOP pressed: %s' % '; '.join(done))
         return True, '已急停（%s）' % '，'.join(done)
 
     def release_estop(self):

@@ -322,6 +322,10 @@ function mapBounds(){
   return [[MAPM.oy, MAPM.ox],
           [MAPM.oy + MAPM.h * MAPM.res, MAPM.ox + MAPM.w * MAPM.res]];
 }
+// mapBounds() 返回的是普通数组，L.imageOverlay/fitBounds 都能吃，但 .pad()
+// 是 L.LatLngBounds 的方法——直接对数组调用会抛 TypeError，把后面的
+// setMaxBounds/fitBounds 全部打断，于是"图加上了但视野没定位"，看着就是空白。
+function mapLLBounds(){ return L.latLngBounds(mapBounds()); }
 function robotIcon(yaw){
   const deg = -yaw * 180 / Math.PI;
   return L.divIcon({className:'', iconSize:[26,26], iconAnchor:[13,13],
@@ -365,13 +369,20 @@ async function loadMap(){
                             {opacity:1}).addTo(LF);
     LL.img.bringToBack();
     if(LL.cost){ LF.removeLayer(LL.cost); LL.cost = null; }
+    // 先把视野设成合法值：L.map() 只给了 CRS，没给中心/缩放，此时调
+    // fitBounds/setMaxBounds 会报 "Set map center and zoom first."。
+    const box = mapLLBounds();
+    if(!MAPM.viewed){
+      MAPM.viewed = true;
+      LF.setView(box.getCenter(), 4);
+    }
     // 留出半张地图的余量：贴着地图边缘时拖不动、也放不下工具栏。
-    LF.setMaxBounds(mapBounds().pad(0.6));
+    LF.setMaxBounds(box.pad(0.6));
     // 只在"第一次拿到地图"时自动适应窗口。地图每 6 s 会重取一次，如果每次都
     // 重新 fitBounds，用户刚拖好的视角就会被抢回去——这正是"拖完又跳回来"。
     if(!MAPM.fitted){
       MAPM.fitted = true;
-      LF.fitBounds(mapBounds());
+      LF.fitBounds(box);
     }
   }
   drawRobot(st);
@@ -391,7 +402,7 @@ function drawRobot(st){
 function paint(){ loadLayers(); pollScan(); pollPlan(); }
 function drawMap(){ loadMap(); }
 function drawMapZoom(){ /* Leaflet 自己处理缩放 */ }
-function fitZoom(){ if(LF && MAPM.ready) LF.fitBounds(mapBounds()); }
+function fitZoom(){ if(LF && MAPM.ready) LF.fitBounds(mapLLBounds()); }
 function zoomBy(factor){ if(LF) LF.setZoom(LF.getZoom() + Math.log2(factor)); }
 
 async function loadLayers(){
@@ -610,10 +621,10 @@ async function estopToggle(){
     });
     const j = await r.json();
     if(j && j.estop) applyEstopUI(!!j.estop.active);
-    note(j && j.message ? j.message : (wanted ? '已急停' : '已解除'));
+    toast(j && j.message ? j.message : (wanted ? '已急停' : '已解除'));
   }catch(e){
     applyEstopUI(!wanted);        // 请求失败就回退，绝不让按钮显示"已停"而车还在动
-    note('急停请求失败：' + e);
+    toast('急停请求失败：' + e);
   }
   pollState();
 }
