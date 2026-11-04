@@ -17,6 +17,7 @@ rosidl_generate_interfaces(${PROJECT_NAME}
   "msg/PatrolTaskRequest.msg"
   "msg/PatrolTaskResult.msg"
   "srv/RecordPoint.srv"
+  "srv/DeletePoint.srv"
   "srv/GetRoute.srv"
   "srv/SetActiveRoute.srv"
   "srv/ClearRoute.srv"

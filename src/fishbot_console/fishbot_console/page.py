@@ -52,6 +52,11 @@ section.wide{grid-column:1/-1}
 h2{font-size:13px;margin:0 0 10px;color:var(--dim);font-weight:600;
   letter-spacing:.5px;text-transform:uppercase}
 .row{display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin:6px 0}
+.ptrows{display:flex;flex-direction:column;gap:4px;margin-bottom:8px}
+.ptrow{display:flex;align-items:center;gap:10px;font-family:monospace;font-size:12px;padding:3px 8px;border:1px solid var(--line);border-radius:5px;background:#fafbfc}
+.ptrow .nm{min-width:96px;font-weight:600}
+.ptrow .xy{color:var(--dim);min-width:150px}
+.ptrow button{padding:2px 8px;font-size:12px}
 label{color:var(--dim);font-size:12px}
 input,select,button{font:inherit;font-size:13px}
 input,select{background:var(--panel2);color:var(--fg);border:1px solid var(--line);
@@ -162,7 +167,11 @@ tr:last-child td{border-bottom:none}
       <label>等待</label><input id="recWait" type="number" value="0" step="0.5" style="width:64px">秒
       <button id="btnRecord">记下当前位姿</button>
     </div>
-    <div class="row"><span class="dim" style="font-size:12px" id="recHint">用当前位置记一个点；点位在 RViz 里显示，删点也在 RViz 做。</span></div>
+    <div class="row">
+      <button id="btnPoints">列出点位</button>
+      <span class="dim" style="font-size:12px" id="recHint">用当前位置记一个点；点位在 RViz 里显示，录错了就在下面删掉。</span>
+    </div>
+    <div id="pointRows" class="ptrows"></div>
   </section>
 
   <section class="wide">
@@ -411,7 +420,34 @@ $('btnPatrolCancel').onclick = async () => {
   }catch(err){ toast('取消失败：' + err.message); }
 };
 
+/* ---------- 点位列表 / 删点 ---------- */
+function recRouteName(){
+  return ($("recRoute").value.trim() || $("patrolRoute").value.trim());
+}
+async function loadPoints(){
+  const route = recRouteName();
+  const box = $("pointRows");
+  if(!route){ box.innerHTML = ""; toast("先填路线名", true); return; }
+  const res = await get("/api/route_points?route=" + encodeURIComponent(route));
+  const items = (res && res.items) || [];
+  if(!items.length){ box.innerHTML = "<div class=\"dim\">这条路线还没有点位</div>"; return; }
+  box.innerHTML = items.map(it =>
+    `<div class="ptrow"><span class="nm">${it.point_id}</span>` +
+    `<span class="xy">x ${Number(it.x).toFixed(2)}　y ${Number(it.y).toFixed(2)}</span>` +
+    `<button class="danger" data-del="${it.point_id}">删掉</button></div>`).join("");
+  box.querySelectorAll("button[data-del]").forEach(btn => {
+    btn.addEventListener("click", () => delPoint(route, btn.dataset.del));
+  });
+}
+async function delPoint(route, pointId){
+  if(!confirm("删掉 " + route + " 里的 " + pointId + "？这条路线的其他点不受影响。")) return;
+  const res = await post("/api/delete_point", {route: route, point_id: pointId});
+  toast(res.message || (res.ok ? "已删" : "删点失败"), !res.ok);
+  await loadPoints();
+  await loadRoutes();
+}
 /* ---------- 录点 ---------- */
+$('btnPoints').addEventListener('click', loadPoints);
 $('btnRecord').onclick = async () => {
   const body = {route: $('recRoute').value.trim() || $('patrolRoute').value.trim(),
                 point_id: $('recName').value.trim(),
@@ -425,7 +461,7 @@ $('btnRecord').onclick = async () => {
       ? ('已记下 ' + ((out.point && out.point.point_id) || '') +
          '，去 RViz 里能看到这个点')
       : (out.message || '记录失败');
-    if (out.ok) $('recName').value = '';
+    if (out.ok) { $('recName').value = ''; loadPoints(); }
   }catch(err){ toast('记录失败：' + err.message); }
 };
 

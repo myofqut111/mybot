@@ -24,6 +24,7 @@ REQUIRED_IDS = [
     'patrolRoute', 'patrolMode', 'patrolRepeat', 'btnPatrol',
     'btnPatrolCancel',
     'recRoute', 'recName', 'recExpect', 'btnRecord',
+    'btnPoints', 'pointRows',
     'runSel', 'btnReload', 'eventBody', 'runHint',
     'logList', 'logLevel', 'logCounts',
     'chatLog', 'askBox', 'btnAsk',

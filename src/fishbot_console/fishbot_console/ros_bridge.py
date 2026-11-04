@@ -63,6 +63,11 @@ try:                                        # 录点（点位化巡检的入口�
 except Exception:                           # pragma: no cover
     RecordPoint = None
 
+try:                                        # 删点（录错了要能自己收拾）
+    from fishbot_patrol_interfaces.srv import DeletePoint
+except Exception:                           # pragma: no cover
+    DeletePoint = None
+
 try:                                        # 路线点位在 RViz 里显示
     from visualization_msgs.msg import Marker, MarkerArray
 except Exception:                           # pragma: no cover
@@ -90,6 +95,7 @@ class ConsoleBridge(Node):
         self.declare_parameter('pose_topic', '/amcl_pose')
         self.declare_parameter('marker_topic', '/console/route_points')
         self.declare_parameter('record_service', '/patrol_route/record_point')
+        self.declare_parameter('delete_service', '/patrol_route/delete_point')
         self.declare_parameter('patrol_action', '/execute_patrol')
         self.declare_parameter('nav_action', '/navigate_to_pose')
         self.declare_parameter('route_service', '/patrol_route/get')
@@ -248,6 +254,12 @@ class ConsoleBridge(Node):
         if RecordPoint is not None:
             self._record_client = self.create_client(
                 RecordPoint, self.get_parameter('record_service').value,
+                callback_group=self._callbacks)
+        # 删点：同样是 route_manager 的活，控制台不自己改 json
+        self._delete_client = None
+        if DeletePoint is not None:
+            self._delete_client = self.create_client(
+                DeletePoint, self.get_parameter('delete_service').value,
                 callback_group=self._callbacks)
 
     # ------------------------------------------------------------ 回调
@@ -928,6 +940,35 @@ class ConsoleBridge(Node):
                                            'position', None), 'y', 0.0)),
             }
         return bool(response.success), str(response.message or ''), detail
+
+    def delete_point(self, route_name, point_id):
+        """删掉路线里的一个点，返回 (ok, 消息, 剩余点数)。
+
+        和录点一样交给 route_manager：它才知道删除后 active_route 要不要清空、
+        文件怎么写才原子。控制台只负责把请求转过去、把结果翻译成人话。
+        """
+        if self._delete_client is None:
+            return False, 'delete_point 服务不可用（缺 DeletePoint 消息类型）', None
+        if not self._delete_client.wait_for_service(timeout_sec=2.0):
+            return False, ('route_manager 不在线（/patrol_route/delete_point），'
+                           '或它还停在旧版本'), None
+        request = DeletePoint.Request()
+        request.route_name = str(route_name or '')
+        request.point_id = str(point_id or '')
+        future = self._delete_client.call_async(request)
+        end = time.time() + 5.0
+        while time.time() < end and not future.done():
+            time.sleep(0.02)
+        if not future.done():
+            return False, '删点超时（5s）', None
+        try:
+            response = future.result()
+        except Exception as error:
+            return False, '删点失败：%s' % error, None
+        # 失败时不要回传 remaining：srv 的默认值是 0，照抄会让人以为“删完了”
+        ok = bool(response.success)
+        remaining = int(getattr(response, 'remaining', 0)) if ok else None
+        return ok, str(response.message or ''), remaining
 
     def publish_route_markers(self, points, suspects=(), frame_id='map'):
         """把路线点位发到 /console/route_points，供 RViz 的 MarkerArray 显示。"""

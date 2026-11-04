@@ -78,6 +78,12 @@ class FakeBridge(object):
     def route_points(self):
         return [{'point_id': 'p1', 'x': 1.0, 'y': 2.0}]
 
+    def delete_point(self, route_name, point_id):
+        self.calls.append(('delete_point', route_name, point_id))
+        if point_id == 'p1':
+            return True, 'Point deleted (0 left)', 0
+        return False, 'point does not exist in route', None
+
     def send_nav(self, x, y, yaw=None):
         self.calls.append(('nav', x, y, yaw))
         return True, 'ok'
@@ -181,6 +187,20 @@ class ServerCase(unittest.TestCase):
         self.assertEqual(items[-1]['node'], 'browser')
         self.assertEqual(items[-1]['level'], 'ERROR')
         self.assertIn('ReferenceError', items[-1]['text'])
+
+    def test_delete_point_calls_route_manager(self):
+        """删点必须走 route_manager，不能由控制台自己改 json。"""
+        body = self.post('/api/delete_point',
+                         {'route': 'main', 'point_id': 'p1'})
+        self.assertTrue(body.get('ok'))
+        self.assertEqual(body.get('remaining'), 0)
+        self.assertIn(('delete_point', 'main', 'p1'), self.bridge.calls)
+
+    def test_delete_point_reports_failure(self):
+        body = self.post('/api/delete_point',
+                         {'route': 'main', 'point_id': 'nope'})
+        self.assertFalse(body.get('ok'))
+        self.assertIn('does not exist', body.get('message', ''))
 
     def test_client_log_rejects_empty(self):
         with self.assertRaises(urllib.error.HTTPError) as ctx:

@@ -8,6 +8,7 @@ from geometry_msgs.msg import PoseWithCovarianceStamped
 from fishbot_patrol_interfaces.msg import PatrolPoint, PatrolRoute
 from fishbot_patrol_interfaces.srv import (
     ClearRoute,
+    DeletePoint,
     GetRoute,
     RecordPoint,
     SetActiveRoute,
@@ -77,6 +78,9 @@ class PatrolRouteManager(Node):
         )
         self.create_service(
             ClearRoute, '/patrol_route/clear', self._clear_route
+        )
+        self.create_service(
+            DeletePoint, '/patrol_route/delete_point', self._delete_point
         )
 
         self._publish_active_route()
@@ -281,6 +285,22 @@ class PatrolRouteManager(Node):
             response.success = True
             response.message = 'Route cleared'
         except OSError as error:
+            response.success = False
+            response.message = str(error)
+        return response
+
+
+    def _delete_point(self, request, response):
+        try:
+            self._store.delete_point(request.route_name, request.point_id)
+            # 删掉的可能是"当前激活路线"里的点，active_route 也许被清空
+            self._publish_active_route()
+            route = self._store.get_route(request.route_name)
+            response.remaining = len(route['points']) if route else 0
+            response.success = True
+            response.message = ('Point deleted (%d left)'
+                                % response.remaining)
+        except (OSError, ValueError) as error:
             response.success = False
             response.message = str(error)
         return response

@@ -151,6 +151,40 @@ class RouteStore:
             self._commit(state)
             return deepcopy(point)
 
+    def delete_point(self, route_name: str, point_id: str) -> Dict[str, Any]:
+        """删掉一个点，返回被删掉的那条记录。
+
+        删空的路线一起清掉：留着 0 个点的路线只会在下拉框里制造噪音，
+        `set_active` 本来也拒绝空路线，留着没有意义。
+        """
+        route_name = route_name.strip()
+        point_id = point_id.strip()
+        if not route_name:
+            raise ValueError('route_name must not be empty')
+        if not point_id:
+            raise ValueError('point_id must not be empty')
+
+        with self._lock:
+            route = self._state['routes'].get(route_name)
+            if route is None:
+                raise ValueError('route does not exist')
+            index = None
+            for position, item in enumerate(route['points']):
+                if item['point_id'] == point_id:
+                    index = position
+                    break
+            if index is None:
+                raise ValueError('point does not exist in route')
+
+            state = deepcopy(self._state)
+            removed = state['routes'][route_name]['points'].pop(index)
+            if not state['routes'][route_name]['points']:
+                del state['routes'][route_name]
+                if state['active_route'] == route_name:
+                    state['active_route'] = ''
+            self._commit(state)
+            return deepcopy(removed)
+
     def set_active(self, name: str) -> None:
         name = name.strip()
         with self._lock:

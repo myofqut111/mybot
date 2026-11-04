@@ -6,7 +6,7 @@ package_name = 'fishbot_patrol_route_manager'
 
 setup(
     name=package_name,
-    version='0.1.0',
+    version='0.2.0',
     packages=find_packages(exclude=['test']),
     data_files=[
         ('share/ament_index/resource_index/packages',
@@ -19,7 +19,6 @@ setup(
     maintainer_email='dev@example.com',
     description='Records AMCL poses and persistently manages fishbot patrol routes.',
     license='Apache-2.0',
-    tests_require=['pytest'],
     entry_points={
         'console_scripts': [
             'route_manager = fishbot_patrol_route_manager.route_manager_node:main',

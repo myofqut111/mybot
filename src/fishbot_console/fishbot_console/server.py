@@ -302,6 +302,15 @@ class ConsoleServer(object):
                         payload.get('expect') or '')
                     return _json_response(
                         self, {'ok': ok, 'message': message, 'point': point})
+                if path == '/api/delete_point':
+                    ok, message, remaining = server_.bridge.delete_point(
+                        payload.get('route') or '',
+                        payload.get('point_id') or '')
+                    body = {'ok': ok, 'message': message}
+                    # 只有真删掉时才回传剩余点数，失败时留空免得误读成“删完了”
+                    if ok and remaining is not None:
+                        body['remaining'] = remaining
+                    return _json_response(self, body)
                 if path == '/api/markers/clear':
                     server.bridge.clear_route_markers()
                     return _json_response(self, {'ok': True})
