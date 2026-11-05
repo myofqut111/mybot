@@ -33,6 +33,7 @@ EXITED = 'exited'        # 子进程退出过（失败或自己结束）
 STARTING_GRACE_SEC = 25.0     # 起来后多久之内允许"节点还没齐"
 STOP_INT_SEC = 6.0            # SIGINT 后等多久
 STOP_TERM_SEC = 4.0           # SIGTERM 后等多久
+KILL_WAIT_SEC = 1.5       # TERM 之后等多久升级到 KILL
 LOG_LINES = 400               # 每个栈保留的日志行数
 
 
@@ -104,7 +105,8 @@ class StackManager(object):
     """起停 + 状态判定。线程安全（一个锁护全部状态）。"""
 
     def __init__(self, log_sink=None, stacks=None, env=None,
-                 popen=None, clock=None, with_rviz=True):
+                 popen=None, clock=None, with_rviz=True, killer=None,
+                 killer9=None, alive=None):
         self._lock = threading.RLock()
         self._stacks = {spec.name: Stack(spec) for spec in (stacks
                                                             or default_stacks())}
@@ -114,6 +116,11 @@ class StackManager(object):
         self._env.setdefault('DISPLAY', ':0')
         self._env['PYTHONUNBUFFERED'] = '1'
         self._popen = popen or subprocess.Popen
+        # 外部启动的栈没有 proc 句柄，只能按名字杀；注入出来是为了测试能断言
+        # 到底按哪些模式杀过，而不是真的去 pkill 本机进程。
+        self._killer = killer or (lambda pattern: self._signal(pattern, False))
+        self._killer9 = killer9 or (lambda pattern: self._signal(pattern, True))
+        self._alive = alive or self._alive_by_pattern
         self._clock = clock or time.monotonic
         # 是否让导航/建图顺带拉起 RViz。关掉的理由不是"省事"，是**省 CPU**：
         # RViz 在弱虚拟机上会和 Nav2 的 20 Hz 控制循环抢核，表现出来就是
@@ -286,7 +293,7 @@ class StackManager(object):
         self._log_sink(prefix, '进程结束（退出码 %s）' % code)
 
     # ------------------------------------------------------------ 停
-    def stop(self, name, kill_timeout=None):
+    def stop(self, name, kill_timeout=None, running_nodes=None):
         """停一个栈：SIGINT → SIGTERM → SIGKILL → pkill 兜底。返回 (ok, message)。"""
         with self._lock:
             stack = self._stacks.get(name)
@@ -295,10 +302,24 @@ class StackManager(object):
             proc = stack.proc
             spec = stack.spec
             if proc is None or proc.poll() is not None:
-                # 没托管却在跑（外部启动）：只能按 launch 文件名兜底
-                if self._pkill(spec.launch_file):
+                # 没托管却在跑（外部启动）。这里不能只按 launch 文件名去杀：
+                # launch 进程常常先死，留下的是它拉起的节点（cmdline 里根本
+                # 没有 .launch.py），于是面板明明显示已启动，按停止却回
+                # 没有在运行。所以按三层兜底，并且**先看图里有没有探针**。
+                present = [p for p in spec.probes
+                           if p in set(running_nodes or ())]
+                killed = self._pkill_hard(spec.launch_file)
+                for pattern in ('%s/lib' % spec.package,
+                                *['__node:=%s' % p for p in present]):
+                    if self._pkill_hard(pattern):
+                        killed = True
+                if killed:
                     stack.exit_code = None
                     return True, '已停止（外部启动的 %s）' % spec.label
+                if present:
+                    return False, ('%s 还在跑（%s），但面板按名字也杀不掉；'
+                                   '到它的终端 Ctrl+C'
+                                   % (spec.label, '、'.join(present)))
                 return False, '%s 没有在运行' % spec.label
 
         ok = self._terminate(proc, kill_timeout)
@@ -347,14 +368,45 @@ class StackManager(object):
         return False
 
     def _pkill(self, pattern):
-        """按 launch 文件名清理残留进程。返回是否真的杀到了东西。"""
+        """按名字发 SIGTERM。返回是否真的杀到了东西。"""
+        return self._signal(pattern, False)
+
+    def _signal(self, pattern, hard):
         try:
-            result = subprocess.run(['pkill', '-f', pattern],
+            cmd = ['pkill'] + (['-9'] if hard else []) + ['-f', pattern]
+            result = subprocess.run(cmd,
                                     stdout=subprocess.DEVNULL,
                                     stderr=subprocess.DEVNULL)
             return result.returncode == 0
         except Exception:
             return False
+
+    def _alive_by_pattern(self, pattern):
+        try:
+            result = subprocess.run(['pgrep', '-f', pattern],
+                                    stdout=subprocess.DEVNULL,
+                                    stderr=subprocess.DEVNULL)
+            return result.returncode == 0
+        except Exception:
+            return False
+
+    def _pkill_hard(self, pattern, wait=KILL_WAIT_SEC):
+        """先 SIGTERM，等一会儿还在就 SIGKILL。
+
+        外部启动的节点没有 proc 句柄，只能按名字杀；而有的节点（巡检执行器）
+        根本不响应 SIGTERM —— 只发 TERM 的话，面板会回"已停止"而进程还在跑，
+        比不回更糟。
+        """
+        if not self._killer(pattern):
+            return False
+        end = time.time() + wait
+        while time.time() < end:
+            if not self._alive(pattern):
+                return True
+            time.sleep(0.2)
+        if self._alive(pattern):
+            self._killer9(pattern)
+        return True
 
     # ------------------------------------------------------------ 退出
     def shutdown(self):

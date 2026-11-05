@@ -293,7 +293,8 @@ class ConsoleServer(object):
                                'items': server.stacks.status(server.bridge.running_nodes())})
                 if path == '/api/stacks/stop':
                     ok, message = server.stacks.stop(
-                        str(payload.get('name') or ''))
+                        str(payload.get('name') or ''),
+                        running_nodes=server.bridge.running_nodes())
                     return _json_response(
                         self, {'ok': ok, 'message': message,
                                'items': server.stacks.status(server.bridge.running_nodes())})

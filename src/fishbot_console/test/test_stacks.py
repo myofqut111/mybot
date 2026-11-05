@@ -288,6 +288,59 @@ class DuplicateGuardCase(unittest.TestCase):
         self.assertTrue(ok, msg)
         self.assertEqual(len(opened), 1)
 
+def _mgr_with(killer=None, killer9=None, alive=None):
+    from fishbot_console.stacks import StackManager
+
+    class FakeProc(object):
+        def __init__(self):
+            self.stdout = []
+
+        def poll(self):
+            return None
+
+    return StackManager(popen=lambda cmd, **kw: FakeProc(), killer=killer,
+                        killer9=killer9, alive=alive)
+
+
+class ExternalStopCase(unittest.TestCase):
+    """外部起的栈：launch 可能早死了，只剩节点，按名字也得能停。"""
+
+    def test_stop_external_by_package(self):
+        calls = []
+
+        def killer(pattern):
+            calls.append(pattern)
+            return 'fishbot_patrol_v2/lib' == pattern
+
+        mgr = _mgr_with(killer=killer)
+        ok, msg = mgr.stop('patrol', running_nodes=[
+            'route_manager', 'patrol_task_manager', 'patrol_executor_v2'])
+        self.assertTrue(ok, msg)
+        self.assertIn('fishbot_patrol_v2/lib', calls)
+
+    def test_stop_external_reports_why(self):
+        mgr = _mgr_with(killer=lambda pattern: False)
+        ok, msg = mgr.stop('patrol', running_nodes=['patrol_executor_v2'])
+        self.assertFalse(ok)
+        self.assertIn('还在跑', msg)
+        self.assertIn('patrol_executor_v2', msg)
+
+    def test_stop_not_running(self):
+        mgr = _mgr_with(killer=lambda pattern: False)
+        ok, msg = mgr.stop('patrol', running_nodes=[])
+        self.assertFalse(ok)
+        self.assertIn('没有在运行', msg)
+    def test_term_ignored_falls_back_to_kill(self):
+        """进程不理 SIGTERM 时要补 -9，不能让面板谎报"已停止"。"""
+        hard = []
+
+        mgr = _mgr_with(killer=lambda pattern: True,
+                        killer9=lambda pattern: hard.append(pattern) or True,
+                        alive=lambda pattern: True)
+        ok, msg = mgr.stop('patrol', running_nodes=['patrol_executor_v2'])
+        self.assertTrue(ok, msg)
+        self.assertTrue(hard, '竟然没有升级到 SIGKILL')
+
 
 if __name__ == '__main__':
     unittest.main()
