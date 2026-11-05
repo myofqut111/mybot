@@ -254,6 +254,40 @@ class RvizArgCase(unittest.TestCase):
         cmd = self._cmd(False)
         self.assertEqual(cmd[:3], ['ros2', 'launch', 'fishbot_navigation'])
 
+class DuplicateGuardCase(unittest.TestCase):
+    """图里已经有的栈，不许再起一套（会抢 TF 和 cmd_vel）。"""
+
+    def _mgr(self):
+        from fishbot_console.stacks import StackManager
+        opened = []
+
+        class FakeProc(object):
+            def __init__(self):
+                self.stdout = []
+
+            def poll(self):
+                return None
+
+        def popen(cmd, **kwargs):
+            opened.append(cmd)
+            return FakeProc()
+
+        return StackManager(popen=popen), opened
+
+    def test_refuses_duplicate_stack(self):
+        mgr, opened = self._mgr()
+        nodes = ['amcl', 'controller_server', 'planner_server']
+        ok, msg = mgr.start('nav', running_nodes=nodes)
+        self.assertFalse(ok)
+        self.assertIn('抢 TF', msg)
+        self.assertEqual(opened, [])
+
+    def test_starts_when_graph_is_empty(self):
+        mgr, opened = self._mgr()
+        ok, msg = mgr.start('nav', running_nodes=[])
+        self.assertTrue(ok, msg)
+        self.assertEqual(len(opened), 1)
+
 
 if __name__ == '__main__':
-    unittest.main(verbosity=2)
+    unittest.main()

@@ -361,6 +361,31 @@ async function pollStacks(){
     cell.appendChild(startBtn);
     cell.appendChild(stopBtn);
     body.appendChild(tr);
+    // 降级/退出的栈要把 launch 的尾巴露出来。面板只说"半启动 0/3"时，
+    // 用户没法判断是节点没起还是起完又死了，只能去翻终端——而那个终端
+    // 正是被这个面板拉起来的，早就没有回显了。
+    const logs = it.logs || [];
+    if (logs.length){
+      const ltr = document.createElement('tr');
+      const ltd = document.createElement('td');
+      ltd.colSpan = 5;
+      ltd.style.padding = '0 10px 10px';
+      const det = document.createElement('details');
+      const sum = document.createElement('summary');
+      sum.className = 'dim';
+      sum.textContent = '启动日志（最近 ' + logs.length + ' 行）';
+      sum.style.cursor = 'pointer';
+      const pre = document.createElement('pre');
+      pre.className = 'mono dim';
+      pre.style.cssText = 'margin:6px 0 0;max-height:190px;overflow:auto;'
+                        + 'white-space:pre-wrap;font-size:12px;line-height:1.45';
+      pre.textContent = logs.join('\n');
+      det.appendChild(sum);
+      det.appendChild(pre);
+      ltd.appendChild(det);
+      ltr.appendChild(ltd);
+      body.appendChild(ltr);
+    }
   });
 }
 async function stackAction(action, name, btn){

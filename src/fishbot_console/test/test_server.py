@@ -492,6 +492,17 @@ class EnvInfoCase(unittest.TestCase):
         src = self._read('server.py')
         self.assertIn("'env': server.bridge.env_info()", src)
 
+    def test_start_passes_running_nodes(self):
+        """起栈时要带上图里的节点名，否则会起出第二套。"""
+        src = self._read('server.py')
+        self.assertIn('running_nodes=server.bridge.running_nodes()', src)
+
+    def test_page_renders_stack_logs(self):
+        """降级的栈必须能把 launch 的日志显示出来。"""
+        src = self._read('page.py')
+        self.assertIn('启动日志（最近 ', src)
+        self.assertIn('it.logs', src)
+
     def test_page_has_env_line(self):
         src = self._read('page.py')
         self.assertIn('envLine', src)

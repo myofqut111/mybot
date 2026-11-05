@@ -206,14 +206,27 @@ class StackManager(object):
             return bool(stack and stack.alive())
 
     # ------------------------------------------------------------ 起
-    def start(self, name):
-        """起一个栈。返回 (ok, message)。"""
+    def start(self, name, running_nodes=None):
+        """起一个栈。返回 (ok, message)。
+
+        running_nodes 传的是 ROS 图里的节点名：如果这套栈的探针已经全在图里，
+        说明别人（终端 / 另一个 launch）已经把它起来了。这时候再起一套不会
+        "覆盖"，只会**并存**——两套 amcl 抢同一个 TF、两套 controller 抢同一个
+        cmd_vel，表现就是车一顿一顿、定位来回跳。所以这里要拦住。
+        """
         with self._lock:
             stack = self._stacks.get(name)
             if stack is None:
                 return False, '未知的栈：%s' % name
             if stack.alive():
                 return False, '%s 已经在运行' % stack.spec.label
+            if running_nodes:
+                nodes = set(running_nodes)
+                present = [p for p in stack.spec.probes if p in nodes]
+                if len(present) == len(stack.spec.probes):
+                    return False, ('%s 已经在图里跑着了（不是这个面板起的），'
+                                   '再起一套会和它抢 TF 与 cmd_vel；'
+                                   '先到那个终端把它停掉' % stack.spec.label)
             other = self._conflict(name)
             if other:
                 return False, ('%s 正在运行，与 %s 互斥；先停掉它'

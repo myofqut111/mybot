@@ -286,7 +286,8 @@ class ConsoleServer(object):
                                'estop': server_.bridge.estop_state()})
                 if path == '/api/stacks/start':
                     ok, message = server.stacks.start(
-                        str(payload.get('name') or ''))
+                        str(payload.get('name') or ''),
+                        running_nodes=server.bridge.running_nodes())
                     return _json_response(
                         self, {'ok': ok, 'message': message,
                                'items': server.stacks.status(server.bridge.running_nodes())})
