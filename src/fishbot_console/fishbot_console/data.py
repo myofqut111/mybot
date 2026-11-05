@@ -329,3 +329,46 @@ def teleop_step(vx, wz, seen, now, timeout):
     if moving:
         return True, vx, wz, vx, wz
     return False, 0.0, 0.0, vx, wz
+
+def detect_lan_ip(timeout=0.3):
+    """探测本机在局域网里的地址。
+
+    用 UDP connect 而不是 getaddrinfo(gethostname())：后者在 Ubuntu 上常返回
+    127.0.1.1，拿不到真实地址。UDP connect 不发包，只是让内核选一张出口网卡。
+    """
+    import socket
+    sock = None
+    try:
+        sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        sock.settimeout(timeout)
+        sock.connect(('8.8.8.8', 80))
+        return sock.getsockname()[0]
+    except Exception:
+        return ''
+    finally:
+        if sock is not None:
+            try:
+                sock.close()
+            except Exception:
+                pass
+
+
+def public_host(param_value, bind_host, detect=None):
+    """决定“给别人看的地址”。
+
+    优先级：参数 public_host > 绑定地址（非 0.0.0.0 时）> 自动探测 > 127.0.0.1。
+    绑定地址保留 0.0.0.0（本机和局域网都能连），但 0.0.0.0 不是能点开的地址，
+    所以日志里必须换成一个真实 IP，否则用户只能看到“把 0.0.0.0 换成机器人 IP”
+    这种要自己动手的提示。
+    """
+    value = (param_value or '').strip()
+    if value:
+        return value
+    bind = (bind_host or '').strip()
+    if bind and bind not in ('0.0.0.0', '::', '[::]'):
+        return bind
+    found = (detect or detect_lan_ip)()
+    if found:
+        return found
+    return bind or '127.0.0.1'
+

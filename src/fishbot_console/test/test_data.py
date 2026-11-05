@@ -233,5 +233,33 @@ class TeleopStepCase(unittest.TestCase):
         self.assertEqual((vx, wz), (0.0, 0.0))
 
 
+class PublicHostCase(unittest.TestCase):
+    """日志里要打印能点开的地址，不能打印 0.0.0.0。"""
+
+    def test_param_wins(self):
+        self.assertEqual(
+            data.public_host('192.168.1.103', '0.0.0.0', detect=lambda: '1.1.1.1'),
+            '192.168.1.103')
+
+    def test_bind_used_when_specific_and_param_empty(self):
+        self.assertEqual(
+            data.public_host('', '10.0.0.5', detect=lambda: '1.1.1.1'),
+            '10.0.0.5')
+
+    def test_detect_used_when_bound_to_all(self):
+        self.assertEqual(
+            data.public_host('', '0.0.0.0', detect=lambda: '192.168.202.128'),
+            '192.168.202.128')
+
+    def test_falls_back_to_loopback_when_detect_fails(self):
+        self.assertEqual(
+            data.public_host('', '0.0.0.0', detect=lambda: ''),
+            '0.0.0.0')
+
+    def test_detect_lan_ip_never_raises(self):
+        value = data.detect_lan_ip(timeout=0.05)
+        self.assertIsInstance(value, str)
+
+
 if __name__ == '__main__':
     unittest.main()

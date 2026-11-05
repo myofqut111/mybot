@@ -109,6 +109,9 @@ class ConsoleBridge(Node):
         # 一键启停导航/建图时是否顺带拉起 RViz。弱虚拟机上 RViz 会抢 CPU，
         # 让 Nav2 的 20 Hz 控制循环抖动（现象：cmd_vel 内容对，车一顿一顿）。
         self.declare_parameter('stacks_rviz', True)
+        # 日志里给人看的地址。留空则自动探测；0.0.0.0 是绑定语义，
+        # 不能让用户拿它去点浏览器。
+        self.declare_parameter('public_host', '')
         self.declare_parameter('ai_base_url', '')
         self.declare_parameter('ai_api_key', '')
         self.declare_parameter('ai_model', '')
@@ -626,6 +629,12 @@ class ConsoleBridge(Node):
             self._teleop_pub.publish(message)
         except Exception:
             pass
+
+    def public_host(self):
+        """给日志/页面用的可访问地址（解析顺序见 data.public_host）。"""
+        return data.public_host(
+            self.get_parameter('public_host').value,
+            self.get_parameter('http_host').value)
 
     def reports_dir(self):
         return self._reports_dir

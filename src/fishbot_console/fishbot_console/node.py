@@ -57,9 +57,10 @@ def main(args=None):
             bridge.get_logger().warn(
                 '%d 是 rosbridge 的端口，浏览器里实时流会连不上；'
                 '控制台建议用 8080/8090。' % actual)
+        shown = bridge.public_host()
         bridge.get_logger().info(
-            'console listening on http://%s:%d （把 0.0.0.0 换成机器人 IP 即可）'
-            % (host, actual))
+            'console listening on http://%s:%d （绑定 %s，从别的机器用这个地址）'
+            % (shown, actual, host))
 
         stop = threading.Event()
 
