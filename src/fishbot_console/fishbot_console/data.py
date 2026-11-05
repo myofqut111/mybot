@@ -372,3 +372,26 @@ def public_host(param_value, bind_host, detect=None):
         return found
     return bind or '127.0.0.1'
 
+def short_node_name(name):
+    """把 '/ns/amcl' 归一成 'amcl'；本来就是短名就原样返回。
+
+    为什么需要：rclpy 的 Node.get_node_names() 交给我们的是一串带命名空间的
+    全名（'/amcl'、'/nav/controller_server'），而 StackSpec.probes 里写的是
+    短名（'amcl'）。直接 `probe in names` 永远为假——面板就会一直显示 0/3，
+    哪怕 nav2 明明在跑。这一层归一化让两边可比。
+    """
+    text = (name or '').strip()
+    if not text:
+        return ''
+    return text.rstrip('/').rsplit('/', 1)[-1]
+
+
+def short_node_names(names):
+    """归一化一整批节点名，去掉空串。"""
+    out = set()
+    for name in (names or ()):
+        short = short_node_name(name)
+        if short:
+            out.add(short)
+    return out
+

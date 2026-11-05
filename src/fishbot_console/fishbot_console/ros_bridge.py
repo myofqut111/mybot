@@ -917,9 +917,12 @@ class ConsoleBridge(Node):
         全死了，是最常见也最坑的"看起来在跑"。
         """
         try:
-            return set(self.get_node_names())
+            names = self.get_node_names()
         except Exception:                    # 图查询失败不应该炸掉接口
             return set()
+        # names 是 '/nav/amcl' 这种全名，探针是 'amcl'；归一化后再比，
+        # 否则面板永远显示 0/N（曾经把整块"一键启停"变成摆设）。
+        return data.short_node_names(names)
 
     def record_point(self, route_name, point_id='', task_id='detect',
                      wait_seconds=0.0, expect=''):

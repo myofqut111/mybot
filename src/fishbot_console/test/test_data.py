@@ -261,5 +261,33 @@ class PublicHostCase(unittest.TestCase):
         self.assertIsInstance(value, str)
 
 
+class ShortNodeNameCase(unittest.TestCase):
+    """探针要用短名比对，否则永远匹配不上 rclpy 给的带命名空间的名字。"""
+
+    def test_strips_namespace(self):
+        self.assertEqual(data.short_node_name('/nav/controller_server'),
+                         'controller_server')
+
+    def test_strips_leading_slash_only(self):
+        self.assertEqual(data.short_node_name('/amcl'), 'amcl')
+
+    def test_short_name_unchanged(self):
+        self.assertEqual(data.short_node_name('amcl'), 'amcl')
+
+    def test_empty_is_empty(self):
+        self.assertEqual(data.short_node_name(''), '')
+        self.assertEqual(data.short_node_name(None), '')
+
+    def test_trailing_slash(self):
+        self.assertEqual(data.short_node_name('/amcl/'), 'amcl')
+
+    def test_batch_drops_empty_and_dedupes(self):
+        got = data.short_node_names(['/amcl', 'amcl', '', None, '/nav/planner_server'])
+        self.assertEqual(got, {'amcl', 'planner_server'})
+
+    def test_batch_of_none(self):
+        self.assertEqual(data.short_node_names(None), set())
+
+
 if __name__ == '__main__':
     unittest.main()
