@@ -507,6 +507,21 @@ class EnvInfoCase(unittest.TestCase):
         src = self._read('page.py')
         self.assertIn('envLine', src)
         self.assertIn('ROS_DOMAIN_ID', src)
+    def test_query_int_survives_garbage(self):
+        """/api/logs?limit=abc 以前会把连接直接打挂。"""
+        from fishbot_console.server import _query_int
+        self.assertEqual(_query_int({'limit': ['abc']}, 'limit', 150), 150)
+        self.assertEqual(_query_int({}, 'limit', 150), 150)
+        self.assertEqual(_query_int({'limit': ['0']}, 'limit', 150, low=1), 1)
+        self.assertEqual(_query_int({'limit': ['9' * 12]}, 'limit', 150, high=2000), 2000)
+        self.assertEqual(_query_int({'limit': ['42']}, 'limit', 150), 42)
+
+    def test_get_dispatch_is_guarded(self):
+        """GET 也要有兜底，任何接口都不能把连接打挂。"""
+        src = self._read('server.py')
+        self.assertIn('def _get(self, path, query):', src)
+        self.assertIn('return self._get(path, query)', src)
+        self.assertIn("_query_int(query, 'limit'", src)
 
 
 if __name__ == '__main__':

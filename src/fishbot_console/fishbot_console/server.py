@@ -89,6 +89,24 @@ def _serve_static(handler, name):
 
 
 
+def _query_int(query, name, default, low=None, high=None):
+    """把查询串里的数字解析成 int，坏了就用默认值。
+
+    直接 int() 会让 ValueError 冒到 HTTPServer 外面，浏览器那边看到的
+    是"连接被重置"——面板的日志页就是这么整页空白的。
+    """
+    raw = (query.get(name) or [''])[0]
+    try:
+        value = int(raw) if raw not in ('', None) else default
+    except (TypeError, ValueError):
+        return default
+    if low is not None and value < low:
+        value = low
+    if high is not None and value > high:
+        value = high
+    return value
+
+
 def _json_response(handler, payload, code=200):
     body = json.dumps(payload, ensure_ascii=False).encode('utf-8')
     handler.send_response(code)
@@ -166,6 +184,18 @@ class ConsoleServer(object):
                 path = parsed.path.rstrip('/') or '/'
                 query = urllib.parse.parse_qs(parsed.query)
 
+                try:
+                    return self._get(path, query)
+                except (TypeError, ValueError) as error:
+                    return _json_response(
+                        self, {'ok': False, 'message': '参数不合法：%s' % error},
+                        400)
+                except Exception as error:      # 兜底：任何接口都别把连接打挂
+                    return _json_response(
+                        self, {'ok': False, 'message': '内部错误：%s' % error},
+                        500)
+
+            def _get(self, path, query):
                 if path == '/':
                     return _bytes_response(self, HTML.encode('utf-8'),
                                            'text/html; charset=utf-8')
@@ -174,7 +204,7 @@ class ConsoleServer(object):
                 if path == '/api/state':
                     return _json_response(self, server.state())
                 if path == '/api/logs':
-                    limit = int((query.get('limit') or ['150'])[0] or 150)
+                    limit = _query_int(query, 'limit', 150, low=1, high=2000)
                     level = (query.get('level') or [''])[0] or None
                     return _json_response(self, {
                         'items': server.bridge.logs.tail(limit, level),
