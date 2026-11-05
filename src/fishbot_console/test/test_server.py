@@ -5,6 +5,7 @@
 用一个假的 bridge 顶替 ROS —— 这样在本机（没有 ROS、没有机器人）也能
 验证"按钮 -> 接口 -> 调用"这条链路和页面能不能正常返回。
 """
+import io
 import json
 import os
 import sys
@@ -469,6 +470,32 @@ class TestLogSink(unittest.TestCase):
         sink('nav', 'x')        # 不能抛
         sink('nav', 40, 'y')
 
+
+class EnvInfoCase(unittest.TestCase):
+    """/api/stacks 要带 env，面板才能解释“为什么是 0/3”。"""
+
+    @property
+    def pkg_dir(self):
+        return os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+
+    def _read(self, name):
+        return io.open(os.path.join(self.pkg_dir, 'fishbot_console', name),
+                       encoding='utf-8').read()
+
+    def test_bridge_has_env_info(self):
+        src = self._read('ros_bridge.py')
+        self.assertIn('def env_info(', src)
+        for key in ("'node_count'", "'domain'", "'rmw'"):
+            self.assertIn(key, src)
+
+    def test_stacks_route_embeds_env(self):
+        src = self._read('server.py')
+        self.assertIn("'env': server.bridge.env_info()", src)
+
+    def test_page_has_env_line(self):
+        src = self._read('page.py')
+        self.assertIn('envLine', src)
+        self.assertIn('ROS_DOMAIN_ID', src)
 
 
 if __name__ == '__main__':

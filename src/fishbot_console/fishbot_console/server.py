@@ -180,7 +180,9 @@ class ConsoleServer(object):
                         'items': server.bridge.logs.tail(limit, level),
                         'counts': server.bridge.logs.counts()})
                 if path == '/api/stacks':
-                    return _json_response(self, {'items': server.stacks.status(server.bridge.running_nodes())})
+                    return _json_response(self, {
+                'items': server.stacks.status(server.bridge.running_nodes()),
+                'env': server.bridge.env_info()})
                 if path == '/api/route_points':
                     name = (query.get('route') or [''])[0]
                     return _json_response(self, {

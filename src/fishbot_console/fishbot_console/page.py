@@ -120,6 +120,7 @@ tr:last-child td{border-bottom:none}
     </table>
     <div class="row" style="margin-top:8px">
       <span class="dim" style="font-size:12px">导航与建图互斥；点「导航」会自动拉起 RViz，地图交互请在 RViz 里做。</span>
+      <div id="envLine" class="dim" style="font-size:12px;margin-top:4px"></div>
     </div>
   </section>
 
@@ -311,6 +312,23 @@ async function pollStacks(){
   if (!names.length){
     body.innerHTML = '<tr><td colspan="5" class="dim">后端没返回任何业务栈</td></tr>';
     return;
+  }
+  const env = data.env || {};
+  let silent = names.filter(n => {
+    const it = items[n] || {};
+    const p = it.probes || {};
+    return it.managed && (p.found || []).length === 0 && it.state !== 'starting';
+  });
+  const envLine = $('envLine');
+  if (envLine){
+    let text = '域 ' + (env.domain || '0') + ' · ' + (env.rmw || '?') +
+               ' · 图内节点 ' + (env.node_count || 0) + ' 个';
+    if (env.node_count) text += '（' + (env.nodes || []).slice(0, 6).join('、') + '）';
+    if (silent.length){
+      text += ' ⚠ 有 ' + silent.length + ' 个栈已启动但图里找不到它的节点，' +
+              '先在它们自己的终端确认 ROS_DOMAIN_ID 与本机一致';
+    }
+    envLine.textContent = text;
   }
   body.innerHTML = '';
   names.forEach(name => {

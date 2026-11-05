@@ -924,6 +924,22 @@ class ConsoleBridge(Node):
         # 否则面板永远显示 0/N（曾经把整块"一键启停"变成摆设）。
         return data.short_node_names(names)
 
+    def env_info(self):
+        """当前进程的 ROS 环境摘要：面板显示这个，比“0/3”有用得多。
+
+        为什么值得单独做一个接口：面板看不见节点时，用户唯一能做的判断就是
+        “到底是我没起，还是它看不见”。域号、RMW、图内节点数这三样同时摆出来，
+        答案基本自己就出来了——域号不一样，图里当然一个节点都没有。
+        """
+        nodes = sorted(self.running_nodes())
+        return {
+            'domain': os.environ.get('ROS_DOMAIN_ID', '') or '0',
+            'rmw': os.environ.get('RMW_IMPLEMENTATION', '') or 'rmw_fastrtps_cpp',
+            'localhost_only': os.environ.get('ROS_LOCALHOST_ONLY', '') or '0',
+            'node_count': len(nodes),
+            'nodes': nodes[:12],
+        }
+
     def record_point(self, route_name, point_id='', task_id='detect',
                      wait_seconds=0.0, expect=''):
         """调 route_manager 的 record_point 记一个点。
