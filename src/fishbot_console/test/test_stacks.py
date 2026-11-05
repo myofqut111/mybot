@@ -224,6 +224,36 @@ oute_manager。
             spec.probes,
             ('route_manager', 'patrol_task_manager', 'patrol_executor_v2'))
 
+class RvizArgCase(unittest.TestCase):
+    """rviz:= 必须跟着参数走：关掉 RViz 是排查“车一顿一顿”的第一步。"""
+
+    def _cmd(self, with_rviz):
+        calls = []
+
+        def popen(cmd, **kwargs):
+            calls.append(cmd)
+            return FakeProc()
+
+        manager = stacks.StackManager(stacks=[_spec()], env={},
+                                      clock=lambda: 1000.0, popen=popen,
+                                      with_rviz=with_rviz)
+        manager.start('nav')
+        return calls[0]
+
+    def test_rviz_arg_can_be_disabled(self):
+        cmd = self._cmd(False)
+        self.assertIn('rviz:=false', cmd)
+        self.assertNotIn('rviz:=true', cmd)
+
+    def test_rviz_arg_kept_when_enabled(self):
+        cmd = self._cmd(True)
+        self.assertIn('rviz:=true', cmd)
+        self.assertNotIn('rviz:=false', cmd)
+
+    def test_other_args_untouched(self):
+        cmd = self._cmd(False)
+        self.assertEqual(cmd[:3], ['ros2', 'launch', 'fishbot_navigation'])
+
 
 if __name__ == '__main__':
     unittest.main(verbosity=2)

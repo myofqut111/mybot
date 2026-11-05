@@ -106,6 +106,9 @@ class ConsoleBridge(Node):
         self.declare_parameter('max_log_lines', 500)
         self.declare_parameter('http_host', '0.0.0.0')
         self.declare_parameter('http_port', 8080)
+        # 一键启停导航/建图时是否顺带拉起 RViz。弱虚拟机上 RViz 会抢 CPU，
+        # 让 Nav2 的 20 Hz 控制循环抖动（现象：cmd_vel 内容对，车一顿一顿）。
+        self.declare_parameter('stacks_rviz', True)
         self.declare_parameter('ai_base_url', '')
         self.declare_parameter('ai_api_key', '')
         self.declare_parameter('ai_model', '')
@@ -602,12 +605,20 @@ class ConsoleBridge(Node):
             self._teleop_seen = time.time()
 
     def _teleop_tick(self):
-        """10 Hz 发布；超过 teleop_timeout_sec 没刷新就发 0（防页面被关掉后车一直跑）。"""
+        """按住才发；松手补一帧零速；空闲彻底不发。
+
+        原来这里每 100 ms 无条件发 Twist（空闲发 0），于是控制台一开，
+        `/cmd_vel` 上就多了一个 10 Hz 的零速发布者，和 Nav2 那 20 Hz 的
+        控制循环交替写入。底盘按"最后一条指令"执行，车表现就是一冲一停、
+        一顿一顿——而 Nav2 自己发的速度序列完全正确，所以很难查。
+        """
+        now = time.time()
         with self._teleop_lock:
-            silent = (time.time() - self._teleop_seen) > self._teleop_timeout_sec
-            vx, wz = (0.0, 0.0) if silent else (self._teleop_vx, self._teleop_wz)
-            if silent and (self._teleop_vx or self._teleop_wz):
-                self._teleop_vx = self._teleop_wz = 0.0
+            send, vx, wz, self._teleop_vx, self._teleop_wz = data.teleop_step(
+                self._teleop_vx, self._teleop_wz, self._teleop_seen, now,
+                self._teleop_timeout_sec)
+        if not send:
+            return
         message = Twist()
         message.linear.x = vx
         message.angular.z = wz

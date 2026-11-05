@@ -26,6 +26,11 @@ fishbot_console:
     # ---- 网页服务 ----
     http_host: 0.0.0.0
     http_port: 8080
+    # 一键启停导航/建图时是否顺带拉起 RViz。
+    # 关掉的两个理由：①虚拟机没有图形会话时 RViz 起不来，整个 launch 会一起退；
+    # ②弱虚拟机上 RViz 会和 Nav2 的 20 Hz 控制循环抢 CPU，表现为"速度指令都对、
+    # 但车一顿一顿"。诊断抖动时先关掉它排除。
+    stacks_rviz: true
     max_log_lines: 500
 
     # ---- AI 助手（留空则只用规则回答，不需要联网）----

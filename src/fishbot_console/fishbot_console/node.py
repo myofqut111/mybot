@@ -29,6 +29,9 @@ def _settings(node):
         'base_url': pick('ai_base_url', 'OPENAI_BASE_URL'),
         'api_key': pick('ai_api_key', 'OPENAI_API_KEY'),
         'model': pick('ai_model', 'OPENAI_MODEL', 'gpt-4o-mini'),
+        # 一键启停时是否顺带拉起 RViz。关掉是为了把 CPU 留给 Nav2 的控制循环
+        # ——RViz 在弱虚拟机上会和 20 Hz 的控制周期抢核，表现为车一顿一顿。
+        'stacks_rviz': bool(node.get_parameter('stacks_rviz').value),
     }
 
 

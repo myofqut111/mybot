@@ -298,3 +298,34 @@ def event_line(event):
     if status:
         head = '%s [%s]' % (head, status)
     return '%s %s' % (head, message) if message else head
+
+def teleop_step(vx, wz, seen, now, timeout):
+    """决定这一拍要不要发 Twist，以及发什么。
+
+    返回 (send, out_vx, out_wz, new_vx, new_wz)。
+
+    规则（这就是全部）：
+    - 按住方向键（seen 新且速度为非零）→ 每拍都发；
+    - 松手/心跳超时且之前有速度 → **只补一帧零速**，随后彻底安静；
+    - 空闲（速度为 0）→ **一拍都不发**，把话题让给 Nav2。
+
+    最后一条是关键：原来空闲也发 0，和 Nav2 的指令交替，车就抖。
+    """
+    try:
+        vx = float(vx)
+        wz = float(wz)
+        seen = float(seen)
+        now = float(now)
+        timeout = float(timeout)
+    except (TypeError, ValueError):
+        return False, 0.0, 0.0, 0.0, 0.0
+    moving = bool(abs(vx) > 1e-9 or abs(wz) > 1e-9)
+    stale = (now - seen) > timeout
+    if stale:
+        if moving:
+            # 松手后的最后一帧零速：让底盘知道“停”，之后不再占用话题
+            return True, 0.0, 0.0, 0.0, 0.0
+        return False, 0.0, 0.0, 0.0, 0.0
+    if moving:
+        return True, vx, wz, vx, wz
+    return False, 0.0, 0.0, vx, wz

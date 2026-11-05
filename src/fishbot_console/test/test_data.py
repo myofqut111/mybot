@@ -196,5 +196,42 @@ class TestReports(unittest.TestCase):
         self.assertEqual(data.event_line(None), '')
 
 
+class TeleopStepCase(unittest.TestCase):
+    """空闲必须不发——否则控制台一开就多一个 10 Hz 的零速发布者，车会抖。"""
+
+    def test_idle_sends_nothing(self):
+        send, vx, wz, nvx, nwz = data.teleop_step(0.0, 0.0, 100.0, 100.1, 0.6)
+        self.assertFalse(send)
+        self.assertEqual((vx, wz, nvx, nwz), (0.0, 0.0, 0.0, 0.0))
+
+    def test_holding_sends_command(self):
+        send, vx, wz, nvx, nwz = data.teleop_step(0.2, 0.0, 100.0, 100.1, 0.6)
+        self.assertTrue(send)
+        self.assertEqual((vx, wz), (0.2, 0.0))
+
+    def test_release_sends_one_zero_frame(self):
+        send, vx, wz, nvx, nwz = data.teleop_step(0.2, 0.0, 100.0, 100.7, 0.6)
+        self.assertTrue(send)
+        self.assertEqual((vx, wz), (0.0, 0.0))
+        self.assertEqual((nvx, nwz), (0.0, 0.0))
+        # 下一拍就彻底安静
+        send2, _, _, _, _ = data.teleop_step(nvx, nwz, 100.0, 100.8, 0.6)
+        self.assertFalse(send2)
+
+    def test_timeout_boundary_is_not_stale(self):
+        send, _, _, _, _ = data.teleop_step(0.2, 0.0, 100.0, 100.6, 0.6)
+        self.assertTrue(send)
+
+    def test_turn_only_counts_as_moving(self):
+        send, vx, wz, _, _ = data.teleop_step(0.0, 0.5, 100.0, 100.1, 0.6)
+        self.assertTrue(send)
+        self.assertEqual(wz, 0.5)
+
+    def test_bad_input_never_publishes(self):
+        send, vx, wz, _, _ = data.teleop_step('x', None, 'y', 'z', 0.6)
+        self.assertFalse(send)
+        self.assertEqual((vx, wz), (0.0, 0.0))
+
+
 if __name__ == '__main__':
     unittest.main()

@@ -104,7 +104,7 @@ class StackManager(object):
     """起停 + 状态判定。线程安全（一个锁护全部状态）。"""
 
     def __init__(self, log_sink=None, stacks=None, env=None,
-                 popen=None, clock=None):
+                 popen=None, clock=None, with_rviz=True):
         self._lock = threading.RLock()
         self._stacks = {spec.name: Stack(spec) for spec in (stacks
                                                             or default_stacks())}
@@ -115,6 +115,21 @@ class StackManager(object):
         self._env['PYTHONUNBUFFERED'] = '1'
         self._popen = popen or subprocess.Popen
         self._clock = clock or time.monotonic
+        # 是否让导航/建图顺带拉起 RViz。关掉的理由不是"省事"，是**省 CPU**：
+        # RViz 在弱虚拟机上会和 Nav2 的 20 Hz 控制循环抢核，表现出来就是
+        # "/cmd_vel 内容对，但车一顿一顿"。诊断这个现象时先关掉它排除。
+        self._with_rviz = bool(with_rviz)
+
+    def _args_for(self, spec):
+        """把 spec 里的 rviz:=true 换成用户真正想要的值。"""
+        out = []
+        for arg in spec.args:
+            if arg.startswith('rviz:='):
+                out.append('rviz:=%s' % ('true' if self._with_rviz else 'false'))
+            else:
+                out.append(arg)
+        return out
+
 
     # ------------------------------------------------------------ 查询
     def names(self):
@@ -206,7 +221,7 @@ class StackManager(object):
                                   stack.spec.label))
 
             spec = stack.spec
-            cmd = ['ros2', 'launch', spec.package, spec.launch_file] + spec.args
+            cmd = ['ros2', 'launch', spec.package, spec.launch_file] + self._args_for(spec)
             try:
                 proc = self._popen(
                     cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,

@@ -147,7 +147,8 @@ class ConsoleServer(object):
         # 一键启停的管理器。日志直接进同一个环形缓冲，这样"启动失败"和
         # "节点报错"在面板上是一处看，不用两头对。
         self.stacks = stacks.StackManager(
-            log_sink=_log_sink_of(bridge.logs))
+            log_sink=_log_sink_of(bridge.logs),
+            with_rviz=bool(self.settings.get('stacks_rviz', True)))
 
     # ------------------------------------------------------------ 路由
     def make_handler(self):
