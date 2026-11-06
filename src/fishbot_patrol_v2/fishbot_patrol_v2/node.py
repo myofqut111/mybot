@@ -37,6 +37,7 @@ from fishbot_patrol_interfaces.action import ExecutePatrol
 from fishbot_patrol_interfaces.msg import PatrolTaskRequest, PatrolTaskResult
 from fishbot_patrol_interfaces.srv import GetRoute, PausePatrol, ResumePatrol
 
+from . import baseline as baseline_module
 from . import progress as progress_store
 from . import recheck as recheck_module
 from . import report as report_module
@@ -92,6 +93,15 @@ class PatrolExecutorV2(Node):
         self.declare_parameter('recheck_conf_low', 0.25)
         self.declare_parameter('recheck_conf_high', 0.60)
         self.declare_parameter('recheck_on_miss', True)
+
+        # ---- 期望值基线：跑完一趟就把看到的结果记下来，下次自动判定 ----
+        # 录点时手写 expect 太烦，多数人不会点，报告里的召回率就永远是 null。
+        # 打开后：没有手写 expect 的点位，第 1 趟按实际观察记成基线，第 2 趟起
+        # 自动比对，召回率/误报率直接出来。
+        self.declare_parameter('learn_baseline', True)
+        self.declare_parameter('baseline_file', baseline_module.DEFAULT_PATH)
+        # fill = 只补空缺（默认，防止一次误检把基线带偏）；update = 每趟覆盖
+        self.declare_parameter('baseline_policy', baseline_module.POLICY_FILL)
 
         # ---- 电池决策：低电时"跑完当前点就收工" ----
         # 固件在 /battery/voltage 上发电压。这里不做充电管理，只回答一个问题：
@@ -155,6 +165,12 @@ class PatrolExecutorV2(Node):
                 'recheck_conf_low/high must satisfy 0 <= low < high <= 1')
         self._recheck_on_miss = bool(
             self.get_parameter('recheck_on_miss').value)
+        self._learn_baseline = bool(self.get_parameter('learn_baseline').value)
+        self._baseline_file = str(self.get_parameter('baseline_file').value)
+        self._baseline_policy = str(self.get_parameter('baseline_policy').value)
+        if self._baseline_policy not in baseline_module.POLICIES:
+            raise ValueError('baseline_policy must be one of %s'
+                             % (baseline_module.POLICIES,))
 
         self._callbacks = ReentrantCallbackGroup()
         reliable = QoSProfile(depth=20)
@@ -548,6 +564,10 @@ class PatrolExecutorV2(Node):
                           progress=resume_at)
         report = PatrolReport(self._report_dir, route.name, self._execution_id,
                               config.mode, self._policy.value)
+        # 基线一次性读进来：循环里每点再读一次文件既慢又可能读到半截。
+        baseline_data = (baseline_module.load(self._baseline_file)
+                         if self._learn_baseline else baseline_module.empty())
+        learned_points = 0
         if already_done:
             report.event('resume', skipped_jobs=len(already_done),
                          loop=planner.loop_index, cursor=planner.cursor)
@@ -602,7 +622,12 @@ class PatrolExecutorV2(Node):
                     self._index = route_index_of(job)
                     self._loop = job.loop_index
                 point = route.points[job.route_index]
-                expect = normalize_expect(getattr(point, 'expect', ''))
+                manual_expect = normalize_expect(getattr(point, 'expect', ''))
+                # 手写的优先；没写就沿用上一趟学到的基线——这是"不用再选"的关键。
+                expect, expect_source = baseline_module.resolve(
+                    manual_expect,
+                    baseline_module.lookup(baseline_data, route.name,
+                                           job.point_id))
                 self._publish_status('NAVIGATING',
                                      'navigating to %s' % job.point_id, job.point_id)
                 nav_started = time.monotonic()
@@ -621,7 +646,8 @@ class PatrolExecutorV2(Node):
                     report.point(job, report_module.STATUS_SKIPPED,
                                  nav_seconds=nav_seconds, message=reason,
                                  expect=expect,
-                                 verdict=verdict_of(expect, False))
+                                 verdict=verdict_of(expect, False),
+                                 expect_source=expect_source)
                     self._save_progress(planner, route.name, config,
                                         [item.point_id for item in route.points])
                     if outcome == OUTCOME_ABORT:
@@ -666,7 +692,8 @@ class PatrolExecutorV2(Node):
                                  nav_seconds=nav_seconds, task_seconds=task_seconds,
                                  message=task_message, detections=detections,
                                  expect=expect,
-                                 verdict=verdict_of(expect, bool(detections)))
+                                 verdict=verdict_of(expect, bool(detections)),
+                                 expect_source=expect_source)
                     self._save_progress(planner, route.name, config,
                                         [item.point_id for item in route.points])
                     if outcome == OUTCOME_ABORT:
@@ -687,7 +714,14 @@ class PatrolExecutorV2(Node):
                              task_seconds=task_seconds, message=task_message,
                              detections=detections, image_path=image_path,
                              expect=expect,
-                             verdict=verdict_of(expect, bool(detections)))
+                             verdict=verdict_of(expect, bool(detections)),
+                             expect_source=expect_source)
+                # 这条点位没手写期望值、而这趟跑成功了：把它看到的结果记成
+                # 基线，下一趟起就能自动判定（不用再回录点界面点一遍）。
+                if self._learn_baseline and not manual_expect:
+                    if self._learn_point(baseline_data, report, route.name, job,
+                                         bool(detections)):
+                        learned_points += 1
                 self._save_progress(planner, route.name, config)
                 self._publish_status('RUNNING', 'reached %s' % job.point_id,
                                      job.point_id)
@@ -705,6 +739,9 @@ class PatrolExecutorV2(Node):
                     'execution_id': self._execution_id,
                     'aborted': planner.aborted,
                     'skipped': len(planner.skipped),
+                    # 这趟新学了多少个期望值基线。>0 说明下一趟起这些点会
+                    # 自动判定（报告里就该出召回率了），不是"没填期望值"。
+                    'baseline_learned': learned_points,
                     # 收尾时的电量快照：事后判断“这趟是跑完的还是电量撑不住了”
                     # 不用再去翻状态话题的日志
                     **self._battery_fields(),
@@ -721,6 +758,28 @@ class PatrolExecutorV2(Node):
         return self._finish(goal_handle, success, message,
                             len(planner.completed_ids),
                             planner.completed_loops)
+
+    def _learn_point(self, data, report, route_name, job, detected):
+        """把一个点位的观察记进基线；真的改了才落盘并留痕。
+
+        基线只是个缓存，写坏了不该毁掉这趟巡检——所以这里全兜住，失败只
+        告警。下一趟重新学即可。
+        """
+        changed = baseline_module.learn(
+            data, route_name, job.point_id, detected,
+            policy=self._baseline_policy, source_run=self._execution_id)
+        if not changed:
+            return False
+        try:
+            baseline_module.save(data, self._baseline_file)
+        except Exception as error:  # noqa: BLE001 - 见 docstring
+            self.get_logger().warning('failed to save expect baseline: %s' % error)
+            return False
+        expect = (baseline_module.EXPECT_PRESENT if detected
+                  else baseline_module.EXPECT_ABSENT)
+        report.event('baseline', point_id=job.point_id, expect=expect,
+                     policy=self._baseline_policy)
+        return True
 
     def _finish(self, goal_handle, success, message, completed_points, loops):
         """收尾：填结果、改 action 状态、把内部状态复位。"""

@@ -146,12 +146,16 @@ class PatrolReport:
     def point(self, job, status: str, nav_seconds: float = 0.0,
               task_seconds: float = 0.0, message: str = '',
               detections=None, image_path: str = '',
-              expect: str = '', verdict: str = '') -> dict:
+              expect: str = '', verdict: str = '',
+              expect_source: str = '') -> dict:
         """记录一个点位的执行结果。
 
         ``expect``/``verdict`` 只在该点位写了期望值时才填：一个是路线里声明的
         “这里应该有没有”，一个是实际比对出来的 tp/fp/fn/tn。事后统计准确率
         全靠这两列，所以哪怕点位失败也要记（失败时 detected 视为 False）。
+
+        ``expect_source`` 说明这个期望值哪来的：``manual`` 是录点时手选的，
+        ``baseline`` 是上一趟学出来的。事后怀疑“是不是自己学歪了”，就看这列。
         """
         record = {
             'type': 'point',
@@ -173,6 +177,8 @@ class PatrolReport:
         if expect:
             record['expect'] = str(expect)
             record['verdict'] = str(verdict or 'unknown')
+            if expect_source:
+                record['expect_source'] = str(expect_source)
         if image_path:
             record['image'] = str(image_path)
         self._write(record)

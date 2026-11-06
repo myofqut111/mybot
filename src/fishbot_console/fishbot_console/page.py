@@ -560,6 +560,9 @@ function renderRunSummary(run){
   if (run.canceled) parts.push('中断 ' + run.canceled);
   if (run.graded_points) parts.push('召回 ' + fmt(run.recall, 2) +
     ' / 精确 ' + fmt(run.precision, 2));
+  else if (run.baseline_learned) parts.push('刚学完基线 ' + run.baseline_learned +
+    ' 个点，下次巡检起自动判定');
+  else if (run.live) parts.push('期望值基线待跑完写入');
   $('runHint').textContent = parts.join(' · ');
 }
 async function loadEvents(name){

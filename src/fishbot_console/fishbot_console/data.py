@@ -231,6 +231,9 @@ def summarize_run(summary, fallback_name=''):
         'precision': _float(data.get('precision')),
         'false_alarm_rate': _float(data.get('false_alarm_rate')),
         'battery_v': _float(data.get('battery_v')),
+        # 这趟新学了几个期望值基线：>0 表示下一趟起会自动判定，报告页要
+        # 说清楚，否则用户会以为"还是没填期望值、永远算不出召回率"。
+        'baseline_learned': _int(data.get('baseline_learned')),
     }
 
 

@@ -103,6 +103,12 @@ class PageContractCase(unittest.TestCase):
         self.assertIn('run.planned', self.src)
         self.assertIn('进行中', self.src)
 
+    def test_summary_explains_learned_baseline(self):
+        # 刚学完基线的那一趟没有召回率可算，要明说"下次起自动判定"，
+        # 否则用户又会以为期望值没生效。
+        self.assertIn('baseline_learned', self.src)
+        self.assertIn('刚学完基线', self.src)
+
 
 if __name__ == '__main__':
     unittest.main()
