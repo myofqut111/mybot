@@ -87,8 +87,8 @@ tr:last-child td{border-bottom:none}
   border:1px solid var(--line)}
 #logList div{padding:1px 0;white-space:pre-wrap;word-break:break-all}
 #runText{margin:10px 0 0;padding:10px;border:1px solid var(--line);border-radius:8px;
-  background:#fafbfc;font-family:ui-monospace,Consolas,monospace;font-size:12px;
-  line-height:1.6;max-height:320px;overflow:auto;white-space:pre-wrap}
+  background:#0b0f14;color:#cfd8e3;font-family:ui-monospace,Consolas,monospace;
+  font-size:12px;line-height:1.6;max-height:320px;overflow:auto;white-space:pre-wrap}
 .hidden{display:none}
 .lv40{color:#ff9b9b}.lv30{color:#ffcf7a}.lv20{color:#9fd4a8}.lv10{color:#7d8b9c}
 #chatLog{height:150px;overflow:auto;background:#0b0f14;border-radius:8px;

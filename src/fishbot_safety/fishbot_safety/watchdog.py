@@ -16,6 +16,10 @@ from std_msgs.msg import String
 
 from .guard import Guard
 
+# 同一条刹车原因的最短打印间隔（秒）。20 Hz 的 tick 若不节流，odom 断一次
+# 就是几千行 ERROR。
+BRAKE_LOG_INTERVAL = 5.0
+
 
 class SafetyWatchdog(Node):
     def __init__(self):
@@ -59,6 +63,10 @@ class SafetyWatchdog(Node):
         self._beating = False
         self._brake_count = 0
         self._tick_count = 0
+        # 刹车原因的打印节流：每 tick 打一条的话，odom 一断就是 20 条/秒，
+        # 实测一次断 135 s 打了 2700 行，日志文件几分钟就上兆，还把 VM 拖慢。
+        self._last_brake_log = 0.0
+        self._last_brake_reason = ''
         self.create_timer(1.0 / rate, self._tick)
 
         self.get_logger().info(
@@ -96,7 +104,14 @@ class SafetyWatchdog(Node):
         tripped, reason = self._guard.evaluate(self._now())
         if tripped:
             if reason:
-                self.get_logger().error('BRAKING: %s' % reason)
+                now = self._now()
+                # 同一条原因最多每 BRAKE_LOG_INTERVAL 秒打一次；原因变了立刻打，
+                # 这样既看得见"什么时候开始刹的"，也不会把日志刷爆。
+                if (reason != self._last_brake_reason
+                        or (now - self._last_brake_log) >= BRAKE_LOG_INTERVAL):
+                    self._last_brake_log = now
+                    self._last_brake_reason = reason
+                    self.get_logger().error('BRAKING: %s' % reason)
             self._publish_brake()
         elif self._beating:
             self.get_logger().info('watchdog released: robot is under control '

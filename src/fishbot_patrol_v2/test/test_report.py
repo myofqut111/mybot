@@ -52,6 +52,15 @@ class ReportTest(unittest.TestCase):
         self.assertAlmostEqual(records[1]['nav_seconds'], 12.345)
         self.assertEqual(records[2]['status'], report.STATUS_SKIPPED)
 
+    def test_header_records_jobs_total(self):
+        """表头要记下"这一轮总共几个作业"，否则多轮巡检进度会显示成 13/3。"""
+        writer = report.PatrolReport(
+            self.directory, route_name='floor1', execution_id='abcdef123456',
+            mode=0, policy='skip', clock=lambda: '2026-10-19T12:00:00',
+            jobs_total=15)
+        records = self.read_records(writer.path)
+        self.assertEqual(records[0]['jobs_total'], 15)
+
     def test_detections_are_normalized(self):
         writer = self.make_report()
         writer.point(make_job(), report.STATUS_OK, detections=[

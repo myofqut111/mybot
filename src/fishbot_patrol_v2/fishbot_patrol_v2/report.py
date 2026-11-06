@@ -288,7 +288,8 @@ class PatrolReport:
     """一次巡检的报告写入器。"""
 
     def __init__(self, directory: str, route_name: str, execution_id: str,
-                 mode: int, policy: str, clock: Callable[[], str] = _now_iso):
+                 mode: int, policy: str, clock: Callable[[], str] = _now_iso,
+                 jobs_total: int = 0):
         """创建报告文件并写入表头。"""
         self._clock = clock
         self._directory = os.path.expanduser(directory)
@@ -312,6 +313,10 @@ class PatrolReport:
             'execution_id': execution_id,
             'mode': int(mode),
             'policy': str(policy),
+            # 计划总作业数（路线点数 × 轮数）。控制台靠它显示「3/15」；
+            # 只按路线点数算会变成「3/3」甚至「13/3」，因为多轮巡检的点数
+            # 是 轮数×点数，而路线本身只知道自己有几个点。
+            'jobs_total': int(jobs_total or 0),
         })
 
     # -- 写入 -------------------------------------------------------

@@ -297,6 +297,12 @@ def summarize_events(events, fallback_name=''):
     }, fallback_name)
     # total 在运行中只是"已经跑过几个点"，计划总数由调用方补（见 server 的 planned）
     row['live'] = True
+    # 计划总作业数（路线点数 × 轮数）由执行器写在表头里：多轮巡检时只按
+    # 路线点数算会得出「13/3」这种比分，用户一眼就知道不对。
+    try:
+        row['jobs_total'] = int(header.get('jobs_total') or 0)
+    except (TypeError, ValueError):
+        row['jobs_total'] = 0
     return row
 
 

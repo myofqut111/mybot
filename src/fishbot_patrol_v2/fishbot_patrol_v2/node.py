@@ -22,7 +22,7 @@ import traceback
 import uuid
 
 import rclpy
-from geometry_msgs.msg import Pose, PoseStamped, PoseWithCovarianceStamped
+from geometry_msgs.msg import Pose, PoseStamped, PoseWithCovarianceStamped, Quaternion
 from rclpy.action import ActionClient, ActionServer, CancelResponse, GoalResponse
 from rclpy.callback_groups import ReentrantCallbackGroup
 from rclpy.executors import MultiThreadedExecutor
@@ -47,8 +47,15 @@ from .plan import (
     VALID_MODES, OUTCOME_ABORT, OUTCOME_RETRY, PlanConfig, Planner, PointRef,
     parse_policy)
 from .report import PatrolReport
-from .util import (normalize_expect, parse_detections, route_index_of,
-                   verdict_of, yaw_of)
+from .util import (EXPECT_ABSENT, normalize_expect, parse_detections,
+                   route_index_of, verdict_of, yaw_of)
+
+
+# 复核动作的三种玩法（recheck_strategy 参数只接受这三个值）
+RECHECK_TURN = 'turn'
+RECHECK_FORWARD = 'forward'
+RECHECK_BOTH = 'both'
+RECHECK_STRATEGIES = (RECHECK_TURN, RECHECK_FORWARD, RECHECK_BOTH)
 
 
 class PatrolExecutorV2(Node):
@@ -86,13 +93,19 @@ class PatrolExecutorV2(Node):
         self.declare_parameter('action_name', '/execute_patrol')
         self.declare_parameter('preempt_topic', '/patrol/preempt')
         self.declare_parameter('status_topic', '/patrol/execution/status')
-        # ---- 主动视角复核：置信度不高时走近平一点再看一眼 ----
+        # ---- 主动视角复核：置信度不高时换个视角再看一眼 ----
         # 0 = 关闭。默认 0.4 m：目标在画面里约放大一倍，灰区判决基本能落地。
         self.declare_parameter('recheck_forward_m', 0.4)
         self.declare_parameter('recheck_max_rounds', 2)
         self.declare_parameter('recheck_conf_low', 0.25)
         self.declare_parameter('recheck_conf_high', 0.60)
         self.declare_parameter('recheck_on_miss', True)
+        # 复核动作：turn = 原地左右转（默认），forward = 往前走，both = 先转再走。
+        # 纯前进的问题：车停在墙边/柜子前时前面根本没路，nav2 会一直重规划
+        # （实测一次复核 10~20 s），而目标常常在侧面或背后——转一下 2 s 就看见了。
+        self.declare_parameter('recheck_strategy', 'turn')
+        # 每次转多少度；turn 策略是 +θ / -θ 一来一回，转完朝向回到原样。
+        self.declare_parameter('recheck_turn_deg', 35.0)
 
         # ---- 期望值基线：跑完一趟就把看到的结果记下来，下次自动判定 ----
         # 录点时手写 expect 太烦，多数人不会点，报告里的召回率就永远是 null。
@@ -165,6 +178,13 @@ class PatrolExecutorV2(Node):
                 'recheck_conf_low/high must satisfy 0 <= low < high <= 1')
         self._recheck_on_miss = bool(
             self.get_parameter('recheck_on_miss').value)
+        self._recheck_strategy = str(
+            self.get_parameter('recheck_strategy').value or 'turn').strip().lower()
+        if self._recheck_strategy not in RECHECK_STRATEGIES:
+            raise ValueError('recheck_strategy must be one of %s'
+                             % (RECHECK_STRATEGIES,))
+        self._recheck_turn = math.radians(
+            self._non_negative('recheck_turn_deg'))
         self._learn_baseline = bool(self.get_parameter('learn_baseline').value)
         self._baseline_file = str(self.get_parameter('baseline_file').value)
         self._baseline_policy = str(self.get_parameter('baseline_policy').value)
@@ -565,7 +585,8 @@ class PatrolExecutorV2(Node):
         planner = Planner(points, config, already_done=already_done,
                           progress=resume_at)
         report = PatrolReport(self._report_dir, route.name, self._execution_id,
-                              config.mode, self._policy.value)
+                              config.mode, self._policy.value,
+                              jobs_total=planner.total)
         # 基线一次性读进来：循环里每点再读一次文件既慢又可能读到半截。
         baseline_data = (baseline_module.load(self._baseline_file)
                          if self._learn_baseline else baseline_module.empty())
@@ -671,7 +692,8 @@ class PatrolExecutorV2(Node):
                                      job.point_id)
                 task_started = time.monotonic()
                 (ok, task_message, task_interrupted, detections,
-                 recheck_info) = self._run_task_with_recheck(job, goal_handle)
+                 recheck_info) = self._run_task_with_recheck(
+                     job, goal_handle, expect=expect)
                 task_seconds = time.monotonic() - task_started
                 if task_interrupted:
                     # 取消/关机不是「任务失败」：不记 FAILED、不计入连续失败、
@@ -1088,46 +1110,80 @@ class PatrolExecutorV2(Node):
     # ------------------------------------------------------------------
     # 主动视角复核：不确定就往前走一点，再看一眼
     # ------------------------------------------------------------------
-    def _advance_for_recheck(self, goal_handle, job):
-        """沿当前朝向往前挪 ``recheck_forward_m``，返回 ``(ok, reason)``。
+    def _recheck_pose(self, pose, index):
+        """算第 ``index`` 次复核要去的位姿，返回 ``(target, label)``。
 
-        不直接用路线点的坐标：车实际停在哪、朝哪，只有 /amcl_pose 知道。
-        以「当前位置 + 朝向 × 距离」重新算目标，才不会因为到点误差把车
-        送去一个偏掉 30 cm 的点。
+        三种策略：
+          - ``turn``：原地转 ±``recheck_turn_deg``，第一次 +、第二次 -，转完
+            朝向回到原样。墙边、柜子前也能做，2 秒就完；
+          - ``forward``：沿当前朝向前进 ``recheck_forward_m``（老做法，靠得
+            更近看得更大，但前面有东西时 nav2 会一直重规划，一次十几秒）；
+          - ``both``：先转再进，兼顾侧面与距离。
+
+        位置/朝向都取自 /amcl_pose，不用路线点坐标：车实际停在哪、朝哪只有
+        定位知道，用路线点会把复核目标送偏 30 cm。
         """
-        pose, _age, _count, _stamp = self._pose_snapshot()
-        if pose is None:
-            return False, 'no pose available for recheck'
         yaw = yaw_of(pose)
         target = PoseStamped()
         target.header.frame_id = self._global_frame
         target.header.stamp = self.get_clock().now().to_msg()
+        target.pose.position.x = pose.position.x
+        target.pose.position.y = pose.position.y
+        target.pose.position.z = 0.0
+        orientation = Quaternion()
+        orientation.z = math.sin(yaw / 2.0)
+        orientation.w = math.cos(yaw / 2.0)
+        target.pose.orientation = orientation
+
+        strategy = self._recheck_strategy
+        turn_here = strategy == RECHECK_TURN or (
+            strategy == RECHECK_BOTH and index % 2 == 0)
+        if turn_here and self._recheck_turn > 0.0:
+            sign = 1.0 if index % 2 == 0 else -1.0
+            angle = yaw + sign * self._recheck_turn
+            target.pose.orientation.z = math.sin(angle / 2.0)
+            target.pose.orientation.w = math.cos(angle / 2.0)
+            return target, 'turn%+.0f' % math.degrees(sign * self._recheck_turn)
         target.pose.position.x = (pose.position.x
                                   + self._recheck_forward * math.cos(yaw))
         target.pose.position.y = (pose.position.y
                                   + self._recheck_forward * math.sin(yaw))
-        target.pose.position.z = 0.0
-        target.pose.orientation = pose.orientation     # 朝向不变，只前进
-        return self._navigate(target, goal_handle, job)
+        return target, 'forward%.2fm' % self._recheck_forward
 
-    def _run_task_with_recheck(self, job, goal_handle):
-        """跑点位任务；结果落在灰区就往前走一点点再看一眼。
+    def _move_for_recheck(self, goal_handle, job, index):
+        """执行一次复核动作，返回 ``(ok, reason, label)``。"""
+        pose, _age, _count, _stamp = self._pose_snapshot()
+        if pose is None:
+            return False, 'no pose available for recheck', ''
+        target, label = self._recheck_pose(pose, index)
+        ok, reason = self._navigate(target, goal_handle, job)
+        return ok, reason, label
+
+    def _run_task_with_recheck(self, job, goal_handle, expect=''):
+        """跑点位任务；结果落在灰区就换个视角再看一眼。
 
         返回 ``(ok, message, interrupted, detections, info)``，``info`` 里带
-        ``moves``（走了几次）、``moved_m``（累计前进距离）、``top_conf``。
+        ``moves``（复核动作次数）、``moved_m``（累计前进距离）、
+        ``turned_deg``（累计转动角度）、``top_conf``。
 
         三种触发条件（见 ``recheck.evaluate`` 的决策表）：
         1. 有目标但置信度在 [low, high) —— 说不清是灭火器还是红色瓶子；
         2. 干脆没检到 —— 可能太远、太小、被挡住；
         3. 置信度低于 low —— 当没检到处理。
         已经置信度 >= high 就不要再折腾，免得每个点都多花 3 秒。
+
+        但有一种情况不该折腾：**基线说这里本来就没有**（expect=absent）且
+        这一轮什么都没看到。为了"确认没有"再转两圈、再走 0.4 m，纯属浪费
+        十到二十秒——实测每个空点位都被这么白跑一次。
         """
         ok, message, interrupted = self._run_task(job, goal_handle)
-        info = {'moves': 0, 'moved_m': 0.0, 'top_conf': 0.0,
+        info = {'moves': 0, 'moved_m': 0.0, 'turned_deg': 0.0, 'top_conf': 0.0,
+                'actions': [],
                 'decision': recheck_module.DECISION_ACCEPT_ABSENT}
         if interrupted or not ok:
             return ok, message, interrupted, parse_detections(message), info
-        if self._recheck_forward <= 0.0 or self._recheck_rounds <= 0:
+        if ((self._recheck_forward <= 0.0 and self._recheck_turn <= 0.0)
+                or self._recheck_rounds <= 0):
             info['decision'] = recheck_module.DECISION_ACCEPT_PRESENT
             return ok, message, interrupted, parse_detections(message), info
 
@@ -1139,6 +1195,10 @@ class PatrolExecutorV2(Node):
 
         rounds = [parsed]
         count, confidences = parsed
+        if normalize_expect(expect) == EXPECT_ABSENT and not count:
+            # 该没有、也确实没看到：直接接受，别再转圈找。
+            info['decision'] = recheck_module.DECISION_ACCEPT_ABSENT
+            return ok, message, interrupted, parse_detections(message), info
         while True:
             decision, top = recheck_module.evaluate(
                 count, confidences, info['moves'], self._recheck_rounds,
@@ -1147,7 +1207,8 @@ class PatrolExecutorV2(Node):
             info['decision'] = decision
             if decision != recheck_module.DECISION_MOVE:
                 break
-            moved, reason = self._advance_for_recheck(goal_handle, job)
+            moved, reason, label = self._move_for_recheck(
+                goal_handle, job, info['moves'])
             if not moved:
                 # 挪不动（定位丢了 / 被取消 / 前面有障碍）：按已有结果收，
                 # 不要把一次「看不准」升级成「这个点失败」。
@@ -1157,13 +1218,20 @@ class PatrolExecutorV2(Node):
                     return False, 'patrol canceled', True, [], info
                 break
             info['moves'] += 1
-            info['moved_m'] = self._recheck_forward * info['moves']
+            info['actions'].append(label)
+            if label.startswith('turn'):
+                try:
+                    info['turned_deg'] += abs(float(label[4:]))
+                except ValueError:
+                    pass
+            else:
+                info['moved_m'] += self._recheck_forward
             ok, message, interrupted = self._run_task(
                 job, goal_handle, attempt=job.attempt + info['moves'])
             if interrupted:
                 return ok, message, True, [], info
             if not ok:
-                # 走近之后反而失败了：保留上一轮的结论，别把点判死。
+                # 换了视角之后反而失败了：保留上一轮的结论，别把点判死。
                 break
             parsed = recheck_module.parse_summary(message)
             if parsed is None:
@@ -1174,8 +1242,8 @@ class PatrolExecutorV2(Node):
         _count, _confs, top = recheck_module.merge(rounds)
         info['top_conf'] = top
         if info['moves']:
-            message = '%s [recheck: +%.2fm x%d, top=%.2f]' % (
-                message, info['moved_m'], info['moves'], top)
+            message = '%s [recheck: %s, top=%.2f]' % (
+                message, ' '.join(info['actions']), top)
         return True, message, False, parse_detections(message), info
 
     def _feedback(self, goal_handle, job, distance):

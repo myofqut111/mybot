@@ -239,15 +239,20 @@ class ConsoleServer(object):
                     return _bytes_response(self, raw, 'image/jpeg')
                 if path == '/api/runs':
                     items = data.list_runs(server.bridge.reports_dir())
-                    # 进行中的那一轮补上"计划几个点"，页面才能显示 3/6 而不是 3/3
+                    # 进行中的那一轮补上"计划几个点"，页面才能显示 3/15 而不是 3/3。
+                    # 优先用表头里的 jobs_total（轮数 × 点数）；老报告没有这个字段，
+                    # 才退回到"路线点数"——那条路只有在单轮巡检时才是对的。
                     for row in items:
                         if not row.get('live'):
                             continue
-                        try:
-                            row['planned'] = len(server.bridge.route_points(
-                                row.get('route_name') or ''))
-                        except Exception:      # noqa: BLE001 - 计划数拿不到就不显示
-                            row['planned'] = 0
+                        planned = int(row.get('jobs_total') or 0)
+                        if not planned:
+                            try:
+                                planned = len(server.bridge.route_points(
+                                    row.get('route_name') or ''))
+                            except Exception:   # noqa: BLE001 - 拿不到就不显示
+                                planned = 0
+                        row['planned'] = planned
                     return _json_response(self, {'items': items})
                 if path == '/api/events':
                     limit = _query_int(query, 'limit', 120, low=1, high=5000)

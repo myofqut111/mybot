@@ -42,7 +42,8 @@ class LiveRunsCase(unittest.TestCase):
         with open(self.base + '.jsonl', 'w', encoding='utf-8') as handle:
             for item in (
                 {'type': 'header', 'time': '2026-01-01T00:00:00',
-                 'route_name': 'main2', 'execution_id': 'exec-1'},
+                 'route_name': 'main2', 'execution_id': 'exec-1',
+                 'jobs_total': 15},
                 {'type': 'point', 'status': 'ok', 'point_id': 'p1',
                  'detections': [{'label': 'fire_extinguisher'}]},
                 {'type': 'point', 'status': 'ok', 'point_id': 'p2',
@@ -58,6 +59,14 @@ class LiveRunsCase(unittest.TestCase):
         self.assertEqual(runs[0]['ok'], 2)
         self.assertEqual(runs[0]['route_name'], 'main2')
         self.assertEqual(runs[0]['detections_total'], 3)
+
+    def test_jobs_total_from_header(self):
+        """计划总数来自表头（轮数 × 点数），不是路线点数。
+
+        5 轮 × 3 点的一轮巡检，若按路线点数算就会显示「已完成 13/3」。
+        """
+        runs = data.list_runs(self.dir)
+        self.assertEqual(runs[0]['jobs_total'], 15)
 
     def test_finished_run_prefers_summary(self):
         with open(self.base + '.summary.json', 'w', encoding='utf-8') as handle:

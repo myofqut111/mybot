@@ -7,7 +7,16 @@
 
 import json
 import math
+import re
 import time
+
+# 视觉节点「什么都没有」时的固定说法（yolo_detector._summarize_detections）。
+_EMPTY_HINTS = ('no object', 'none', 'nothing')
+# fire_extinguisher x2 (0.92,0.91) / fire_extinguisher (0.88)
+_ITEM_RE = re.compile(
+    r'^\s*([A-Za-z_][A-Za-z0-9_\- ]*?)\s*(?:x\s*(\d+))?\s*\(([^)]*)\)\s*$')
+# 复核过的点位会在结果后面追加 [recheck: +0.80m x2, top=0.00]
+_TRAILING_NOTE_RE = re.compile(r'\s*\[[^\]]*\]\s*$')
 
 
 def route_index_of(job) -> int:
@@ -64,20 +73,66 @@ def verdict_of(expect, detected) -> str:
 
 
 def parse_detections(message: str):
-    """任务结果里的 message 若是 JSON 且带 detections，就取出来写进报告。"""
+    """把任务结果解析成检测列表（``[{'label':..., 'confidence':...}]``）。
+
+    视觉节点给过两种格式，两种都得认：
+      - JSON：``{"detections": [{"label": "fire_extinguisher", "confidence": 0.9}]}``
+      - 人读文本：``fire_extinguisher x2 (0.92,0.91)`` / ``no object detected``
+
+    以前只认 JSON，而视觉节点回的是文本，于是**每一轮都解析成空**——报告里
+    检测总数恒为 0、tt/fp/fn/tn 全判成「未发现」，基线也就把每个点都学成
+    absent，之后每次巡检都“正确地”什么都没发现。
+    """
     if not message:
         return []
     text = str(message).strip()
-    if not text.startswith('{'):
+    if not text:
         return []
-    try:
-        payload = json.loads(text)
-    except ValueError:
-        return []
-    if not isinstance(payload, dict):
-        return []
-    detections = payload.get('detections')
-    return detections if isinstance(detections, list) else []
+    # 复核过的点位尾巴上带一段注释，先把注释剥掉再解析。
+    text = _TRAILING_NOTE_RE.sub('', text).strip()
+    if text.startswith('{'):
+        try:
+            payload = json.loads(text)
+        except ValueError:
+            return []
+        if not isinstance(payload, dict):
+            return []
+        detections = payload.get('detections')
+        return detections if isinstance(detections, list) else []
+
+    lowered = text.lower()
+    for hint in _EMPTY_HINTS:
+        if lowered.startswith(hint):
+            return []
+
+    out = []
+    for part in text.split(';'):
+        part = part.strip()
+        if not part:
+            continue
+        match = _ITEM_RE.match(part)
+        if not match:
+            return []
+        label = match.group(1).strip()
+        try:
+            count = int(match.group(2) or 1)
+        except ValueError:
+            return []
+        scores = []
+        for token in match.group(3).split(','):
+            token = token.strip()
+            if not token:
+                continue
+            try:
+                scores.append(round(float(token), 4))
+            except ValueError:
+                return []
+        if not scores:
+            return []
+        for index in range(max(count, 1)):
+            score = scores[index] if index < len(scores) else scores[0]
+            out.append({'label': label, 'confidence': score})
+    return out
 
 
 def yaw_of(pose) -> float:

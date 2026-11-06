@@ -188,5 +188,41 @@ class StableResidualTest(unittest.TestCase):
         self.assertGreaterEqual(len(calls), 2)
 
 
+class ParseDetectionsTest(unittest.TestCase):
+    """结果解析：视觉节点回的是人读文本，不是 JSON。
+
+    以前只认 JSON，于是每轮都解析成空——报告里检测总数恒为 0、每个点都被
+    判成「未发现」，基线也就把每处都学成 absent。
+    """
+
+    def test_text_single(self):
+        self.assertEqual(
+            parse_detections('fire_extinguisher (0.92)'),
+            [{'label': 'fire_extinguisher', 'confidence': 0.92}])
+
+    def test_text_multiple(self):
+        out = parse_detections('fire_extinguisher x2 (0.87,0.84)')
+        self.assertEqual([item['confidence'] for item in out], [0.87, 0.84])
+        self.assertEqual([item['label'] for item in out],
+                         ['fire_extinguisher', 'fire_extinguisher'])
+
+    def test_empty_text(self):
+        self.assertEqual(parse_detections('no object detected'), [])
+
+    def test_recheck_suffix_is_ignored(self):
+        out = parse_detections(
+            'fire_extinguisher x2 (0.87,0.84) '
+            '[recheck: turn+35 turn-35, top=0.84]')
+        self.assertEqual(len(out), 2)
+
+    def test_json_still_supported(self):
+        out = parse_detections(
+            '{"detections": [{"label": "x", "confidence": 0.5}]}')
+        self.assertEqual(len(out), 1)
+
+    def test_garbage_is_empty(self):
+        self.assertEqual(parse_detections('something unexpected'), [])
+
+
 if __name__ == '__main__':
     unittest.main()

@@ -42,15 +42,25 @@ patrol_executor_v2:
     # --- 报告 ----------------------------------------------------
     report_dir: ~/patrol_reports
 
-    # --- 主动视角复核：看不清就走近一点再看一眼 ------------------
+    # --- 主动视角复核：看不清就换个角度再看一眼 ------------------
     # 这是「用移动能力补感知不确定性」的做法：置信度落在灰区时不硬判，
-    # 往前挪 0.4 m（目标在画面里约大一倍）再检一次，最多 2 轮。
-    # 关掉：recheck_forward_m: 0.0
-    recheck_forward_m: 0.4          # 每次前进距离（米）
+    # 换个视角再检一次，最多 2 轮。
+    #
+    # 复核动作由 recheck_strategy 决定：
+    #   turn    原地左右各转 recheck_turn_deg 度（默认，推荐）
+    #   forward 沿当前朝向前进 recheck_forward_m 米（老做法）
+    #   both    交替：第一次转、第二次前进
+    # 转比走安全：目标常在侧面（走廊两侧的墙上/柜子边），往前走只会顶到墙，
+    # nav2 得反复重规划，一个空点位能白花 20 秒。实测就是这个现象。
+    recheck_strategy: turn
+    recheck_turn_deg: 35.0          # turn 策略每次转多少度（一来一回共 2×）
+    recheck_forward_m: 0.4          # forward 策略每次前进距离（米）
     recheck_max_rounds: 2           # 最多走几次
     recheck_conf_low: 0.25          # 低于它当「没看到」
     recheck_conf_high: 0.60         # 高于它直接确认，不再走
-    recheck_on_miss: true           # 完全没检到时也走近确认（压误检/漏检）
+    recheck_on_miss: true           # 完全没检到时也要确认（压漏检）
+
+    # 想彻底关掉复核：把 recheck_max_rounds 设成 0。
 
     # --- 电量决策：低电时「跑完当前点就收工」 --------------------
     # 固件在 /battery/voltage 上发电压（ESP32 GPIO34 经分压）。
