@@ -52,6 +52,9 @@ if ! python3 -c "import importlib.metadata as m; print('version', m.version('fis
 fi
 
 echo "== 3. start =="
+# 启动前清掉上次强杀残留的共享内存段（此时控制台还没起，安全）
+rm -f /dev/shm/fastrtps_* /dev/shm/sem.fastrtps_* 2>/dev/null || true
+
 nohup ros2 launch fishbot_console console.launch.py > /tmp/console070.log 2>&1 &
 sleep 9
 

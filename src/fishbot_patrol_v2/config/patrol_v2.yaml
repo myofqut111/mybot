@@ -78,3 +78,10 @@ patrol_executor_v2:
     action_name: /execute_patrol
     preempt_topic: /patrol/preempt
     status_topic: /patrol/execution/status
+
+    # --- 期望值基线（跑完自动记，下次自动判） --------------------
+    learn_baseline: true
+    baseline_file: '~/.ros/fishbot_patrol_expect.json'
+    # fill  : 只补空缺，不覆盖已有结论（默认；防止一次误检带偏整条线）
+    # update: 每趟都用本轮结果覆盖
+    baseline_policy: fill

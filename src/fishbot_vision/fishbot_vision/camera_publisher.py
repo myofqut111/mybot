@@ -34,7 +34,9 @@ class CameraPublisher(Node):
 
         # ---------------- 参数 ----------------
         # 视频流地址（ESP32 CameraWebServer 固定为 81 端口的 /stream）
-        self.declare_parameter('stream_url', 'http://192.168.1.102:81/stream')
+        # 地址只在 config/vision_params.yaml 里维护（路由器后台可查到摄像头 IP）。
+        # 这里故意留空：没配置就报错，避免悄悄用一个过时的默认地址。
+        self.declare_parameter('stream_url', '')
         # 图像消息里的坐标系名（要和 URDF 里的相机 link 对得上）
         self.declare_parameter('frame_id', 'camera_link')
         # 图像发布频率（Hz）。CPU 紧张可以调低
@@ -87,7 +89,12 @@ class CameraPublisher(Node):
         self.declare_parameter('capture_rate', 5.0)
         self.declare_parameter('capture_url', '')
 
-        self._stream_url = self.get_parameter('stream_url').value
+        self._stream_url = str(self.get_parameter('stream_url').value or '').strip()
+        if not self._stream_url:
+            raise RuntimeError(
+                '未配置摄像头地址：请在 config/vision_params.yaml 里设置 '
+                'stream_url（形如 http://192.168.1.100:81/stream），'
+                '或在命令行加 --ros-args -p stream_url:=http://<摄像头IP>:81/stream')
         self._frame_id = self.get_parameter('frame_id').value
         self._publish_rate = float(self.get_parameter('publish_rate').value)
         self._flip_code = int(self.get_parameter('flip_code').value)
@@ -161,8 +168,11 @@ class CameraPublisher(Node):
         self.create_timer(1.0 / self._publish_rate, self._publish_frame)
 
         self.get_logger().info(
-            'camera_publisher started, url=%s, flip_code=%d, rate=%.1fHz'
+            'camera_publisher started, 摄像头=%s, flip_code=%d, rate=%.1fHz'
             % (self._stream_url, self._flip_code, self._publish_rate))
+        self.get_logger().info(
+            '连不上就检查这个地址（路由器后台能看到摄像头的 IP）: %s'
+            % self._stream_url)
 
     # ------------------------------------------------------------------
     # 摄像头参数：把 ESP32 网页里那些"一断电就丢"的设置自动设一遍

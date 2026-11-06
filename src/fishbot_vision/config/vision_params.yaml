@@ -6,7 +6,15 @@
 # ---------- 摄像头取流节点（namespace=/camera, name=camera，全名 /camera/camera） ----------
 /camera/camera:
   ros__parameters:
+    # 摄像头地址：以路由器后台看到的 IP 为准，换摄像头只改这一行
     stream_url: "http://192.168.1.100:81/stream"
+    # ---- 抓图模式（ESP32 的 httpd 只有 4~5 个 socket，长连接必断）----
+    capture_mode: true            # true=单张轮询 /capture；false=旧的 MJPEG 长连接
+    capture_rate: 5.0             # 抓图频率（Hz）
+    capture_url: ''               # 留空 = 由 stream_url 自动推导出 http://<IP>/capture
+    # ---- 压缩图（给浏览器看，省带宽）----
+    compressed_rate: 2.0          # 压缩图发布频率（Hz），0=关闭
+    jpeg_quality: 60              # JPEG 质量 0~100
     frame_id: "camera_link"
     publish_rate: 15.0
     # 翻转：-1=旋转180°  0=上下  1=左右  2=不翻转
