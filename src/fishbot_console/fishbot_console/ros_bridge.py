@@ -24,7 +24,7 @@ from rclpy.qos import DurabilityPolicy, HistoryPolicy, QoSProfile, ReliabilityPo
 from geometry_msgs.msg import Pose, PoseWithCovarianceStamped, Twist
 from nav_msgs.msg import OccupancyGrid, Path
 from rcl_interfaces.msg import Log
-from sensor_msgs.msg import Image, LaserScan
+from sensor_msgs.msg import CompressedImage, Image, LaserScan
 from std_msgs.msg import Float32, String
 
 from . import map_render
@@ -81,6 +81,14 @@ class ConsoleBridge(Node):
         self.declare_parameter('status_topic', '/patrol/execution/status')
         self.declare_parameter('image_topic', '/camera/camera/image_raw')
         self.declare_parameter('annotated_topic', '/yolo_detector/image_annotated')
+        # 压缩图：原始图一帧 230KB，5fps 要 9Mbps，会把 WiFi 路由器打瘫。
+        # 视觉节点另外发一份 JPEG（约 12KB/帧），这里优先订阅它。
+        # 没装新版视觉节点时把 prefer_compressed 设为 false，退回订阅原始图。
+        self.declare_parameter('prefer_compressed', True)
+        self.declare_parameter('compressed_image_topic',
+                               '/camera/camera/image_raw/compressed')
+        self.declare_parameter('compressed_annotated_topic',
+                               '/yolo_detector/image_annotated/compressed')
         self.declare_parameter('map_topic', '/map')
         self.declare_parameter('global_costmap_topic', '/global_costmap/costmap')
         self.declare_parameter('local_costmap_topic', '/local_costmap/costmap')
@@ -189,12 +197,25 @@ class ConsoleBridge(Node):
         self.create_subscription(
             OccupancyGrid, self.get_parameter('map_topic').value,
             self._on_map, map_qos, callback_group=self._callbacks)
-        self.create_subscription(
-            Image, self.get_parameter('image_topic').value,
-            self._on_image, fast_qos, callback_group=self._callbacks)
-        self.create_subscription(
-            Image, self.get_parameter('annotated_topic').value,
-            self._on_annotated, fast_qos, callback_group=self._callbacks)
+        if self.get_parameter('prefer_compressed').value:
+            # 只订阅压缩图：原始图根本不过网，空口从 9Mbps 降到 ~0.2Mbps
+            self.create_subscription(
+                CompressedImage,
+                self.get_parameter('compressed_image_topic').value,
+                self._on_image_compressed, fast_qos,
+                callback_group=self._callbacks)
+            self.create_subscription(
+                CompressedImage,
+                self.get_parameter('compressed_annotated_topic').value,
+                self._on_annotated_compressed, fast_qos,
+                callback_group=self._callbacks)
+        else:
+            self.create_subscription(
+                Image, self.get_parameter('image_topic').value,
+                self._on_image, fast_qos, callback_group=self._callbacks)
+            self.create_subscription(
+                Image, self.get_parameter('annotated_topic').value,
+                self._on_annotated, fast_qos, callback_group=self._callbacks)
         self.create_subscription(
             PoseWithCovarianceStamped, self.get_parameter('pose_topic').value,
             self._on_pose, 10, callback_group=self._callbacks)
@@ -449,6 +470,21 @@ class ConsoleBridge(Node):
 
     def _on_annotated(self, msg):
         data = self._encode(msg)
+        if data:
+            with self._lock:
+                self._anno_jpeg = data
+                self._anno_time = time.time()
+
+    def _on_image_compressed(self, msg):
+        """压缩图直接透传：不再解压重编码，省一次 CPU 也省一次内存拷贝。"""
+        data = bytes(msg.data)
+        if data:
+            with self._lock:
+                self._frame_jpeg = data
+                self._frame_time = time.time()
+
+    def _on_annotated_compressed(self, msg):
+        data = bytes(msg.data)
         if data:
             with self._lock:
                 self._anno_jpeg = data

@@ -33,7 +33,7 @@ from rclpy.callback_groups import ReentrantCallbackGroup
 from rclpy.executors import MultiThreadedExecutor
 from rclpy.node import Node
 from rclpy.qos import QoSProfile, ReliabilityPolicy, HistoryPolicy
-from sensor_msgs.msg import Image
+from sensor_msgs.msg import CompressedImage, Image
 from std_srvs.srv import SetBool
 
 # 限制 CPU 推理线程数：torch 默认会贪心占满虚拟机所有核，把 rqt、导航、取流
@@ -63,6 +63,10 @@ class YoloDetector(Node):
         self.declare_parameter('device', 'cpu')
         self.declare_parameter('imgsz', 640)
         self.declare_parameter('infer_frequency', 5.0)
+        # 带框的图也出一份压缩版：原始标注图一帧 230KB，控制台在另一台机器上，
+        # 走 WiFi 会把路由器打瘫。压缩图约 12KB，同样的画面，1/20 的流量。
+        self.declare_parameter('publish_compressed', True)
+        self.declare_parameter('jpeg_quality', 60)
         # 断流保护：超过这么久没收到“新”图像帧，就停止推理并作废缓存结果。
         # 摄像头停止发布后缓存帧会一直留着，若继续反复推理，就会不停刷新
         # _latest_detect_time，让下游以为结果很新（巡检拿冻结画面报成功）。
@@ -95,6 +99,9 @@ class YoloDetector(Node):
             self._device = 'cpu'
         self._imgsz = int(self.get_parameter('imgsz').value)
         infer_hz = float(self.get_parameter('infer_frequency').value)
+        self._publish_compressed = bool(
+            self.get_parameter('publish_compressed').value)
+        self._jpeg_quality = int(self.get_parameter('jpeg_quality').value)
         self._stale_image_sec = float(
             self.get_parameter('stale_image_sec').value)
 
@@ -177,6 +184,9 @@ class YoloDetector(Node):
             callback_group=self._callbacks)
         self._annotated_pub = self.create_publisher(
             Image, '~/image_annotated', image_qos)
+        # 压缩版的标注图：控制台在另一台机器上，只订阅这个
+        self._annotated_compressed_pub = self.create_publisher(
+            CompressedImage, '~/image_annotated/compressed', image_qos)
 
         # ---------------- 订阅 / 发布：巡检任务 ----------------
         # task_manager 用 RELIABLE，这里必须对齐
@@ -342,6 +352,23 @@ class YoloDetector(Node):
         out_msg = self._bridge.cv2_to_imgmsg(annotated_bgr, encoding='bgr8')
         out_msg.header = header
         self._annotated_pub.publish(out_msg)
+
+        if self._publish_compressed:
+            try:
+                import cv2 as _cv2
+                quality = max(1, min(100, self._jpeg_quality))
+                ok, buffer = _cv2.imencode(
+                    '.jpg', annotated_bgr,
+                    [int(_cv2.IMWRITE_JPEG_QUALITY), quality])
+                if ok:
+                    cmsg = CompressedImage()
+                    cmsg.header = header
+                    cmsg.format = 'jpeg'
+                    cmsg.data = buffer.tobytes()
+                    self._annotated_compressed_pub.publish(cmsg)
+            except Exception as error:
+                self.get_logger().warning(
+                    'JPEG encode failed: %s' % error, throttle_duration_sec=5.0)
 
         # 解析检测结果并缓存
         names = result.names

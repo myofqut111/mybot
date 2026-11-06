@@ -6,6 +6,12 @@ fishbot_console:
     status_topic: /patrol/execution/status
     image_topic: /camera/camera/image_raw
     annotated_topic: /yolo_detector/image_annotated
+    # 默认只订阅压缩图：原始图一帧 230KB、5fps 就是 9Mbps，过 WiFi 会把
+    # 路由器打瘫（实测整网掉线）。压缩图一帧约 12KB，同样的画面。
+    # 视觉节点还没升级时，把 prefer_compressed 改成 false 退回订阅原始图。
+    prefer_compressed: true
+    compressed_image_topic: /camera/camera/image_raw/compressed
+    compressed_annotated_topic: /yolo_detector/image_annotated/compressed
     map_topic: /map
     global_costmap_topic: /global_costmap/costmap
     local_costmap_topic: /local_costmap/costmap

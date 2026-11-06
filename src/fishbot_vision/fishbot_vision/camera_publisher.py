@@ -25,7 +25,7 @@ import rclpy
 from cv_bridge import CvBridge
 from rclpy.node import Node
 from rclpy.qos import QoSProfile, ReliabilityPolicy, HistoryPolicy
-from sensor_msgs.msg import Image
+from sensor_msgs.msg import CompressedImage, Image
 
 
 class CameraPublisher(Node):
@@ -39,6 +39,12 @@ class CameraPublisher(Node):
         self.declare_parameter('frame_id', 'camera_link')
         # 图像发布频率（Hz）。CPU 紧张可以调低
         self.declare_parameter('publish_rate', 15.0)
+        # 压缩图发布频率（Hz）。原始图一帧 230KB，走 WiFi 5fps 就是 9Mbps，
+        # 把整条链路（连路由器）压垮；压缩图一帧约 12KB，2fps 只有 0.2Mbps。
+        # 设 <=0 关闭压缩图发布（回到只发原始图的老行为）。
+        self.declare_parameter('compressed_rate', 2.0)
+        # 压缩图的 JPEG 质量（1~100）。60 在 320x240 上肉眼几乎无损。
+        self.declare_parameter('jpeg_quality', 60)
         # 画面翻转：-1=旋转180°(上下+左右)  0=上下翻转  1=左右镜像
         # 设为 2 表示不翻转（OpenCV 只认 -1/0/1，用 2 当作“关闭”）
         self.declare_parameter('flip_code', -1)
@@ -87,6 +93,14 @@ class CameraPublisher(Node):
         self._flip_code = int(self.get_parameter('flip_code').value)
         self._reconnect_interval = float(
             self.get_parameter('reconnect_interval').value)
+        self.declare_parameter('max_reconnect_interval', 15.0)
+        self.declare_parameter('settings_min_interval', 60.0)
+        self._max_reconnect_interval = float(
+            self.get_parameter('max_reconnect_interval').value)
+        self._settings_min_interval = float(
+            self.get_parameter('settings_min_interval').value)
+        self._fail_count = 0
+        self._settings_applied_at = 0.0
         self._io_timeout_ms = int(self.get_parameter('io_timeout_ms').value)
         self._max_frame_age = float(
             self.get_parameter('max_frame_age_sec').value)
@@ -103,6 +117,9 @@ class CameraPublisher(Node):
         self._setup_retry_sec = float(
             self.get_parameter('camera_setup_retry_sec').value)
         self._capture_mode = bool(self.get_parameter('capture_mode').value)
+        self._compressed_rate = float(
+            self.get_parameter('compressed_rate').value)
+        self._jpeg_quality = int(self.get_parameter('jpeg_quality').value)
         self._capture_rate = max(
             0.5, float(self.get_parameter('capture_rate').value))
         self._capture_url = (str(self.get_parameter('capture_url').value).strip()
@@ -117,6 +134,11 @@ class CameraPublisher(Node):
         )
         self._image_pub = self.create_publisher(
             Image, '~/image_raw', image_qos)
+        # 压缩图：给控制台/浏览器看的。原始图只在板上给 yolo_detector 用
+        # （同一台机器，走共享内存，不过 WiFi），所以出板的只有这个小图。
+        self._compressed_pub = self.create_publisher(
+            CompressedImage, '~/image_raw/compressed', image_qos)
+        self._last_compressed = 0.0
 
         self._bridge = CvBridge()
 
@@ -166,6 +188,12 @@ class CameraPublisher(Node):
         if (self._setup_failed_at > 0.0 and
                 now - self._setup_failed_at < self._setup_retry_sec):
             return      # 刚失败过，先别再卡住重连流程
+        # ESP32 的 httpd 只有 4~5 个 socket，每设一个参数要单开一次连接（共 5 次）。
+        # 每次重连都设一遍会把它顶死，表现为"跑一会儿就再也连不上"。
+        if (self._settings_applied_at > 0.0 and
+                now - self._settings_applied_at < self._settings_min_interval):
+            return
+        self._settings_applied_at = now
 
         url = self._control_url()
         if not url:
@@ -380,20 +408,25 @@ class CameraPublisher(Node):
                     self._poll_capture()
                 else:
                     self._stream_once()
+                self._fail_count = 0     # 连上过（哪怕是正常断开），退避清零
             except Exception as error:
                 with self._lock:
                     self._latest_frame = None
+                delay = min(
+                    self._reconnect_interval * (2 ** min(self._fail_count, 4)),
+                    self._max_reconnect_interval)
+                self._fail_count += 1
                 if self._connected:
                     self.get_logger().warning(
                         'camera stream lost (%s); reconnecting in %.1fs'
-                        % (error, self._reconnect_interval))
+                        % (error, delay))
                 else:
                     self.get_logger().warning(
                         'camera connect failed (%s); retry in %.1fs'
-                        % (error, self._reconnect_interval),
+                        % (error, delay),
                         throttle_duration_sec=10.0)
                 self._connected = False
-                self._stop_event.wait(self._reconnect_interval)
+                self._stop_event.wait(delay)
 
     # ------------------------------------------------------------------
     # ROS 定时器：把最新帧翻转、转消息、发布
@@ -430,6 +463,22 @@ class CameraPublisher(Node):
 
         self._image_pub.publish(image_msg)
         self._frame_count += 1
+
+        # 压缩图（低频）：只在需要时才编码，省板子的 CPU
+        if self._compressed_rate > 0.0:
+            now = time.monotonic()
+            if now - self._last_compressed >= 1.0 / self._compressed_rate:
+                self._last_compressed = now
+                quality = max(1, min(100, self._jpeg_quality))
+                ok, buffer = cv2.imencode(
+                    '.jpg', frame,
+                    [int(cv2.IMWRITE_JPEG_QUALITY), quality])
+                if ok:
+                    msg = CompressedImage()
+                    msg.header = image_msg.header
+                    msg.format = 'jpeg'
+                    msg.data = buffer.tobytes()
+                    self._compressed_pub.publish(msg)
 
     def destroy_node(self) -> bool:
         # 优雅退出：通知线程停止、释放摄像头
