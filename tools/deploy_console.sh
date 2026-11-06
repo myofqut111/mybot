@@ -1,25 +1,52 @@
 #!/bin/bash
-# 干净重部署控制台：先把旧进程全杀干净（含 launch 遗留的 robot_console），
-# 再重编译、重启、验证端口与订阅。只同步改动的 .py，不动 src 里的 egg-info。
+# 干净重部署控制台。
+# 三条铁律（都是踩出来的）：
+#   1) 先 TERM 再 KILL。launch 被 -9 打死时来不及回收子进程，rosbridge/rosapi
+#      会变成 PPID=1 的孤儿，一直占着 9090，下一次启动就 "Address already in use"。
+#   2) 必须用非 symlink 构建。develop 模式下 fishbot_console.egg-info 只在 build/ 里，
+#      入口脚本 robot_console 靠 importlib.metadata 查 'fishbot-console'，
+#      查不到就 PackageNotFoundError（launch 还配了 respawn，会一直刷屏重试）。
+#   3) 元数据要在中性 cwd 下验证。站在 src 里查会自欺欺人——那里本来就有 egg-info。
 set +u
 source /opt/ros/humble/setup.bash
 source /home/my/fishbot_full_ws/install/setup.bash
 
 echo "== 1. stop old =="
 pkill -f "console.launch.py" 2>/dev/null
-sleep 1
 pkill -f "fishbot_console/lib/fishbot_console" 2>/dev/null
+sleep 2
+# launch 已死但子进程可能被 init 收养，单独收一遍
+pkill -f "rosbridge_server/rosbridge_websocket" 2>/dev/null
+pkill -f "rosapi/rosapi_node" 2>/dev/null
 sleep 1
 pkill -9 -f "console.launch.py" 2>/dev/null
 pkill -9 -f "fishbot_console/lib/fishbot_console" 2>/dev/null
+pkill -9 -f "rosbridge_server/rosbridge_websocket" 2>/dev/null
+pkill -9 -f "rosapi/rosapi_node" 2>/dev/null
 sleep 1
-ss -ltn 2>/dev/null | grep -E ":8080|:8081" || echo "8080/8081 both free"
+left=$(pgrep -fc "rosbridge_websocket|rosapi_node" 2>/dev/null || echo 0)
+echo "leftover rosbridge/rosapi: $left"
+ss -ltn 2>/dev/null | grep -E ":8080|:8081|:9090" || echo "8080/8081/9090 all free"
 
 echo "== 2. build =="
 cd /home/my/fishbot_full_ws
-colcon build --packages-select fishbot_console --symlink-install > /tmp/build_console.log 2>&1
+colcon build --packages-select fishbot_console > /tmp/build_console.log 2>&1
 echo "build exit=$?"
-python3 -c "import importlib.metadata as m; print('version', m.version('fishbot-console'))"
+
+# 兜底：把 egg-info 放进 install 的 site-packages，任何 cwd / 任何 shell 都查得到。
+SP=/home/my/fishbot_full_ws/install/fishbot_console/lib/python3.10/site-packages
+EI=/home/my/fishbot_full_ws/build/fishbot_console/fishbot_console.egg-info
+if [ -d "$EI" ] && ! ls -d "$SP"/*.egg-info >/dev/null 2>&1; then
+  cp -r "$EI" "$SP/fishbot_console.egg-info"
+  echo "egg-info fallback -> $SP/fishbot_console.egg-info"
+fi
+
+# 中性 cwd 验证元数据
+cd /tmp
+if ! python3 -c "import importlib.metadata as m; print('version', m.version('fishbot-console'))"; then
+  echo "!! 元数据查不到，入口脚本必然 PackageNotFoundError，停止部署"
+  exit 1
+fi
 
 echo "== 3. start =="
 nohup ros2 launch fishbot_console console.launch.py > /tmp/console070.log 2>&1 &
@@ -29,3 +56,5 @@ echo "== 4. verify =="
 grep -E "listening on|被占用" /tmp/console070.log | tail -2
 curl -s -o /dev/null -w "http8080=%{http_code}\n" http://127.0.0.1:8080/
 ros2 param get /fishbot_console prefer_compressed 2>/dev/null
+echo "port-conflicts in log: $(grep -c 'Address already in use' /tmp/console070.log)"
+echo "metadata errors in log: $(grep -c 'PackageNotFoundError' /tmp/console070.log)"
