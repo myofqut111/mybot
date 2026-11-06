@@ -10,7 +10,6 @@ nav2 / slam_toolbox / camera 任何一个缺失，都只是少一个功能，
 import json
 import math
 import os
-import subprocess
 import threading
 import time
 
@@ -643,8 +642,9 @@ class ConsoleBridge(Node):
         message = Twist()
         try:
             self._teleop_pub.publish(message)
-        except Exception:
-            pass
+        except Exception as error:
+            # 这是"松手即停"的最后一道保险，发不出去必须留痕
+            self.logs.add('console', 40, '发零速失败：%s' % error)
 
     # ------------------------------------------------------------ 手动控制
     def set_teleop(self, vx, wz):
@@ -677,8 +677,9 @@ class ConsoleBridge(Node):
         message.angular.z = wz
         try:
             self._teleop_pub.publish(message)
-        except Exception:
-            pass
+        except Exception as error:
+            # 按下方向键却发不出去，用户会以为"车坏了"，必须能在日志里看到
+            self.logs.add('console', 40, '遥控指令未发出：%s' % error)
 
     def public_host(self):
         """给日志/页面用的可访问地址（解析顺序见 data.public_host）。"""
@@ -936,33 +937,10 @@ class ConsoleBridge(Node):
         return out
 
     # ------------------------------------------------------------ 建图
-    def _run_shell(self, command, timeout=20.0):
-        try:
-            done = subprocess.run(command, shell=True, capture_output=True,
-                                  text=True, timeout=timeout)
-            text = (done.stdout or '') + (done.stderr or '')
-            return done.returncode == 0, text.strip()[-400:]
-        except Exception as error:
-            return False, str(error)
-
-    def mapping(self, action, name='map'):
-        """建图的起/停/存。这些动作本身是"跑一条命令"，结果回显给页面。"""
-        action = str(action or '').lower()
-        if action == 'start':
-            cmd = ('nohup ros2 launch slam_toolbox online_async_launch.py '
-                   '>~/slam.log 2>&1 &')
-        elif action == 'stop':
-            cmd = 'pkill -f slam_toolbox'
-        elif action == 'save':
-            path = os.path.expanduser('~/%s' % (name or 'map'))
-            cmd = ('ros2 run nav2_map_server map_saver_cli -f %s'
-                   % path)
-        else:
-            return False, '未知的建图动作：%s' % action
-        ok, text = self._run_shell(cmd)
-        self.logs.add('console', 20 if ok else 40,
-                      'mapping %s -> %s' % (action, 'ok' if ok else 'fail'))
-        return ok, text
+    # 建图不再走"拼一条 shell 命令"这条路（原 _run_shell/mapping 已删除）：
+    # 起点/停止统一由 stacks 的「建图」棧负责（mapping.launch.py），保存地图
+    # 在 RViz 里用 map_saver 面板做。这样既没有 shell 注入面，也不用再维护
+    # 一份"哪条命令对"的知识。
 
     # ------------------------------------------------------------ 栈 / 点位
     def running_nodes(self):
@@ -1135,5 +1113,5 @@ class ConsoleBridge(Node):
     def shutdown(self):
         try:
             self._executor.shutdown()
-        except Exception:
-            pass
+        except Exception as error:
+            self.logs.add('console', 30, '执行器关闭时出错：%s' % error)

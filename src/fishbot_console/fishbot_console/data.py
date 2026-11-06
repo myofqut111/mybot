@@ -474,7 +474,7 @@ def detect_lan_ip(timeout=0.3):
         if sock is not None:
             try:
                 sock.close()
-            except Exception:
+            except OSError:  # fd 已经被别处关掉之类，没什么可做的
                 pass
 
 

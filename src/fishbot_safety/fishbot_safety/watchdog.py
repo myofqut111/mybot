@@ -143,8 +143,8 @@ class SafetyWatchdog(Node):
         if self._enabled and not self._dry_run:
             try:
                 self._brake_pub.publish(Twist())
-            except Exception:
-                pass
+            except Exception as error:
+                self.get_logger().warning('退出时补发零速失败：%s' % error)
         return super().destroy_node()
 
 

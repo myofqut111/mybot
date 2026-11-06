@@ -93,14 +93,14 @@ def main(args=None):
         if httpd is not None:
             try:
                 httpd.shutdown()
-            except Exception:
-                pass
+            except Exception as error:
+                sys.stderr.write('console: HTTP 服务关闭时出错：%s\n' % error)
         if bridge is not None:
             bridge.shutdown()
             try:
                 bridge.destroy_node()
-            except Exception:
-                pass
+            except Exception as error:
+                sys.stderr.write('console: 节点销毁时出错：%s\n' % error)
         if rclpy.ok():
             rclpy.shutdown()
 

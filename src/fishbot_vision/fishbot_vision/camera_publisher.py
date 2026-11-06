@@ -344,7 +344,7 @@ class CameraPublisher(Node):
         finally:
             try:
                 conn.close()
-            except Exception:
+            except OSError:  # 对端先断了，关不关都得往下走
                 pass
 
     # ------------------------------------------------------------------
@@ -486,8 +486,8 @@ class CameraPublisher(Node):
         if self._cap is not None:
             try:
                 self._cap.release()
-            except Exception:
-                pass
+            except Exception as error:
+                self.get_logger().warning('释放摄像头句柄失败：%s' % error)
         return super().destroy_node()
 
 

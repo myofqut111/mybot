@@ -240,8 +240,8 @@ def main(argv=None):
                 and os.environ.get('DISPLAY')):
             try:
                 os.system('xdg-open "%s" >/dev/null 2>&1 &' % out_dir)
-            except Exception:
-                pass
+            except OSError as error:  # 打不开图不影响照片已经存好
+                print('打不开图片查看器：%s' % error)
     return 0
 
 

@@ -428,5 +428,5 @@ class PatrolReport:
             if not self._closed:
                 self._stream.close()
                 self._closed = True
-        except Exception:
+        except OSError:  # __del__ 里抛异常只会被解释器打一行噪声，关不掉就算了
             pass

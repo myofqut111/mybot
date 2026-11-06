@@ -188,11 +188,14 @@ class StableResidualTest(unittest.TestCase):
         self.assertGreaterEqual(len(calls), 2)
 
 
-class ParseDetectionsTest(unittest.TestCase):
+class ParseDetectionsTextTest(unittest.TestCase):
     """结果解析：视觉节点回的是人读文本，不是 JSON。
 
     以前只认 JSON，于是每轮都解析成空——报告里检测总数恒为 0、每个点都被
     判成「未发现」，基线也就把每处都学成 absent。
+
+    类名带 Text 后缀：上面还有一个 ParseDetectionsTest（JSON 时代的用例），
+    同名类会互相覆盖，之前这 6 条其实一条都没跑。
     """
 
     def test_text_single(self):

@@ -8,6 +8,7 @@
 import errno
 import json
 import os
+import sys
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -55,8 +56,9 @@ def _static_dir():
             get_package_share_directory('fishbot_console'), 'static')
         if os.path.isfile(os.path.join(share, 'leaflet.js')):
             return share
-    except Exception:
-        pass
+    except Exception as error:  # ament_index 不可用（源码直跑）就回落到包目录
+        sys.stderr.write('console: 找不到安装后的 static 目录（%s），用包内目录\n'
+                         % error)
     return here
 
 
@@ -148,8 +150,8 @@ def _log_sink_of(logs):
             text = ''
         try:
             logs.add(str(source), level, str(text))
-        except Exception:
-            pass
+        except Exception as error:  # 日志收不进去也不能把调用方带崩
+            sys.stderr.write('console: 日志写入失败：%s\n' % error)
     return sink
 
 

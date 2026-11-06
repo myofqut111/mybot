@@ -280,8 +280,8 @@ class StackManager(object):
                     if stack is not None:
                         stack.lines.append(line)
                 self._log_sink(prefix, line)
-        except Exception:
-            pass
+        except Exception as error:  # 读输出出错不该弄死采集线程，但要留痕
+            self._log_sink(prefix, '读取启动输出时出错：%s' % error)
         code = proc.poll()
         with self._lock:
             stack = self._stacks.get(name)
@@ -346,8 +346,9 @@ class StackManager(object):
             except Exception:
                 try:
                     proc.send_signal(sig)
-                except Exception:
-                    pass
+                except Exception as error:
+                    self._log_sink(
+                        '', '向 pid %s 发信号 %s 失败：%s' % (proc.pid, sig, error))
             end = time.time() + (kill_timeout if kill_timeout else wait)
             while time.time() < end:
                 if proc.poll() is not None:
@@ -418,5 +419,5 @@ class StackManager(object):
             if alive:
                 try:
                     self.stop(name, kill_timeout=2.0)
-                except Exception:
-                    pass
+                except Exception as error:
+                    self._log_sink('', '退出时停止 %s 失败：%s' % (name, error))
