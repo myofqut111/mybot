@@ -48,6 +48,16 @@ class ListenUrlTest(unittest.TestCase):
         self.assertIn('shown', block)
         self.assertNotIn('http://%s:%d\' % (host', block)
 
+    def test_shipped_config_autodetects(self):
+        """出厂的 public_host 必须是空（自动探测）。
+
+        同一台虚拟机在两个网段之间来回切（外网 192.168.202.x / demo
+        192.168.1.x），钉死任何一个 IP，另一半时间打印出来的都是错的，
+        用户照着敲必然打不开——这个坑已经踩过两次。
+        """
+        yaml = _read(os.path.join(ROOT, 'config', 'console.yaml'))
+        self.assertIn("public_host: ''", yaml)
+
 
 if __name__ == '__main__':
     unittest.main()
