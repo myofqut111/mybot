@@ -58,6 +58,9 @@ sleep 9
 echo "== 4. verify =="
 grep -E "listening on|被占用" /tmp/console070.log | tail -2
 curl -s -o /dev/null -w "http8080=%{http_code}\n" http://127.0.0.1:8080/
-ros2 param get /fishbot_console prefer_compressed 2>/dev/null
+# 这一步只是"锦上添花"的自检：DDS 发现慢的时候 `ros2 param get` 会一直
+# 挂着（实测挂过 13 分钟，把整个部署卡死），所以必须限时，超时就跳过。
+timeout 10 ros2 param get /fishbot_console prefer_compressed 2>/dev/null \
+  || echo "param get 超时（DDS 发现慢，面板本身已起来，不影响使用）"
 echo "port-conflicts in log: $(grep -c 'Address already in use' /tmp/console070.log)"
 echo "metadata errors in log: $(grep -c 'PackageNotFoundError' /tmp/console070.log)"

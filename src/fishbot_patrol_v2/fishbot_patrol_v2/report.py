@@ -115,6 +115,175 @@ def _metrics_from_verdicts(counts: Dict[str, int]) -> Dict[str, object]:
     }
 
 
+STATUS_TEXT = {
+    'ok': '成功', 'success': '成功',
+    'skipped': '跳过',
+    'failed': '失败',
+    'canceled': '中断', 'cancelled': '中断',
+}
+
+VERDICT_TEXT = {'tp': '命中', 'fp': '误报', 'fn': '漏检', 'tn': '正确排除'}
+
+RULE = '-' * 46
+
+
+def _duration(seconds) -> str:
+    """把秒数写成"3 分 12 秒"这种人读的样子；取不到就写"未知"。"""
+    value = _as_float(seconds, -1.0)
+    if value < 0:
+        return '未知'
+    if value < 60:
+        return '%d 秒' % round(value)
+    return '%d 分 %d 秒' % (int(value // 60), int(round(value % 60)))
+
+
+def _confidence_text(detections) -> str:
+    """把一串检测框压成 "0.92, 0.71" 这样，最多列三个。"""
+    scores = []
+    for item in detections or []:
+        try:
+            scores.append(float(item.get('confidence', 0.0)))
+        except (TypeError, ValueError, AttributeError):
+            continue
+    if not scores:
+        return '未发现'
+    shown = ', '.join('%.2f' % s for s in scores[:3])
+    if len(scores) > 3:
+        shown += ' …'
+    return '%d 个目标 (%s)' % (len(scores), shown)
+
+
+def render_summary(summary, records=None, limit=40) -> str:
+    """把一次巡检的汇总渲染成给人看的几行字。
+
+    既写进 ``*.summary.txt``，也打到节点日志里——跑完巡检最想知道的三件事
+    就摆在最前面：有没有跑完、每个点看到什么、判定准不准。字段缺了就跳过
+    那一段，绝不让渲染失败影响报告落盘。
+    """
+    data = summary if isinstance(summary, dict) else {}
+    points = data.get('points') or {}
+    if not isinstance(points, dict):
+        points = {}
+
+    def count(*keys):
+        for key in keys:
+            if key in points:
+                return _as_float(points.get(key), 0.0)
+        return 0.0
+
+    ok = int(count('ok', 'success', 'SUCCEEDED'))
+    skipped = int(count('skipped', 'SKIPPED'))
+    failed = int(count('failed', 'FAILED'))
+    canceled = int(count('canceled', 'cancelled', 'CANCELED'))
+    total = ok + skipped + failed + canceled
+
+    if data.get('aborted'):
+        result = '已中止'
+    elif canceled:
+        result = '被中断'
+    elif failed:
+        result = '部分失败'
+    elif ok:
+        result = '完成'
+    else:
+        result = '无点位'
+
+    lines = []
+    route = str(data.get('route_name') or '')
+    run_id = str(data.get('execution_id') or '')
+    title = '巡检报告' if not route else '巡检报告 · %s' % route
+    if run_id:
+        title += ' · %s' % run_id
+    lines.append(title)
+    lines.append(RULE)
+    lines.append('结果     %s    耗时 %s' % (result, _duration(data.get('duration_sec'))))
+    if total:
+        detail = '成功 %d · 跳过 %d · 失败 %d' % (ok, skipped, failed)
+        if canceled:
+            detail += ' · 中断 %d' % canceled
+        lines.append('点位     %s（共 %d）' % (detail, total))
+
+    detections = int(_as_float(data.get('detections_total'), 0.0))
+    if total and detections:
+        lines.append('检测     %d 个目标（平均每点 %.1f 个）'
+                     % (detections, detections / float(total)))
+
+    graded = int(_as_float(data.get('graded_points'), 0.0))
+    if graded:
+        verdicts = data.get('verdicts') or {}
+        parts = []
+        for key in ('tp', 'fp', 'fn', 'tn'):
+            parts.append('%s %d' % (VERDICT_TEXT[key], int(_as_float(verdicts.get(key), 0.0))))
+        lines.append('期望值   %d 个点可判定：%s' % (graded, ' · '.join(parts)))
+        lines.append('         %s' % _ratio_line(data))
+    else:
+        learned = int(_as_float(data.get('baseline_learned'), 0.0))
+        if learned:
+            lines.append('基线     本轮新学 %d 个点（下次巡检起自动判定）' % learned)
+
+    battery = _as_float(data.get('battery_v'), 0.0)
+    if battery:
+        lowest = _as_float(data.get('battery_min_v'), 0.0)
+        text = '电量     %.2fV' % battery
+        if lowest and lowest < battery:
+            text += '（最低 %.2fV）' % lowest
+        lines.append(text)
+
+    if records:
+        rows = [r for r in records if isinstance(r, dict) and r.get('type') == 'point']
+        if rows:
+            lines.append(RULE)
+            lines.append('点位明细')
+            for record in rows[:limit]:
+                lines.append('  ' + _point_line(record))
+            if len(rows) > limit:
+                lines.append('  …… 还有 %d 个点未列出' % (len(rows) - limit))
+    lines.append(RULE)
+    return '\n'.join(lines)
+
+
+def _ratio_line(data) -> str:
+    """召回/精确/误报率三件套；某个分不出（分母为 0）就写"—"。"""
+
+    def fmt(value, name):
+        if value is None:
+            return '%s —' % name
+        return '%s %.2f' % (name, _as_float(value, 0.0))
+
+    return ' · '.join([
+        fmt(data.get('recall'), '召回'),
+        fmt(data.get('precision'), '精确'),
+        fmt(data.get('false_alarm_rate'), '误报率'),
+    ])
+
+
+def _point_line(record) -> str:
+    """一行一个点位：状态、任务、耗时、看到什么、判定结果。"""
+    point_id = str(record.get('point_id') or '?')
+    status = STATUS_TEXT.get(str(record.get('status') or ''), str(record.get('status') or ''))
+    task = str(record.get('task_id') or '')
+    parts = [point_id.ljust(10), status.ljust(4)]
+    if task:
+        parts.append(task.ljust(8))
+    nav = _as_float(record.get('nav_seconds'), 0.0)
+    spent = _as_float(record.get('task_seconds'), 0.0)
+    parts.append('导航 %.1fs 任务 %.1fs' % (nav, spent))
+    parts.append(_confidence_text(record.get('detections')))
+    verdict = str(record.get('verdict') or '')
+    if verdict in VERDICT_TEXT:
+        source = str(record.get('expect_source') or '')
+        suffix = VERDICT_TEXT[verdict]
+        if source == 'baseline':
+            suffix += '(基线)'
+        elif source == 'manual':
+            suffix += '(手选)'
+        parts.append(suffix)
+    message = str(record.get('message') or '')
+    if message and message not in ('ok', 'success'):
+        parts.append(message)
+    return '  '.join(parts)
+
+
 class PatrolReport:
     """一次巡检的报告写入器。"""
 
@@ -129,6 +298,9 @@ class PatrolReport:
         base = 'patrol_%s_%s' % (stamp, short_id)
         self.path = os.path.join(self._directory, base + '.jsonl')
         self.summary_path = os.path.join(self._directory, base + '.summary.json')
+        # 给人看的版本：跑完直接 cat 就有结论，不用再 jq 一遍 json
+        self.text_path = os.path.join(self._directory, base + '.summary.txt')
+        self.text = ''
         self._records: List[dict] = []
         self._closed = False
         self._writable = True
@@ -212,6 +384,7 @@ class PatrolReport:
         except Exception:  # noqa: BLE001 - 关不掉也要继续往下走
             pass
         self._closed = True
+        self._write_text(summary)
         try:
             temporary = self.summary_path + '.tmp'
             with open(temporary, 'w', encoding='utf-8') as stream:
@@ -221,6 +394,17 @@ class PatrolReport:
         except Exception:  # noqa: BLE001 - 汇总失败就只用 jsonl
             return self.path
         return self.summary_path
+
+    def _write_text(self, summary) -> None:
+        """额外落一份人读版报告；失败不影响主流程。"""
+        try:
+            self.text = render_summary(summary, self._records)
+            temporary = self.text_path + '.tmp'
+            with open(temporary, 'w', encoding='utf-8') as stream:
+                stream.write(self.text + '\n')
+            os.replace(temporary, self.text_path)
+        except Exception:  # noqa: BLE001 - 见 close() 的 docstring
+            self.text = ''
 
     # -- 内部 -------------------------------------------------------
     def _write(self, record: dict) -> None:

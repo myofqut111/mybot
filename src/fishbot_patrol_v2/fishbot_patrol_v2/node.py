@@ -520,6 +520,8 @@ class PatrolExecutorV2(Node):
     def _execute_patrol(self, goal_handle):
         """真正的巡检主流程。"""
         self._execution_id = uuid.uuid4().hex
+        # 报告里要写"这趟跑了多久"；用 monotonic 不受对时影响
+        run_started = time.monotonic()
         request = goal_handle.request
         with self._lock:
             self._route_name = request.route_name.strip()
@@ -739,6 +741,8 @@ class PatrolExecutorV2(Node):
                     'execution_id': self._execution_id,
                     'aborted': planner.aborted,
                     'skipped': len(planner.skipped),
+                    # 这趟从开始到收尾用了多久（人读报告第一行就要它）
+                    'duration_sec': round(time.monotonic() - run_started, 2),
                     # 这趟新学了多少个期望值基线。>0 说明下一趟起这些点会
                     # 自动判定（报告里就该出召回率了），不是"没填期望值"。
                     'baseline_learned': learned_points,
@@ -747,6 +751,12 @@ class PatrolExecutorV2(Node):
                     **self._battery_fields(),
                 })
                 self.get_logger().info('patrol report: %s' % summary_path)
+                # 人读版：跑完当场把结论摊在日志里，不用再去翻 jsonl
+                if getattr(report, 'text', ''):
+                    for line in report.text.splitlines():
+                        self.get_logger().info(line)
+                if getattr(report, 'text_path', ''):
+                    self.get_logger().info('patrol summary: %s' % report.text_path)
             except Exception as error:  # noqa: BLE001 - 收尾不让 goal 挂死
                 self.get_logger().error('failed to write patrol report: %s' % error)
             if completed_normally:

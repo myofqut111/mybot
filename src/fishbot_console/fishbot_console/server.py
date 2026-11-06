@@ -265,6 +265,20 @@ class ConsoleServer(object):
                             path_.replace('.jsonl', '.summary.json')),
                         'items': data.tail_events(path_, limit)})
 
+                if path == '/api/report':
+                    # 人读版摘要：跑完巡检由执行器写成 .summary.txt，
+                    # 这里只负责取回来给页面显示（没有就回空串）
+                    name = (query.get('run') or [''])[0]
+                    reports = server.bridge.reports_dir()
+                    run_path_ = data.find_run_path(reports, name) if name else ''
+                    if not run_path_:
+                        runs = data.list_runs(reports, 1)
+                        run_path_ = str(runs[0]['path']) if runs else ''
+                    return _json_response(self, {
+                        'run': name or os.path.basename(str(run_path_)),
+                        'text': data.read_summary_text(run_path_),
+                    })
+
                 if path == '/api/routes':
                     return _json_response(self, {
                         'items': server.bridge.route_points()})

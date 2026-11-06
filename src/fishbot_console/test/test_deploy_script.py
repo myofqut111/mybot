@@ -64,6 +64,13 @@ class DeployScriptCase(unittest.TestCase):
         self.assertIn('PackageNotFoundError', tail)
         self.assertIn('exit 1', tail)
 
+    def test_param_probe_is_time_limited(self):
+        # 实测 `ros2 param get` 会挂 13 分钟把部署卡死，必须限时
+        lines = [l for l in self.src.splitlines()
+                 if 'ros2 param get' in l and not l.strip().startswith('#')]
+        self.assertTrue(lines, 'deploy 脚本里找不到 param 探测那行')
+        self.assertIn('timeout', lines[0])
+
 
 if __name__ == '__main__':
     unittest.main()

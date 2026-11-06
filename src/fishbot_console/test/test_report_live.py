@@ -82,6 +82,43 @@ class LiveRunsCase(unittest.TestCase):
         self.assertEqual(data.find_run_path(self.dir, 'nope'), '')
 
 
+class SummaryTextCase(unittest.TestCase):
+    """跑完巡检的人读版摘要：能按运行名找回来，缺了不报错。"""
+
+    def setUp(self):
+        self.dir = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, self.dir, True)
+
+    def test_path_mapping(self):
+        self.assertEqual(data.summary_text_path('/r/a.jsonl'),
+                         '/r/a.summary.txt')
+        self.assertEqual(data.summary_text_path('/r/a.summary.json'),
+                         '/r/a.summary.txt')
+        self.assertEqual(data.summary_text_path(''), '')
+
+    def test_reads_existing_text(self):
+        path = os.path.join(self.dir, 'patrol_1_exec.jsonl')
+        with open(data.summary_text_path(path), 'w', encoding='utf-8') as f:
+            f.write('巡检报告\n')
+        self.assertIn('巡检报告', data.read_summary_text(path))
+
+    def test_missing_text_is_empty(self):
+        self.assertEqual(data.read_summary_text(
+            os.path.join(self.dir, 'nope.jsonl')), '')
+
+    def test_page_has_summary_button(self):
+        src = _page_source()
+        self.assertIn('btnSummary', src)
+        self.assertIn('/api/report', src)
+
+
+def _page_source():
+    from fishbot_console import page
+    path = os.path.join(os.path.dirname(page.__file__), 'page.py')
+    with open(path, encoding='utf-8') as handle:
+        return handle.read()
+
+
 class PageContractCase(unittest.TestCase):
     """页面里的两处提示，改坏了用户又要来问。"""
 

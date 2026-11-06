@@ -237,6 +237,34 @@ def summarize_run(summary, fallback_name=''):
     }
 
 
+def summary_text_path(run_path):
+    """把报告路径映射到人读版摘要（执行器写的 ``.summary.txt``）。
+
+    传进来的可能是 ``.jsonl`` 也可能是 ``.summary.json``，统一砍成同一个
+    前缀再补 ``.summary.txt``——两种路径都能查同一份摘要。
+    """
+    if not run_path:
+        return ''
+    base = str(run_path)
+    for suffix in ('.summary.json', '.jsonl'):
+        if base.endswith(suffix):
+            base = base[:-len(suffix)]
+            break
+    return base + '.summary.txt'
+
+
+def read_summary_text(run_path):
+    """读人读版摘要；没有就跑完的还没生成，返回空串而不是报错。"""
+    path = summary_text_path(run_path)
+    if not path or not os.path.exists(path):
+        return ''
+    try:
+        with open(path, encoding='utf-8') as handle:
+            return handle.read()
+    except OSError:
+        return ''
+
+
 def summarize_events(events, fallback_name=''):
     """进行中的运行：直接从业已落盘的 jsonl 事件算出同一套字段。
 

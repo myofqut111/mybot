@@ -86,6 +86,10 @@ tr:last-child td{border-bottom:none}
   font-size:11.5px;background:#0b0f14;border-radius:8px;padding:8px;
   border:1px solid var(--line)}
 #logList div{padding:1px 0;white-space:pre-wrap;word-break:break-all}
+#runText{margin:10px 0 0;padding:10px;border:1px solid var(--line);border-radius:8px;
+  background:#fafbfc;font-family:ui-monospace,Consolas,monospace;font-size:12px;
+  line-height:1.6;max-height:320px;overflow:auto;white-space:pre-wrap}
+.hidden{display:none}
 .lv40{color:#ff9b9b}.lv30{color:#ffcf7a}.lv20{color:#9fd4a8}.lv10{color:#7d8b9c}
 #chatLog{height:150px;overflow:auto;background:#0b0f14;border-radius:8px;
   padding:8px;border:1px solid var(--line);font-size:12.5px}
@@ -186,8 +190,10 @@ tr:last-child td{border-bottom:none}
     <div class="row">
       <label>运行</label><select id="runSel" style="min-width:320px"></select>
       <button id="btnReload">刷新</button>
+      <button id="btnSummary">看摘要</button>
       <span class="dim" id="runHint"></span>
     </div>
+    <pre id="runText" class="hidden"></pre>
     <table>
       <thead><tr><th>时间</th><th>点</th><th>结果</th><th>任务</th><th>轮/序号</th><th>备注</th></tr></thead>
       <tbody id="eventBody"><tr><td colspan="6" class="dim">选一次运行看逐点事件</td></tr></tbody>
@@ -618,6 +624,17 @@ $('runSel').onchange = () => {
   loadEvents($('runSel').value);
 };
 $('btnReload').onclick = () => { pollRuns(); pollLogs(); };
+$('btnSummary').onclick = async () => {
+  // 规则：摘要由执行器写成 .summary.txt，这里只负责取回来显示
+  const name = $('runSel').value || '';
+  const box = $('runText');
+  box.classList.remove('hidden');
+  box.textContent = '正在读取…';
+  let data;
+  try{ data = await api('/api/report?run=' + encodeURIComponent(name)); }
+  catch(err){ box.textContent = '读取失败'; return; }
+  box.textContent = data.text || '这次运行还没有摘要（巡检跑完才写）';
+};
 
 /* ---------- 日志 ---------- */
 let seenLog = new Set();
