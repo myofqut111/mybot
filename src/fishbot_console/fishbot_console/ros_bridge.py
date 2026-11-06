@@ -136,6 +136,11 @@ class ConsoleBridge(Node):
 
         self._lock = threading.Lock()
         self._status_raw = ''
+        # 最近一条状态消息的时刻，以及"用户按过停止"的时刻。后者晚于前者，
+        # 就说明执行器还没发出新的状态，但取消请求已经生效——页面不能继续
+        # 显示"运行中"（真机上就是"停了但面板还说在跑"）。
+        self._status_at = 0.0
+        self._patrol_stop_at = 0.0
         self._battery_v = None
         self._pose = None
         self._map_png = b''
@@ -293,6 +298,7 @@ class ConsoleBridge(Node):
     def _on_status(self, msg):
         with self._lock:
             self._status_raw = msg.data
+            self._status_at = time.time()
 
     def _on_battery(self, msg):
         value = float(msg.data)
@@ -548,6 +554,14 @@ class ConsoleBridge(Node):
             battery = self._battery_v
             pose = self._pose
         status = normalize_status(raw, warn_v=self._warn_v, crit_v=self._crit_v)
+        # 取消请求晚于最后一条状态：执行器还没回报，但这一轮已经不跑了。
+        # 等它真发出新状态（_status_at 更新到 stop 之后），这段自动失效。
+        with self._lock:
+            stop_at = self._patrol_stop_at
+            status_at = self._status_at
+        if stop_at and stop_at > status_at and status.get('running'):
+            status['running'] = False
+            status['state'] = 'canceled'
         if status['battery_v'] is None and battery is not None:
             status['battery_v'] = battery
             from .data import battery_band
@@ -827,10 +841,15 @@ class ConsoleBridge(Node):
 
     def cancel_patrol(self):
         handle = self._patrol_goal_handle
+        with self._lock:
+            # 无论有没有 handle 都记下这个时刻：页面的"运行中"是从状态消息
+            # 推出来的，执行器收到取消后可能不再发新状态，光清 handle 不够。
+            self._patrol_stop_at = time.time()
         if handle is None:
-            return False, '当前没有巡检任务'
+            return False, '没有可取消的巡检目标（面板不会显示在跑，就是本来没在跑）'
         handle.cancel_goal_async()
         self._patrol_goal_handle = None
+        self.logs.add('console', 20, 'patrol cancel requested')
         return True, '已发送取消请求'
 
     # ------------------------------------------------------------ 服务

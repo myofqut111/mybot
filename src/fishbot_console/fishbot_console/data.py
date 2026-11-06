@@ -185,15 +185,29 @@ def read_json(path):
     return data if isinstance(data, dict) else {}
 
 
+def _count(mapping, *keys):
+    """从 dict 里按候选键名取整数，取不到就是 0。
+
+    巡检执行器写的是小写 ``{'ok': 3, 'skipped': 1}``，早期版本和别的工具
+    写过大写 ``{'SUCCEEDED': 3}``。只认一套的话，报告页就会出现
+    "明明每行都是 ok，表头却是 成功 0/0"——这个 bug 就是这么来的。
+    """
+    for key in keys:
+        if key in mapping:
+            return _int(mapping.get(key))
+    return 0
+
+
 def summarize_run(summary, fallback_name=''):
     """单轮 summary.json -> 历史表格一行；比率缺失保持 None（前端显示 —）。"""
     data = summary if isinstance(summary, dict) else {}
     points = data.get('points')
     if not isinstance(points, dict):
         points = {}
-    ok = _int(points.get('SUCCEEDED'))
-    skipped = _int(points.get('SKIPPED'))
-    failed = _int(points.get('FAILED'))
+    ok = _count(points, 'ok', 'SUCCEEDED', 'succeeded')
+    skipped = _count(points, 'skipped', 'SKIPPED')
+    failed = _count(points, 'failed', 'FAILED')
+    canceled = _count(points, 'canceled', 'cancelled', 'CANCELED')
     verdicts = data.get('verdicts')
     if not isinstance(verdicts, dict):
         verdicts = {}
@@ -201,12 +215,15 @@ def summarize_run(summary, fallback_name=''):
         'name': str(data.get('execution_id') or fallback_name),
         'route_name': str(data.get('route_name') or ''),
         'mode': data.get('mode'),
-        'started_at': _float(data.get('started_at')),
+        'started_at': _float(data.get('started_at') or data.get('time')),
         'duration_sec': _float(data.get('duration_sec')),
-        'total': ok + skipped + failed,
+        'total': ok + skipped + failed + canceled,
         'ok': ok,
         'skipped': skipped,
         'failed': failed,
+        'canceled': canceled,
+        'live': bool(data.get('live')),
+        'path': '',
         'detections_total': _int(data.get('detections_total')),
         'graded_points': _int(data.get('graded_points'),
                               sum(_int(v) for v in verdicts.values())),
@@ -217,27 +234,98 @@ def summarize_run(summary, fallback_name=''):
     }
 
 
+def summarize_events(events, fallback_name=''):
+    """进行中的运行：直接从业已落盘的 jsonl 事件算出同一套字段。
+
+    以前只认 ``*.summary.json``，而汇总要等整趟跑完才写，于是巡检进行中
+    报告页永远是 "成功 0/0 没有事件记录"——用户看到的"不实时"就是这个。
+    """
+    counts = {}
+    detections_total = 0
+    header = {}
+    for item in events:
+        if not isinstance(item, dict):
+            continue
+        kind = str(item.get('type') or '')
+        if kind == 'header' and not header:
+            header = item
+            continue
+        if kind != 'point':
+            continue
+        status = str(item.get('status') or '')
+        counts[status] = counts.get(status, 0) + 1
+        detections_total += len(item.get('detections') or [])
+    row = summarize_run({
+        'execution_id': header.get('execution_id') or fallback_name,
+        'route_name': header.get('route_name') or '',
+        'mode': header.get('mode'),
+        'time': header.get('time'),
+        'points': counts,
+        'detections_total': detections_total,
+        'live': True,
+    }, fallback_name)
+    # total 在运行中只是"已经跑过几个点"，计划总数由调用方补（见 server 的 planned）
+    row['live'] = True
+    return row
+
+
 def list_runs(reports_dir, limit=50):
+    """最近的运行，进行中的也算一条（按 jsonl 走，标题带 live）。
+
+    排序用文件 mtime：进行中的 jsonl 每写一行就变，所以它总是排在最前面。
+    """
     try:
-        names = [n for n in os.listdir(reports_dir)
-                 if n.endswith('.summary.json')]
+        names = os.listdir(reports_dir)
     except OSError:
         return []
-    entries = []
+    summaries = {}
+    jsonls = {}
     for name in names:
+        if name.endswith('.summary.json'):
+            summaries[name[:-len('.summary.json')]] = name
+        elif name.endswith('.jsonl'):
+            jsonls[name[:-len('.jsonl')]] = name
+    entries = []
+    for key in set(summaries) | set(jsonls):
+        # 有汇总就用汇总（含比率/耗时），没有就标记成进行中
+        use_summary = key in summaries
+        name = summaries[key] if use_summary else jsonls[key]
         path = os.path.join(reports_dir, name)
         try:
-            entries.append((os.path.getmtime(path), path))
+            mtime = os.path.getmtime(path)
         except OSError:
             continue
+        entries.append((mtime, path, use_summary, key))
     entries.sort(reverse=True)
     out = []
-    for mtime, path in entries[:max(0, int(limit))]:
-        row = summarize_run(read_json(path), os.path.basename(path)[:36])
+    for mtime, path, use_summary, key in entries[:max(0, int(limit))]:
+        if use_summary:
+            row = summarize_run(read_json(path), key)
+        else:
+            row = summarize_events(tail_events(path, 100000), key)
         row['path'] = path
         row['mtime'] = mtime
         out.append(row)
     return out
+
+
+def find_run_path(reports_dir, name):
+    """把页面传来的运行标识（名字或文件名）解析成 jsonl 路径。"""
+    name = str(name or '').strip()
+    if not name:
+        return ''
+    if name.endswith('.summary.json') or name.endswith('.jsonl'):
+        path = os.path.join(reports_dir, name)
+        if os.path.exists(path):
+            return path.replace('.summary.json', '.jsonl')
+    for suffix in ('.jsonl', '.summary.json'):
+        path = os.path.join(reports_dir, name + suffix)
+        if os.path.exists(path):
+            return path.replace('.summary.json', '.jsonl')
+    for row in list_runs(reports_dir, 200):
+        if row.get('name') == name:
+            return str(row.get('path') or '').replace('.summary.json', '.jsonl')
+    return ''
 
 
 def tail_events(path, limit=200):

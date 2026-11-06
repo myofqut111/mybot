@@ -159,6 +159,12 @@ tr:last-child td{border-bottom:none}
       <label>点 ID</label><input id="recName" placeholder="留空自动编号" style="width:110px">
     </div>
     <div class="row">
+      <label>任务</label>
+      <select id="recTask" style="min-width:150px">
+        <option value="detect">检测灭火器（detect）</option>
+        <option value="inspect">走近复核（inspect）</option>
+        <option value="photo">只拍照（photo）</option>
+      </select>
       <label>期望</label>
       <select id="recExpect">
         <option value="">不标</option>
@@ -295,10 +301,18 @@ async function pollState(){
   $('estopBar').classList.toggle('show', !!estop.active);
 
   if (st.running){
+    patrolWasRunning = true;
     $('patrolHint').textContent = '运行中：' + (st.route_name || '') +
       ' 第 ' + (st.current_loop || 0) + ' 轮，已完成 ' + (st.completed_points || 0) + ' 点';
+  } else if (patrolWasRunning){
+    // 以前只在跑的时候写这句，不跑的时候什么都不做——于是停掉之后
+    // "运行中：main2 …" 会一直留在页面上，看着像没停。
+    patrolWasRunning = false;
+    $('patrolHint').textContent = '巡检已停止' +
+      (st.state && st.state !== 'running' ? '（' + st.state + '）' : '');
   }
 }
+let patrolWasRunning = false;
 
 /* ---------- 一键启停 ---------- */
 const STATE_TEXT = {running:'运行中', starting:'启动中', degraded:'半启动',
@@ -496,7 +510,7 @@ $('btnRecord').onclick = async () => {
                 point_id: $('recName').value.trim(),
                 expect: $('recExpect').value,
                 wait: parseFloat($('recWait').value) || 0,
-                task_id: 'detect'};
+                task_id: $('recTask').value || 'detect'};
   try{
     const out = await post('/api/record_point', body);
     toast(out.message || (out.ok ? '已记录' : '记录失败'));
@@ -524,8 +538,9 @@ function renderRuns(runs){
     const opt = document.createElement('option');
     opt.value = r.name;
     const when = (r.started_at || '').replace('T', ' ').slice(0, 19);
+    const done = (r.ok || 0) + '/' + (r.planned || r.total || 0);
     opt.textContent = when + ' · ' + (r.route_name || '(未记录路线)') +
-      ' · ' + (r.ok || 0) + '/' + (r.total || 0) +
+      ' · ' + done + (r.live ? ' · 进行中' : '') +
       (r.duration_sec ? ' · ' + fmt(r.duration_sec, 0) + 's' : '');
     sel.appendChild(opt);
   });
@@ -537,10 +552,12 @@ function renderRuns(runs){
 function renderRunSummary(run){
   if (!run) return;
   const parts = [];
+  if (run.live) parts.push('进行中（每 3 秒刷新）');
   if (run.duration_sec) parts.push('耗时 ' + fmt(run.duration_sec, 0) + 's');
-  parts.push('成功 ' + (run.ok || 0) + '/' + (run.total || 0));
+  parts.push('成功 ' + (run.ok || 0) + '/' + (run.planned || run.total || 0));
   if (run.skipped) parts.push('跳过 ' + run.skipped);
   if (run.failed) parts.push('失败 ' + run.failed);
+  if (run.canceled) parts.push('中断 ' + run.canceled);
   if (run.graded_points) parts.push('召回 ' + fmt(run.recall, 2) +
     ' / 精确 ' + fmt(run.precision, 2));
   $('runHint').textContent = parts.join(' · ');
@@ -660,7 +677,7 @@ pollState(); pollStacks(); pollLogs(); pollRuns();
 setInterval(pollState, 1000);
 setInterval(pollStacks, 1500);
 setInterval(pollLogs, 2000);
-setInterval(pollRuns, 6000);
+setInterval(pollRuns, 3000);
 setInterval(tickCam, 900);
 tickCam();
 </script>

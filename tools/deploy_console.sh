@@ -34,11 +34,14 @@ colcon build --packages-select fishbot_console > /tmp/build_console.log 2>&1
 echo "build exit=$?"
 
 # 兜底：把 egg-info 放进 install 的 site-packages，任何 cwd / 任何 shell 都查得到。
+# 必须"先删再拷"：只补缺失会让上一版的 egg-info 留着，升版本后
+# importlib.metadata 报告的仍是旧版本号（0.7.1 装成 0.7.0 就是这么来的）。
 SP=/home/my/fishbot_full_ws/install/fishbot_console/lib/python3.10/site-packages
 EI=/home/my/fishbot_full_ws/build/fishbot_console/fishbot_console.egg-info
-if [ -d "$EI" ] && ! ls -d "$SP"/*.egg-info >/dev/null 2>&1; then
+if [ -d "$EI" ]; then
+  rm -rf "$SP"/*.egg-info
   cp -r "$EI" "$SP/fishbot_console.egg-info"
-  echo "egg-info fallback -> $SP/fishbot_console.egg-info"
+  echo "egg-info refreshed -> $(grep -m1 '^Version:' "$EI/PKG-INFO" | cut -d' ' -f2)"
 fi
 
 # 中性 cwd 验证元数据

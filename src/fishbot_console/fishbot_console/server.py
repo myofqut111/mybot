@@ -238,17 +238,33 @@ class ConsoleServer(object):
                         return _json_response(self, {'error': 'no frame'}, 404)
                     return _bytes_response(self, raw, 'image/jpeg')
                 if path == '/api/runs':
-                    return _json_response(self, {
-                        'items': data.list_runs(server.bridge.reports_dir())})
+                    items = data.list_runs(server.bridge.reports_dir())
+                    # 进行中的那一轮补上"计划几个点"，页面才能显示 3/6 而不是 3/3
+                    for row in items:
+                        if not row.get('live'):
+                            continue
+                        try:
+                            row['planned'] = len(server.bridge.route_points(
+                                row.get('route_name') or ''))
+                        except Exception:      # noqa: BLE001 - 计划数拿不到就不显示
+                            row['planned'] = 0
+                    return _json_response(self, {'items': items})
                 if path == '/api/events':
-                    limit = int((query.get('limit') or ['120'])[0] or 120)
-                    runs = data.list_runs(server.bridge.reports_dir(), 1)
-                    if not runs:
+                    limit = _query_int(query, 'limit', 120, low=1, high=5000)
+                    name = (query.get('run') or [''])[0]
+                    path_ = data.find_run_path(server.bridge.reports_dir(), name)
+                    if not path_:
+                        runs = data.list_runs(server.bridge.reports_dir(), 1)
+                        path_ = (str(runs[0]['path']).replace('.summary.json', '.jsonl')
+                                 if runs else '')
+                    if not path_:
                         return _json_response(self, {'items': []})
-                    path_ = runs[0]['path'].replace('.summary.json', '.jsonl')
                     return _json_response(self, {
-                        'run': runs[0]['name'],
+                        'run': name or os.path.basename(path_)[:-len('.jsonl')],
+                        'live': not os.path.exists(
+                            path_.replace('.jsonl', '.summary.json')),
                         'items': data.tail_events(path_, limit)})
+
                 if path == '/api/routes':
                     return _json_response(self, {
                         'items': server.bridge.route_points()})

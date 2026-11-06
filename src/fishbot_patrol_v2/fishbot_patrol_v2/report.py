@@ -158,6 +158,9 @@ class PatrolReport:
             'time': self._clock(),
             'job_id': str(getattr(job, 'job_id', '')),
             'point_id': str(getattr(job, 'point_id', '')),
+            # 任务类型必须记下来：报告页的「任务」列一直是空的，因为事件里
+            # 根本没有这个字段，空单元格会把后面的「轮/序号」挤到前面去。
+            'task_id': str(getattr(job, 'task_id', '')),
             'loop_index': int(getattr(job, 'loop_index', 0)),
             'route_index': int(getattr(job, 'route_index', 0)),
             'attempt': int(getattr(job, 'attempt', 1)),

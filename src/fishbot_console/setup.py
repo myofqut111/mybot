@@ -7,7 +7,7 @@ package_name = 'fishbot_console'
 
 setup(
     name=package_name,
-    version='0.7.0',
+    version='0.7.1',
     packages=find_packages(exclude=['test']),
     # JS 依赖（Leaflet / roslib / eventemitter2）必须跟着包一起装：
     # 普通 colcon build 只拷 .py，不加 package_data 的话 /static/leaflet.js 会 404，
