@@ -94,7 +94,8 @@ class StartCase(unittest.TestCase):
         self.manager = stacks.StackManager(
             stacks=[_spec(name='nav'), _spec(name='slam', label='建图',
                                              probes=['slam_toolbox'])],
-            env={}, clock=lambda: self.now[0], popen=popen)
+            env={}, clock=lambda: self.now[0], popen=popen,
+            alive=lambda pattern: False)
 
     def test_start_invokes_ros2_launch(self):
         ok, message = self.manager.start('nav')
@@ -340,6 +341,72 @@ class ExternalStopCase(unittest.TestCase):
         ok, msg = mgr.stop('patrol', running_nodes=['patrol_executor_v2'])
         self.assertTrue(ok, msg)
         self.assertTrue(hard, '竟然没有升级到 SIGKILL')
+
+
+class DuplicateGuardCase(unittest.TestCase):
+    """"两套栈并存"是这套面板最贵的 bug：车会原地打转、速度指令打架。"""
+
+    def setUp(self):
+        self.calls = []
+
+        def popen(cmd, **kwargs):
+            self.calls.append((cmd, kwargs))
+            return FakeProc()
+
+        self.alive_patterns = []
+
+        def alive(pattern):
+            self.alive_patterns.append(pattern)
+            return False
+
+        self.manager = stacks.StackManager(
+            stacks=[_spec(name='nav', probes=['amcl', 'controller_server',
+                                              'planner_server'])],
+            env={}, clock=lambda: 1000.0, popen=popen, alive=alive)
+
+    def test_partial_probes_refused(self):
+        """图里只有一个 amcl（别人刚起、还没起全）也必须拒绝。"""
+        ok, message = self.manager.start('nav', running_nodes=['amcl'])
+        self.assertFalse(ok)
+        self.assertIn('已经有 1 个节点', message)
+        self.assertIn('amcl', message)
+        self.assertEqual(self.calls, [])
+
+    def test_all_probes_still_refused(self):
+        ok, _ = self.manager.start(
+            'nav', running_nodes=['amcl', 'controller_server',
+                                  'planner_server'])
+        self.assertFalse(ok)
+        self.assertEqual(self.calls, [])
+
+    def test_foreign_launch_process_refused(self):
+        """图里什么都没有，但进程还在（DDS 还没发现完）也要拦住。"""
+        def alive(pattern):
+            self.alive_patterns.append(pattern)
+            return True
+
+        self.manager._alive = alive
+        ok, message = self.manager.start('nav')
+        self.assertFalse(ok)
+        self.assertIn('navigation.launch.py', message)
+        self.assertIn('抢 TF', message)
+        self.assertEqual(self.calls, [])
+        self.assertEqual(self.alive_patterns, ['navigation.launch.py'])
+
+    def test_probe_failure_does_not_block_start(self):
+        def boom(pattern):
+            raise RuntimeError('pgrep 挂了')
+
+        self.manager._alive = boom
+        ok, message = self.manager.start('nav')
+        self.assertTrue(ok, message)
+        self.assertEqual(len(self.calls), 1)
+
+    def test_clean_start_checks_launch_name_once(self):
+        ok, message = self.manager.start('nav')
+        self.assertTrue(ok, message)
+        self.assertEqual(self.alive_patterns, ['navigation.launch.py'])
+        self.assertEqual(len(self.calls), 1)
 
 
 if __name__ == '__main__':

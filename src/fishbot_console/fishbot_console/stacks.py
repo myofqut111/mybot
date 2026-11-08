@@ -227,13 +227,28 @@ class StackManager(object):
                 return False, '未知的栈：%s' % name
             if stack.alive():
                 return False, '%s 已经在运行' % stack.spec.label
-            if running_nodes:
-                nodes = set(running_nodes)
-                present = [p for p in stack.spec.probes if p in nodes]
-                if len(present) == len(stack.spec.probes):
-                    return False, ('%s 已经在图里跑着了（不是这个面板起的），'
-                                   '再起一套会和它抢 TF 与 cmd_vel；'
-                                   '先到那个终端把它停掉' % stack.spec.label)
+            # 注意这里是"**有任何一个**探针就算"，不是"全部都在"。
+            # 全在→拒绝，是原逻辑；但别人刚 launch、节点还在陆续上来时，
+            # 图里往往只看见 amcl 或 map_server，原来那条判断会放过，于是
+            # 面板再起一套 → 两套 amcl 抢 TF、两套 controller 抢 cmd_vel。
+            nodes = set(running_nodes or ())
+            present = [p for p in stack.spec.probes if p in nodes]
+            if present:
+                return False, ('%s 已经有 %d 个节点在 ROS 图里了（%s），'
+                               '多半是终端或另一个 launch 起过它；再起一套会和它'
+                               '抢 TF 与 cmd_vel（车原地打转或一顿一顿）。'
+                               '先按「停止」把它停干净，等两秒再启动。'
+                               % (stack.spec.label, len(present),
+                                  '、'.join(present)))
+            # 图里没节点，也可能只是 DDS 还没发现完；再按 launch 进程名兜一道。
+            try:
+                still_running = bool(self._alive(stack.spec.launch_file))
+            except Exception:                          # 探测失败不该挡住启动
+                still_running = False
+            if still_running:
+                return False, ('已经有一条 %s 在跑（不是这个面板起的），'
+                               '再起一套会抢 TF 与 cmd_vel；'
+                               '先按「停止」清干净' % stack.spec.launch_file)
             other = self._conflict(name)
             if other:
                 return False, ('%s 正在运行，与 %s 互斥；先停掉它'
