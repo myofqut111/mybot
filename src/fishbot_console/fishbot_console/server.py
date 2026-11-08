@@ -394,7 +394,31 @@ class ConsoleServer(object):
                     ok, message = server_.bridge.cancel_nav()
                     return _json_response(self, {'ok': ok, 'message': message})
                 if path == '/api/patrol':
-                    route = payload.get('route') or ''
+                    route = (payload.get('route') or '').strip()
+                    if not route:
+                        # 页面会拦一次，但接口是公开的：空名字发下去，
+                        # 执行器回落空的 active_route，最后只回一句
+                        # "Route does not exist"，用户完全看不懂。
+                        try:
+                            names = server_.bridge.route_names()
+                        except Exception:  # noqa: BLE001 - 只用于兜底提示
+                            names = {}
+                        active = str(names.get('active') or '')
+                        available = (names.get('items')
+                                     or names.get('names') or [])
+                        if active:
+                            route = active
+                        else:
+                            hint = ('路线名为空：先在上面的输入框填一个，'
+                                    '或者点「录点」新建一条')
+                            if available:
+                                hint += '（已有：%s）' % '、'.join(
+                                    str(n) for n in available[:6])
+                            else:
+                                hint = ('路线名为空：还没有任何路线，'
+                                        '先录一个点新建一条')
+                            return _json_response(
+                                self, {'ok': False, 'message': hint})
                     # 先查点位在不在当前地图里。不在，发出去也只会“规划失败
                     # → 恢复行为→车原地转圈”，不如在这里拦下来说清楚。
                     bounds = server_.bridge.map_bounds()

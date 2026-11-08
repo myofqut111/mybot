@@ -82,6 +82,9 @@ class FakeBridge(object):
     def map_bounds(self):
         return None                     # 默认不拦，路线检查另有用例
 
+    def route_names(self):
+        return {'items': ['main'], 'active': '', 'error': ''}
+
     def delete_point(self, route_name, point_id):
         self.calls.append(('delete_point', route_name, point_id))
         if point_id == 'p1':
@@ -559,9 +562,35 @@ def _test_inside_route_passes(self):
     self.assertIn('patrol', [c[0] for c in self.bridge.calls])
 
 
-ServerCase.test_outside_route_refused = _test_outside_route_refused
-ServerCase.test_inside_route_passes = _test_inside_route_passes
+def _test_empty_route_refused(self):
+    """空路线名必须在服务端被拒：页面拦一次，接口不能裸奔。"""
+    self.bridge.calls.clear()
+    payload = self.post('/api/patrol', {'route': '', 'mode': 0})
+    self.assertFalse(payload.get('ok'))
+    self.assertIn('路线名为空', payload.get('message', ''))
+    self.assertFalse([c for c in self.bridge.calls if c[0] == 'patrol'])
 
+
+def _test_blank_route_refused(self):
+    self.bridge.calls.clear()
+    payload = self.post('/api/patrol', {'route': '   \t '})
+    self.assertFalse(payload.get('ok'))
+    self.assertFalse([c for c in self.bridge.calls if c[0] == 'patrol'])
+
+
+def _test_named_route_still_works(self):
+    self.bridge.calls.clear()
+    payload = self.post('/api/patrol', {'route': 'main'})
+    self.assertTrue(payload.get('ok'))
+    self.assertTrue([c for c in self.bridge.calls if c[0] == 'patrol'])
+
+
+ServerCase.test_outside_route_refused = _test_outside_route_refused
+
+ServerCase.test_empty_route_refused = _test_empty_route_refused
+ServerCase.test_blank_route_refused = _test_blank_route_refused
+ServerCase.test_named_route_still_works = _test_named_route_still_works
+ServerCase.test_inside_route_passes = _test_inside_route_passes
 
 if __name__ == '__main__':
     unittest.main()

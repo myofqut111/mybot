@@ -108,8 +108,11 @@ class MockRobot(Node):
             OccupancyGrid, 'map', _latched_qos())
         self._battery_pub = self.create_publisher(
             Float32, 'battery/voltage', 10)
+        # 假车不是执行器：用它自己的主题，别占 /patrol/execution/status。
+        # 之前两者共用一个 latched 主题，执行器停下之后假车还在发 RUNNING，
+        # 面板就一直显示"运行中"。
         self._status_pub = self.create_publisher(
-            String, 'patrol/execution/status', _latched_qos())
+            String, 'mock/robot/status', _latched_qos())
 
         # 假代价地图：验证阶段没有 nav2，而膨胀带是判断 RViz 对齐做没做对最直观的
         # 东西——缺了它，「代价地图」那个勾选框就永远是空的。
