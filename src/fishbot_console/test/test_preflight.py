@@ -79,5 +79,61 @@ class DescribeOutsideTest(unittest.TestCase):
         self.assertIn('未命名', text)
 
 
+class _Position(object):
+    def __init__(self, x, y):
+        self.x = x
+        self.y = y
+
+
+class _Pose(object):
+    def __init__(self, x, y):
+        self.position = _Position(x, y)
+
+
+class _PoseStamped(object):
+    """geometry_msgs/PoseStamped：真正的位置在这里面一层。"""
+
+    def __init__(self, x, y):
+        self.pose = _Pose(x, y)
+
+
+class _PatrolPoint(object):
+    def __init__(self, point_id, x, y, stamped=True):
+        self.point_id = point_id
+        self.pose = _PoseStamped(x, y) if stamped else _Pose(x, y)
+
+
+class PointXyTest(unittest.TestCase):
+    """0.7.9 的真 bug：按 pose.position 取，每个点都读成 (0, 0)。"""
+
+    def test_posestamped(self):
+        self.assertEqual(data.point_xy(_PatrolPoint('p1', 8.19, 3.17)),
+                         (8.19, 3.17))
+
+    def test_bare_pose(self):
+        self.assertEqual(data.point_xy(_PatrolPoint('p1', -1.2, -9.4,
+                                                    stamped=False)),
+                         (-1.2, -9.4))
+
+    def test_dict_shape(self):
+        self.assertEqual(data.point_xy({'pose': {'position': {'x': 1.5,
+                                                              'y': 2.5}}}),
+                         (1.5, 2.5))
+
+    def test_missing_position_is_zero(self):
+        self.assertEqual(data.point_xy({'point_id': 'p1'}), (0.0, 0.0))
+
+    def test_points_outside_uses_real_coords(self):
+        """回归：main2 的点在 map_v2 里，不能被判成图外。"""
+        bounds = data.map_bounds({'width': 242, 'height': 288,
+                                  'resolution': 0.05,
+                                  'origin_x': -1.5, 'origin_y': -1.62})
+        points = [{'point_id': p.point_id, 'x': x, 'y': y}
+                  for p, x, y in ((_PatrolPoint('p1', 8.19, 3.17), 8.19, 3.17),
+                                  (_PatrolPoint('p2', 7.54, 4.62), 7.54, 4.62),
+                                  (_PatrolPoint('p3', 6.42, 5.87), 6.42, 5.87))]
+        self.assertEqual(data.points_outside(points, bounds), [])
+
+
 if __name__ == '__main__':
     unittest.main()

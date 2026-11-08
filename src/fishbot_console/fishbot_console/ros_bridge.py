@@ -944,12 +944,11 @@ class ConsoleBridge(Node):
         points = getattr(getattr(response, 'route', None), 'points', None) or []
         out = []
         for item in points:
-            pose = getattr(item, 'pose', None)
-            position = getattr(pose, 'position', None)
+            x, y = data.point_xy(item)
             out.append({
                 'point_id': str(getattr(item, 'point_id', '')),
-                'x': float(getattr(position, 'x', 0.0)),
-                'y': float(getattr(position, 'y', 0.0)),
+                'x': x,
+                'y': y,
             })
         return out
 

@@ -211,6 +211,34 @@ def read_route_names(path):
     return {'names': sorted(names), 'active': active, 'error': ''}
 
 
+def point_xy(item):
+    """从 PatrolPoint 里取 (x, y)。
+
+    PatrolPoint.pose 是 geometry_msgs/PoseStamped，位置在
+    pose.pose.position；但历史代码里也出现过直接给 Pose
+    或字典的写法，所以三种都认。
+    """
+    if isinstance(item, dict):
+        pose = item.get('pose')
+        position = item.get('position')
+    else:
+        pose = getattr(item, 'pose', None)
+        position = None
+    if isinstance(pose, dict):
+        position = pose.get('position')
+    else:
+        inner = getattr(pose, 'pose', None) if pose is not None else None
+        if inner is not None and getattr(inner, 'position', None) is not None:
+            position = inner.position                 # PoseStamped
+        elif pose is not None:
+            position = getattr(pose, 'position', None)    # 直接 Pose
+    if position is None:
+        return 0.0, 0.0
+    if isinstance(position, dict):
+        return float(position.get('x') or 0.0), float(position.get('y') or 0.0)
+    return float(getattr(position, 'x', 0.0)), float(getattr(position, 'y', 0.0))
+
+
 def map_bounds(meta):
     """从 map_meta 推出地图的世界坐标范围 (x0, y0, x1, y1)，拿不到就 None。"""
     try:
