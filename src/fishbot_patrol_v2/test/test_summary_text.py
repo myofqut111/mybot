@@ -112,5 +112,37 @@ class CloseWritesTextCase(unittest.TestCase):
         self.assertEqual(leftovers, [])
 
 
+class AbortReasonCase(unittest.TestCase):
+    """一个点都没跑时，报告要说清是电量还是空路线。"""
+
+    def test_battery_abort_before_start(self):
+        summary = {
+            'route_name': 'main4', 'execution_id': 'exec-1913',
+            'duration_sec': 0.02, 'points': {}, 'battery_v': 11.44,
+            'battery_level': 'crit',
+            'abort_reason': 'battery critical (11.44V), stopping after current point',
+        }
+        text = report_module.render_summary(summary)
+        self.assertIn('未开始', text)
+        self.assertIn('battery critical', text)
+        self.assertNotIn('无点位', text)
+
+    def test_abort_reason_collected_from_events(self):
+        records = [
+            {'type': 'header', 'route_name': 'main4'},
+            {'type': 'event', 'kind': 'battery_abort',
+             'reason': 'battery critical (11.44V), stopping after current point'},
+        ]
+        summary = report_module.summarize(records)
+        self.assertEqual(
+            summary['abort_reason'],
+            'battery critical (11.44V), stopping after current point')
+
+    def test_no_reason_still_says_no_points(self):
+        summary = {'route_name': 'empty', 'points': {}, 'duration_sec': 0.0}
+        text = report_module.render_summary(summary)
+        self.assertIn('无点位', text)
+
+
 if __name__ == '__main__':
     unittest.main()

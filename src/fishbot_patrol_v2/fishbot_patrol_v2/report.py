@@ -76,11 +76,22 @@ def summarize(records: List[dict]) -> Dict[str, object]:
         if verdict in verdict_counts:
             verdict_counts[verdict] += 1
 
+    # 一条点都没跑就结束时，报告必须说清原因：空路线和中止长得一样。
+    abort_reason = ''
+    for record in records:
+        if record.get('type') != 'event':
+            continue
+        kind = str(record.get('kind') or '')
+        if kind in ('battery_abort', 'aborted', 'preempt', 'error'):
+            abort_reason = str(record.get('reason') or kind)
+            break
+
     summary = {
         'points': status_counts,
         'detections_total': detections_total,
         'points_with_detections': found_by_point,
         'verdicts': dict(verdict_counts),
+        'abort_reason': abort_reason,
     }
     summary.update(_metrics_from_verdicts(verdict_counts))
     return summary
@@ -177,8 +188,9 @@ def render_summary(summary, records=None, limit=40) -> str:
     canceled = int(count('canceled', 'cancelled', 'CANCELED'))
     total = ok + skipped + failed + canceled
 
-    if data.get('aborted'):
-        result = '已中止'
+    reason = str(data.get('abort_reason') or '')
+    if data.get('aborted') or (reason and not total):
+        result = '已中止' if total else '未开始'
     elif canceled:
         result = '被中断'
     elif failed:
@@ -196,7 +208,11 @@ def render_summary(summary, records=None, limit=40) -> str:
         title += ' · %s' % run_id
     lines.append(title)
     lines.append(RULE)
-    lines.append('结果     %s    耗时 %s' % (result, _duration(data.get('duration_sec'))))
+    result_line = '结果     %s    耗时 %s' % (
+        result, _duration(data.get('duration_sec')))
+    if reason and not total:
+        result_line += '    （%s）' % reason
+    lines.append(result_line)
     if total:
         detail = '成功 %d · 跳过 %d · 失败 %d' % (ok, skipped, failed)
         if canceled:
