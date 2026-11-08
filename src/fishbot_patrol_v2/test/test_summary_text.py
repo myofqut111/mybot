@@ -1,5 +1,6 @@
 """跑完巡检输出的那份人读报告：内容对、失败不影响主流程。"""
 
+import json
 import os
 import shutil
 import tempfile
@@ -142,6 +143,26 @@ class AbortReasonCase(unittest.TestCase):
         summary = {'route_name': 'empty', 'points': {}, 'duration_sec': 0.0}
         text = report_module.render_summary(summary)
         self.assertIn('无点位', text)
+
+    def test_close_marks_aborted_when_reason_present(self):
+        """有 abort_reason 时 summary 里的 aborted 必须是 True。
+
+        电量中止是调用方从事件流里看出来的，它传进来的 aborted 仍是 False，
+        两个字段打架会让「看 jsonl 判中止」的脚本误判成正常结束。
+        """
+        directory = tempfile.mkdtemp(prefix='rep-')
+        try:
+            rep = report_module.PatrolReport(
+                directory, 'main4', 'exec-ab', 1, 'skip')
+            rep.event('battery_abort',
+                      reason='battery critical (11.44V), stopping after current point')
+            path = rep.close({'aborted': False, 'duration_sec': 0.02})
+            with open(path, 'r', encoding='utf-8') as handle:
+                summary = json.load(handle)
+            self.assertTrue(summary['aborted'])
+            self.assertIn('battery critical', summary['abort_reason'])
+        finally:
+            shutil.rmtree(directory, ignore_errors=True)
 
 
 if __name__ == '__main__':

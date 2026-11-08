@@ -398,6 +398,10 @@ class PatrolReport:
         summary['time'] = self._clock()
         if extra:
             summary.update(extra)
+        # 有中止原因就一定是中止：调用方传进来的 aborted 可能还是 False
+        # （电量中止是从事件里看出来的，不经过它的判断），不能让两个字段互相打架。
+        if summary.get('abort_reason'):
+            summary['aborted'] = True
         self._write(summary)
         try:
             self._stream.flush()
