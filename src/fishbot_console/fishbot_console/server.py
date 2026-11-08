@@ -394,8 +394,19 @@ class ConsoleServer(object):
                     ok, message = server_.bridge.cancel_nav()
                     return _json_response(self, {'ok': ok, 'message': message})
                 if path == '/api/patrol':
+                    route = payload.get('route') or ''
+                    # 先查点位在不在当前地图里。不在，发出去也只会“规划失败
+                    # → 恢复行为→车原地转圈”，不如在这里拦下来说清楚。
+                    bounds = server_.bridge.map_bounds()
+                    outside = data.points_outside(
+                        server_.bridge.route_points(route), bounds) if bounds else []
+                    if outside:
+                        return _json_response(self, {
+                            'ok': False,
+                            'message': data.describe_outside(route, outside),
+                            'outside': outside})
                     ok, message = server_.bridge.start_patrol(
-                        payload.get('route') or '',
+                        route,
                         int(payload.get('mode') or 0),
                         int(payload.get('repeat') or 1))
                     return _json_response(self, {'ok': ok, 'message': message})

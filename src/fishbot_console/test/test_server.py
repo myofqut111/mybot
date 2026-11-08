@@ -76,8 +76,11 @@ class FakeBridge(object):
     def reports_dir(self):
         return self._reports
 
-    def route_points(self):
+    def route_points(self, name=''):
         return [{'point_id': 'p1', 'x': 1.0, 'y': 2.0}]
+
+    def map_bounds(self):
+        return None                     # 默认不拦，路线检查另有用例
 
     def delete_point(self, route_name, point_id):
         self.calls.append(('delete_point', route_name, point_id))
@@ -522,6 +525,42 @@ class EnvInfoCase(unittest.TestCase):
         self.assertIn('def _get(self, path, query):', src)
         self.assertIn('return self._get(path, query)', src)
         self.assertIn("_query_int(query, 'limit'", src)
+
+
+def _test_outside_route_refused(self):
+    """点位在图外就不下发：否则车会"规划失败→原地转圈"。"""
+    original = (self.bridge.map_bounds, self.bridge.route_points)
+    seen = len(self.bridge.calls)
+    self.bridge.map_bounds = lambda: (-1.5, -1.62, 10.6, 12.78)
+    self.bridge.route_points = lambda name='': [
+        {'point_id': 'p1', 'x': -1.0, 'y': -9.4}]
+    try:
+        out = self.post('/api/patrol', {'route': 'my_route3', 'mode': 0})
+    finally:
+        self.bridge.map_bounds, self.bridge.route_points = original
+    self.assertFalse(out['ok'])
+    self.assertIn('my_route3', out['message'])
+    self.assertIn('p1', out['message'])
+    self.assertEqual(len(out['outside']), 1)
+    self.assertEqual([c for c in self.bridge.calls[seen:]
+                      if c[0] == 'patrol'], [])
+
+
+def _test_inside_route_passes(self):
+    original = (self.bridge.map_bounds, self.bridge.route_points)
+    self.bridge.map_bounds = lambda: (-1.5, -1.62, 10.6, 12.78)
+    self.bridge.route_points = lambda name='': [
+        {'point_id': 'p1', 'x': 8.19, 'y': 3.17}]
+    try:
+        out = self.post('/api/patrol', {'route': 'main2', 'mode': 0})
+    finally:
+        self.bridge.map_bounds, self.bridge.route_points = original
+    self.assertTrue(out['ok'])
+    self.assertIn('patrol', [c[0] for c in self.bridge.calls])
+
+
+ServerCase.test_outside_route_refused = _test_outside_route_refused
+ServerCase.test_inside_route_passes = _test_inside_route_passes
 
 
 if __name__ == '__main__':

@@ -911,6 +911,12 @@ class ConsoleBridge(Node):
             return self.snapshot()
         return True, str(response.message or '已抓拍')
 
+    def map_bounds(self):
+        """当前地图的世界坐标范围；地图还没来就 None。"""
+        with self._lock:
+            meta = dict(self._map_meta or {})
+        return data.map_bounds(meta)
+
     def route_names(self):
         """路线库里有哪些路线（面板下拉用）。"""
         path = os.path.expanduser(str(self.get_parameter('route_file').value))

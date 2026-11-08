@@ -211,6 +211,59 @@ def read_route_names(path):
     return {'names': sorted(names), 'active': active, 'error': ''}
 
 
+def map_bounds(meta):
+    """从 map_meta 推出地图的世界坐标范围 (x0, y0, x1, y1)，拿不到就 None。"""
+    try:
+        width = int(meta.get('width') or 0)
+        height = int(meta.get('height') or 0)
+        resolution = float(meta.get('resolution') or 0)
+        origin_x = float(meta.get('origin_x') or 0.0)
+        origin_y = float(meta.get('origin_y') or 0.0)
+    except (AttributeError, TypeError, ValueError):
+        return None
+    if width <= 0 or height <= 0 or resolution <= 0:
+        return None
+    return (origin_x, origin_y,
+            origin_x + width * resolution, origin_y + height * resolution)
+
+
+def points_outside(points, bounds, margin=0.2):
+    """挑出落在地图外的点位。
+
+    points 是 route_points() 的形状：[{'point_id', 'x', 'y', ...}]。
+    margin 是往里收的余量：贴边走也会被代价地图的膨胀挡掉，
+    所以离边界不足 margin 的点同样算“进不去”。
+    """
+    if not bounds:
+        return []
+    x0, y0, x1, y1 = bounds
+    outside = []
+    for point in points or []:
+        try:
+            x = float(point.get('x'))
+            y = float(point.get('y'))
+        except (AttributeError, TypeError, ValueError):
+            continue
+        if (x < x0 + margin or x > x1 - margin or
+                y < y0 + margin or y > y1 - margin):
+            outside.append({'point_id': point.get('point_id') or '?',
+                            'x': round(x, 2), 'y': round(y, 2)})
+    return outside
+
+
+def describe_outside(route, outside):
+    """把“点位在地图外”说成人话。"""
+    if not outside:
+        return ''
+    bits = ['%s(%.2f, %.2f)' % (p['point_id'], p['x'], p['y'])
+            for p in outside[:4]]
+    more = '' if len(outside) <= 4 else ' 等 %d 个' % len(outside)
+    return ('路线 %s 有 %d 个点不在这张地图里：%s%s。'
+            '换成拍这张图时录的路线，或者用对应的地图重开导航。'
+            % (route or '（未命名）', len(outside),
+               '、'.join(bits), more))
+
+
 def _count(mapping, *keys):
     """从 dict 里按候选键名取整数，取不到就是 0。
 
