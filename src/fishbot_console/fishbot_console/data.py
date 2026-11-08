@@ -185,6 +185,32 @@ def read_json(path):
     return data if isinstance(data, dict) else {}
 
 
+def read_route_names(path):
+    """从路线库文件里读出路线名。
+
+    控制台没有“列出全部路线”的 ROS 接口：GetRoute 只按名字查，空名字回落到
+    active_route，而 active_route 从来没人设过。所以下拉列表直接读这个文件。
+
+    返回 {'names': [...], 'active': '', 'error': ''}；读不到不是异常，只是把原因告诉调用方。
+    """
+    if not path:
+        return {'names': [], 'active': '', 'error': '没有配置路线库路径'}
+    raw = read_json(path)
+    if not raw:
+        if os.path.exists(path):
+            return {'names': [], 'active': '', 'error': '路线库读不出来或不是 JSON：%s' % path}
+        return {'names': [], 'active': '', 'error': '路线库还没生成：%s' % path}
+    routes = raw.get('routes')
+    if not isinstance(routes, dict):
+        return {'names': [], 'active': '', 'error': '路线库格式不认识：%s' % path}
+    names = [str(name) for name, route in routes.items()
+             if isinstance(route, dict) and route.get('points')]
+    active = str(raw.get('active_route') or '')
+    if active and active not in names:
+        active = ''
+    return {'names': sorted(names), 'active': active, 'error': ''}
+
+
 def _count(mapping, *keys):
     """从 dict 里按候选键名取整数，取不到就是 0。
 

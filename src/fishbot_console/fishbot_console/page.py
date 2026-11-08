@@ -467,7 +467,16 @@ $('btnCapture').onclick = async () => {
 
 /* ---------- 巡检 ---------- */
 $('btnPatrol').onclick = async () => {
-  const body = {route: $('patrolRoute').value.trim(),
+  const route = $('patrolRoute').value.trim();
+  // 路线名空着发出去，执行器只能回落 active_route，而它常年为空，
+  // 于是 GetRoute 回 "Route does not exist"、目标被中止；页面先弹“已发送”，
+  // 看起来就像被拒绝。这里直接拦下来。
+  if (!route) {
+    toast('先选一条路线再开始巡检');
+    $('patrolHint').textContent = '路线名为空会被执行器拒绝：下拉里选一条已有路线，或去「录点」先建一条。';
+    return;
+  }
+  const body = {route: route,
                 mode: parseInt($('patrolMode').value, 10) || 0,
                 repeat: parseInt($('patrolRepeat').value, 10) || 1};
   try{
@@ -524,7 +533,7 @@ $('btnRecord').onclick = async () => {
       ? ('已记下 ' + ((out.point && out.point.point_id) || '') +
          '，去 RViz 里能看到这个点')
       : (out.message || '记录失败');
-    if (out.ok) { $('recName').value = ''; loadPoints(); }
+    if (out.ok) { $('recName').value = ''; loadPoints(); loadRoutes(); }
   }catch(err){ toast('记录失败：' + err.message); }
 };
 
@@ -618,6 +627,27 @@ async function pollRuns(){
     }
   });
 }
+
+/* 路线下拉的数据源是 /api/route_names（读 route_manager 的路线库）。
+   pollRuns 只能从“历史运行记录”里猜路线名，新录的路线在跑过之前
+   根本不会出现，所以还要这一份。输入框空着就给个默认值。 */
+async function loadRoutes(){
+  let data;
+  try{ data = await api('/api/route_names'); }catch(err){ return; }
+  const names = (data && data.items) || [];
+  const list = $('routeList');
+  const have = Array.from(list.options).map(o => o.value);
+  names.forEach(n => {
+    if (have.indexOf(n) < 0){
+      const opt = document.createElement('option');
+      opt.value = n;
+      list.appendChild(opt);
+    }
+  });
+  const fallback = (data && data.active) || names[0] || '';
+  if (fallback && !$('patrolRoute').value.trim()) $('patrolRoute').value = fallback;
+  if (fallback && !$('recRoute').value.trim()) $('recRoute').value = fallback;
+}
 $('runSel').onchange = () => {
   const run = runsCache.find(r => r.name === $('runSel').value);
   renderRunSummary(run);
@@ -693,7 +723,7 @@ $('btnAsk').onclick = ask;
 $('askBox').addEventListener('keydown', ev => { if (ev.key === 'Enter') ask(); });
 
 /* ---------- 启动 ---------- */
-pollState(); pollStacks(); pollLogs(); pollRuns();
+pollState(); pollStacks(); pollLogs(); pollRuns(); loadRoutes();
 setInterval(pollState, 1000);
 setInterval(pollStacks, 1500);
 setInterval(pollLogs, 2000);

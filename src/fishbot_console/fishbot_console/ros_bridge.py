@@ -119,6 +119,12 @@ class ConsoleBridge(Node):
         # 日志里给人看的地址。留空则自动探测；0.0.0.0 是绑定语义，
         # 不能让用户拿它去点浏览器。
         self.declare_parameter('public_host', '')
+
+        # 面板“路线名”下拉的数据源：控制台没有“列出全部路线”的 ROS 接口
+        # （GetRoute 只按名字查，空名字回落到 active_route，而它常年为空），
+        # 所以直接读 route_manager 落盘的路线库。只有控制台与 route_manager
+        # 同机时才有内容，读不到就当没有（手填路线名照旧可用）。
+        self.declare_parameter('route_file', '~/.ros/fishbot_patrol_routes.json')
         self.declare_parameter('ai_base_url', '')
         self.declare_parameter('ai_api_key', '')
         self.declare_parameter('ai_model', '')
@@ -905,6 +911,11 @@ class ConsoleBridge(Node):
             return self.snapshot()
         return True, str(response.message or '已抓拍')
 
+    def route_names(self):
+        """路线库里有哪些路线（面板下拉用）。"""
+        path = os.path.expanduser(str(self.get_parameter('route_file').value))
+        return data.read_route_names(path)
+
     def route_points(self, name=''):
         """取路线点位（只为在地图上显示）。字段名以 GetRoute.srv 为准：route_name。"""
         if self._route_client is None:
@@ -985,6 +996,10 @@ class ConsoleBridge(Node):
             return False, 'record_point 服务不可用（缺 RecordPoint 消息类型）', None
         if not self._record_client.wait_for_service(timeout_sec=2.0):
             return False, 'route_manager 不在线（/patrol_route/record_point）', None
+        if not str(route_name or '').strip():
+            # route_manager 会回一句英文 "route_name must not be empty"，
+            # 面板上看着就像“点了没反应”，所以在这里就说清楚。
+            return False, '路线名为空：先在上面填一个路线名（比如 main）', None
         request = RecordPoint.Request()
         request.route_name = str(route_name or '')
         request.point_id = str(point_id or '')

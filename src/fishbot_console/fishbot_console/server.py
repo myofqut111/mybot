@@ -286,9 +286,13 @@ class ConsoleServer(object):
                         'text': data.read_summary_text(run_path_),
                     })
 
-                if path == '/api/routes':
+                if path == '/api/route_names':
+                    info = server.bridge.route_names()
                     return _json_response(self, {
-                        'items': server.bridge.route_points()})
+                        'ok': True,
+                        'items': info['names'],
+                        'active': info['active'],
+                        'error': info['error']})
                 return _json_response(self, {'error': 'not found'}, 404)
 
             # ---------------- POST ----------------
