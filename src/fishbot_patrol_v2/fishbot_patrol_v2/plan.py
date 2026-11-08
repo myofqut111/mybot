@@ -207,6 +207,19 @@ class Planner:
         return self._total
 
     @property
+    def total_jobs(self) -> Optional[int]:
+        """这一轮要跑多少个作业；``None`` 表示无限。
+
+        点数 × 轮数，再扣掉断点续跑时已经做完的作业——页面上的
+        “成功 N/共 M”用的就是它，而这个 M 应该是**本次**要跑的量，
+        不是整个路线的总量。
+        """
+        if self._total is None:
+            return None
+        planned = len(self._points) * self._total
+        return max(planned - len(self._done_ids), 0)
+
+    @property
     def loop_index(self) -> int:
         """当前正在跑第几轮（从 0 开始）。"""
         return max(self._loop, 0)

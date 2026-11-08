@@ -1,6 +1,8 @@
 """plan.py 的单测：不依赖 ROS，直接 ``python3 test/test_plan.py`` 就能跑。"""
 
+import io
 import os
+import re
 import sys
 import unittest
 
@@ -8,7 +10,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from fishbot_patrol_v2 import plan  # noqa: E402
 from fishbot_patrol_v2.plan import (  # noqa: E402
-    FailurePolicy, PlanConfig, Planner, PointRef)
+    FailurePolicy, MODE_REPEAT, PlanConfig, Planner, PointRef)
 
 
 def points(count=3):
@@ -264,6 +266,55 @@ class HardeningTest(unittest.TestCase):
         planner.report_success(planner.next_job())
         planner.report_success(planner.next_job())
         self.assertEqual(planner.completed_loops, 2)
+
+
+class TotalJobsTest(unittest.TestCase):
+    """0.4.6 的真 bug：node.py 用 planner.total，属性不存在，建报告就崩。"""
+
+    def points(self, n):
+        return [PointRef(point_id='p%d' % i) for i in range(n)]
+
+    def test_single_loop(self):
+        planner = Planner(self.points(3), PlanConfig())
+        self.assertEqual(planner.total_jobs, 3)
+
+    def test_repeat_multiplies(self):
+        planner = Planner(self.points(3),
+                          PlanConfig(mode=MODE_REPEAT, repeat_count=5))
+        self.assertEqual(planner.total_jobs, 15)
+
+    def test_resume_subtracts_done(self):
+        planner = Planner(self.points(3),
+                          PlanConfig(mode=MODE_REPEAT, repeat_count=5),
+                          already_done=['L0N0', 'L0N1'])
+        self.assertEqual(planner.total_jobs, 13)
+
+    def test_infinite_is_none(self):
+        planner = Planner(self.points(2),
+                          PlanConfig(mode=MODE_REPEAT, repeat_count=0))
+        self.assertIsNone(planner.total_jobs)
+
+
+class NodeUsesRealPlannerAttrsTest(unittest.TestCase):
+    """静态钉住：node.py 引用的 planner 属性必须真的存在。
+
+    0.4.6 的事故就是 node.py 写了 ``planner.total``（不存在），
+    机器人在"路线已加载、车还没动"的位置直接 AttributeError。
+    """
+
+    def setUp(self):
+        import os
+        here = os.path.dirname(os.path.abspath(__file__))
+        self.node_src = io.open(
+            os.path.join(os.path.dirname(here), 'fishbot_patrol_v2', 'node.py'),
+            encoding='utf-8').read()
+
+    def test_no_bare_planner_total(self):
+        self.assertIsNone(re.search(r'planner\.total(?!_|[a-z])', self.node_src),
+                          'node.py 又写了不存在的 planner.total')
+
+    def test_uses_total_jobs(self):
+        self.assertIn('planner.total_jobs', self.node_src)
 
 
 if __name__ == '__main__':

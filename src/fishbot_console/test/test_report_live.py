@@ -156,5 +156,40 @@ class PageContractCase(unittest.TestCase):
         self.assertIn('刚学完基线', self.src)
 
 
+class FindRunPathTraversalTest(unittest.TestCase):
+    """名字里带路径的必须拒掉：/api/report?run=../../etc/passwd。"""
+
+    def setUp(self):
+        import tempfile
+        self.dir = tempfile.mkdtemp()
+        self.outside = os.path.join(self.dir, '..', 'secret.jsonl')
+        with open(self.outside, 'w', encoding='utf-8') as handle:
+            handle.write('{}\n')
+
+    def tearDown(self):
+        import shutil
+        try:
+            os.unlink(self.outside)
+        except OSError:
+            pass
+        shutil.rmtree(self.dir, ignore_errors=True)
+
+    def test_rejects_parent(self):
+        self.assertEqual(data.find_run_path(self.dir, '../secret.jsonl'), '')
+
+    def test_rejects_separator(self):
+        self.assertEqual(data.find_run_path(self.dir, 'sub/x.jsonl'), '')
+
+    def test_rejects_dot(self):
+        self.assertEqual(data.find_run_path(self.dir, '..'), '')
+
+    def test_plain_name_still_works(self):
+        name = 'patrol_1.jsonl'
+        with open(os.path.join(self.dir, name), 'w', encoding='utf-8') as h:
+            h.write('{}\n')
+        self.assertTrue(data.find_run_path(self.dir, 'patrol_1'))
+        self.assertTrue(data.find_run_path(self.dir, name))
+
+
 if __name__ == '__main__':
     unittest.main()

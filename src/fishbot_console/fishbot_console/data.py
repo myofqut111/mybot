@@ -458,6 +458,10 @@ def find_run_path(reports_dir, name):
     name = str(name or '').strip()
     if not name:
         return ''
+    # 只接受"报告文件名"：带路径分隔符或上跳的一律不认。
+    # 否则 /api/report?run=../../etc/passwd 会把 reports 目录之外的东西读出来。
+    if os.sep in name or '/' in name or '\\' in name or name in ('.', '..'):
+        return ''
     if name.endswith('.summary.json') or name.endswith('.jsonl'):
         path = os.path.join(reports_dir, name)
         if os.path.exists(path):

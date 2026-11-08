@@ -586,7 +586,7 @@ class PatrolExecutorV2(Node):
                           progress=resume_at)
         report = PatrolReport(self._report_dir, route.name, self._execution_id,
                               config.mode, self._policy.value,
-                              jobs_total=planner.total)
+                              jobs_total=int(planner.total_jobs or 0))
         # 基线一次性读进来：循环里每点再读一次文件既慢又可能读到半截。
         baseline_data = (baseline_module.load(self._baseline_file)
                          if self._learn_baseline else baseline_module.empty())
