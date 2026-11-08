@@ -21,7 +21,7 @@ TERMINAL_STATES = ('SUCCEEDED', 'FAILED', 'CANCELED')
 LOG_LEVELS = {10: 'DEBUG', 20: 'INFO', 30: 'WARN', 40: 'ERROR', 50: 'FATAL'}
 
 
-def battery_band(volts, warn_v=11.8, crit_v=11.5):
+def battery_band(volts, warn_v=10.5, crit_v=10.0):
     """电压 -> ok / warn / crit / unknown；坏数据一律 unknown。
 
     契约：`crit_v` 必须**低于** `warn_v` 才算有效。如果调用方只改了一个参数

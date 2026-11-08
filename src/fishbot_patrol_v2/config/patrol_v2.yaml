@@ -68,8 +68,8 @@ patrol_executor_v2:
     # 不在走廊中间，续跑时也能从这个点后面接着来。
     battery_enabled: true
     battery_topic: /battery/voltage
-    battery_warn_v: 11.8            # 12V 铅酸 11.8 / 3S 锂电 10.8
-    battery_crit_v: 11.5            # 12V 铅酸 11.5 / 3S 锂电 10.2
+    battery_warn_v: 10.5            # 3S 锂电标定值；12V 铅酸请改回 11.8
+    battery_crit_v: 10.0            # 3S 锂电标定值；12V 铅酸请改回 11.5
     battery_hyst_v: 0.4             # 回差：回到 阈值+0.4 才解除告警
     battery_stale_sec: 30.0         # 超过这么久没新数据就当作“不知道”
     battery_window: 5               # 中值滤波窗口，抗单点尖峰

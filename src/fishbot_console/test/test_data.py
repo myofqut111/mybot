@@ -14,10 +14,11 @@ from fishbot_console import data  # noqa: E402
 
 class TestBatteryBand(unittest.TestCase):
     def test_bands(self):
+        # 出厂默认按 3S 锂电标定：10.5 告警 / 10.0 中止
         self.assertEqual(data.battery_band(12.6), 'ok')
-        self.assertEqual(data.battery_band(11.8), 'warn')
-        self.assertEqual(data.battery_band(11.7), 'warn')
-        self.assertEqual(data.battery_band(11.5), 'crit')
+        self.assertEqual(data.battery_band(10.5), 'warn')
+        self.assertEqual(data.battery_band(10.4), 'warn')
+        self.assertEqual(data.battery_band(10.0), 'crit')
         self.assertEqual(data.battery_band(9.0), 'crit')
 
     def test_thresholds_are_configurable(self):

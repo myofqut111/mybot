@@ -1,7 +1,7 @@
 <?xml version="1.0"?>
 <package format="3">
   <name>fishbot_patrol_v2</name>
-  <version>0.4.8</version>
+  <version>0.4.9</version>
   <description>Patrol execution with resumable progress, failure policies and JSONL reports.</description>
   <maintainer email="dev@example.com">Fishbot Maintainer</maintainer>
   <license>Apache-2.0</license>

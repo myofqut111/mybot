@@ -25,9 +25,10 @@ fishbot_console:
     capture_service: /camera/camera/capture
     reports_dir: ~/patrol_reports
 
-    # ---- 电量阈值（12V 铅酸；3S 锂电改 10.8/10.2）----
-    battery_warn_v: 11.8
-    battery_crit_v: 11.5
+    # ---- 电量阈值（3S 锂电：10.5 告警 / 10.0 中止）----
+    # 12V 铅酸请改回 11.8 / 11.5，铅酸放到 10.0 会伤电池。
+    battery_warn_v: 10.5
+    battery_crit_v: 10.0
 
     # ---- 网页服务 ----
     http_host: 0.0.0.0
