@@ -5,7 +5,7 @@
 [![ROS 2](https://img.shields.io/badge/ROS%202-Humble-22314E.svg)](https://docs.ros.org/en/humble/)
 [![License](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
 
-![工程流程图](docs/images/architecture.png)
+![工程流程图](docs/images/architecture_mybot.png)
 
 ▶ **[完整版演示 · 6 分 19 秒](https://github.com/myofqut111/-)**　真机按路线走到灭火器旁 → 到点识别 → 录点建路线 → 控制台一键启停 / 日志 / AI 助手 → 跑完自动出报告
 
