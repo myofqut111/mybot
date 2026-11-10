@@ -86,8 +86,29 @@ def run_files(reports_dir, limit=MAX_FILES):
 
 
 def _detected(item):
+    """这一行到底看没看到目标。
+
+    正常报告里 `detections` 是列表；早期/手写的行可能只有 verdict，
+    那就按 tp/fp（判定为"有"）反推，免得整页显示成"没看到"。
+    """
     dets = item.get('detections')
-    return bool(dets) if isinstance(dets, (list, tuple)) else False
+    if isinstance(dets, (list, tuple)):
+        return bool(dets)
+    return str(item.get('verdict') or '') in ('tp', 'fp')
+
+
+def _run_label(header, path):
+    """这一轮在人眼前叫什么：优先 execution_id，其次文件名里的 uuid 段。"""
+    ident = str(header.get('execution_id') or '').strip()
+    if ident:
+        return ident[:8]
+    name = os.path.basename(path)
+    if name.endswith('.jsonl'):
+        name = name[:-len('.jsonl')]
+    parts = [part for part in name.split('_') if part]
+    if len(parts) >= 4:
+        return parts[-1][:8]
+    return name[-8:]
 
 
 def point_history(reports_dir, days=30, route='', per_point=PER_POINT_SAMPLES,
@@ -121,7 +142,7 @@ def point_history(reports_dir, days=30, route='', per_point=PER_POINT_SAMPLES,
         stamp = _parse_time(header.get('time'), mtime)
         if cutoff is not None and stamp is not None and stamp < cutoff:
             continue
-        name = str(header.get('execution_id') or os.path.basename(path)[:-len('.jsonl')])
+        name = _run_label(header, path)
         this_route = str(header.get('route_name') or '')
         if route and this_route != route:
             continue
@@ -138,9 +159,10 @@ def point_history(reports_dir, days=30, route='', per_point=PER_POINT_SAMPLES,
             verdict = str(item.get('verdict') or '') if expect else ''
             if verdict and verdict not in VERDICTS:
                 verdict = ''
+            when = _parse_time(item.get('time'), None) or stamp
             sample = {
-                'time': stamp.strftime('%Y-%m-%dT%H:%M:%S') if stamp else '',
-                'run': name[:8],
+                'time': when.strftime('%Y-%m-%dT%H:%M:%S') if when else '',
+                'run': name,
                 'verdict': verdict,
                 'detected': _detected(item),
                 'status': str(item.get('status') or ''),

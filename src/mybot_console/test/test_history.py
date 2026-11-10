@@ -109,6 +109,45 @@ class PointHistoryCase(unittest.TestCase):
         out = history.point_history(self.tmp)
         self.assertEqual(out['points'][0]['unknown'], 1)
 
+    def test_run_label_uses_uuid_when_header_has_no_id(self):
+        """报告还没 close 时表头没有 execution_id，标签要取文件名里的 uuid 段，
+        不能变成 "patrol_2" 这种谁都认不出的东西。"""
+        path = os.path.join(self.tmp, 'patrol_20261109_191500_013b39eb.jsonl')
+        with open(path, 'w', encoding='utf-8') as handle:
+            handle.write(json.dumps({'type': 'header', 'route_name': 'main2',
+                                     'time': '2026-11-09T19:15:00'}) + '\n')
+            handle.write(json.dumps({'type': 'point', 'point_id': 'p1',
+                                     'status': 'ok', 'expect': 'present',
+                                     'verdict': 'tp', 'detections': [{'label': 'x'}],
+                                     'time': '2026-11-09T19:15:41'}) + '\n')
+        out = history.point_history(self.tmp)
+        self.assertEqual(out['points'][0]['samples'][0]['run'], '013b39eb')
+
+    def test_sample_time_uses_point_time_not_run_time(self):
+        path = os.path.join(self.tmp, 'patrol_20261109_191500_x.jsonl')
+        with open(path, 'w', encoding='utf-8') as handle:
+            handle.write(json.dumps({'type': 'header', 'execution_id': 'x',
+                                     'route_name': 'main2',
+                                     'time': '2026-11-09T19:15:00'}) + '\n')
+            handle.write(json.dumps({'type': 'point', 'point_id': 'p1',
+                                     'status': 'ok', 'expect': 'present',
+                                     'verdict': 'tp', 'detections': [{'label': 'x'}],
+                                     'time': '2026-11-09T19:17:33'}) + '\n')
+        out = history.point_history(self.tmp)
+        self.assertEqual(out['points'][0]['last_time'], '2026-11-09T19:17:33')
+
+    def test_detected_falls_back_to_verdict(self):
+        """老报告没有 detections 字段时，不能把"看到了"显示成"没看到"。"""
+        path = os.path.join(self.tmp, 'patrol_20261109_191500_y.jsonl')
+        with open(path, 'w', encoding='utf-8') as handle:
+            handle.write(json.dumps({'type': 'header', 'execution_id': 'y',
+                                     'route_name': 'main2'}) + '\n')
+            handle.write(json.dumps({'type': 'point', 'point_id': 'p1',
+                                     'status': 'ok', 'expect': 'present',
+                                     'verdict': 'tp'}) + '\n')
+        out = history.point_history(self.tmp)
+        self.assertTrue(out['points'][0]['samples'][0]['detected'])
+
     def test_broken_lines_are_skipped(self):
         path = write_run(self.tmp, 'a', 'main2', [{'point': 'p1', 'expect': 'present',
                                                    'verdict': 'tp',
