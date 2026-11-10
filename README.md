@@ -2,6 +2,9 @@
 
 > ROS 2 Humble + Nav2 + YOLOv8 的差速小车：录一次路线，之后自己跑、断点续跑、到点识别、跑完出报告。
 
+**状态：v0.9.0 · 实训交付完成 · 真机已验证，后续以维护为主**
+（未做的两件：补同场地新数据把 mAP50 从 0.78 往上推；断网/摄像头掉线预检。见 [路线方案](docs/ROADMAP.md) 的 B1/B4。）
+
 [![ROS 2](https://img.shields.io/badge/ROS%202-Humble-22314E.svg)](https://docs.ros.org/en/humble/)
 [![License](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
 
