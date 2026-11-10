@@ -29,7 +29,24 @@
 3. 改 `setup.py` 的版本号时，`package.xml` 一起改——两处不一致会让人分不清装的哪版。
 4. 部署脚本里凡是 `ros2 param get` 这类可能卡住的探针，必须套 `timeout`。
 
-## 3. 不许做的事
+## 3. 仓库与机器要对得上（2026-11-10 起的常设要求）
+
+仓库对外叫 `mybot_*`，用户机器上装的仍是 `fishbot_*`，**不重装**。
+所以每次改完代码，除了提交 GitHub，还要把改动同步到虚拟机：
+
+```bash
+bash tools/sync_vm.sh              # 默认 192.168.202.128（能上外网的那条）
+bash tools/sync_vm.sh 192.168.1.103  # 演示用的局域网网段
+```
+
+脚本做三件事：本地把 `mybot_*` 改回 `fishbot_*` 打包（`tools/sync_vm.py`）→
+备份虚拟机旧 `src` → 解包 + `colcon build` + 打印装好的版本号。
+
+- 模型权重大于 5 MB 的默认不传（机器上本来就有），要传加 `--with-models`
+- `~/.ros/mybot_*.json` 会被改成 `~/.ros/fishbot_*.json`，正好对上机器上已有的路线/基线，不会丢数据
+- 脚本不重启任何进程；控制台要用新代码，得自己重启
+
+## 4. 不许做的事
 
 - 不用 PowerShell 的 `Set-Content` / `Get-Content` 处理 UTF-8 中文文件（会写坏）。
 - 不用 `pkill -f <模式>`：模式串会匹配到执行它的那条 ssh 命令自身，把自己杀掉。
