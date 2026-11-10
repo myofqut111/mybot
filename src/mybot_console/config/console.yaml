@@ -51,3 +51,11 @@ mybot_console:
     ai_base_url: ''
     ai_api_key: ''
     ai_model: 'gpt-4o-mini'
+
+    # ---- 识别目标（换巡检对象只改这三行，代码不用动）----
+    # name：页面上叫它什么（"检测<name>"/"应该有<name>"）
+    # class：模型输出的类名，要和训练时的 classes 一致
+    # states：可选的状态标签，逗号分隔（如 正常,倒地,被遮挡）；留空＝纯"有没有"模式
+    target_name: '灭火器'
+    target_class: 'fire_extinguisher'
+    target_states: ''

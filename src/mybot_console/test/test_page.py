@@ -24,6 +24,7 @@ REQUIRED_IDS = [
     'patrolRoute', 'patrolMode', 'patrolRepeat', 'btnPatrol',
     'btnPatrolCancel',
     'recRoute', 'recName', 'recExpect', 'btnRecord',
+    'optDetect', 'optPresent', 'optAbsent',
     'btnPoints', 'pointRows',
     'runSel', 'btnReload', 'eventBody', 'runHint',
     'histRoute', 'histDays', 'btnHist', 'histBody', 'histHint',
@@ -77,6 +78,13 @@ class TestPage(unittest.TestCase):
         for path in sorted(used):
             self.assertIn("'%s'" % path, server,
                           'page 调了 %s，但 server.py 里没有这个路由' % path)
+
+    def test_target_labels_are_config_driven(self):
+        """页面不能把目标写死：文案由 /api/state 的 target 覆盖。"""
+        self.assertIn('function applyTarget(t)', self.html)
+        self.assertIn('applyTarget(st.target)', self.html)
+        self.assertNotIn('检测灭火器', self.html)
+        self.assertNotIn('应该有灭火器', self.html)
 
     def test_estop_button_wired(self):
         self.assertIn("$('btnEstop').onclick", self.html)

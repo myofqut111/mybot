@@ -125,6 +125,10 @@ class ConsoleBridge(Node):
         # 所以直接读 route_manager 落盘的路线库。只有控制台与 route_manager
         # 同机时才有内容，读不到就当没有（手填路线名照旧可用）。
         self.declare_parameter('route_file', '~/.ros/mybot_patrol_routes.json')
+        # 识别目标可配：换巡检对象时只改这三行，不动代码
+        self.declare_parameter('target_name', '灭火器')
+        self.declare_parameter('target_class', 'fire_extinguisher')
+        self.declare_parameter('target_states', '')
         self.declare_parameter('ai_base_url', '')
         self.declare_parameter('ai_api_key', '')
         self.declare_parameter('ai_model', '')
@@ -579,7 +583,14 @@ class ConsoleBridge(Node):
         status['robot'] = {'length': self._robot_length,
                            'width': self._robot_width}
         status['estop'] = self.estop_state()
+        status['target'] = self.target_config()
         return status
+
+    def target_config(self):
+        """识别目标是谁：换巡检对象时改这三个参数，页面和报告跟着变。"""
+        return data.target_config(self.get_parameter('target_name').value,
+                                  self.get_parameter('target_class').value,
+                                  self.get_parameter('target_states').value)
 
     def map_view(self):
         with self._lock:

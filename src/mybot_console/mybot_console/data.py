@@ -21,6 +21,19 @@ TERMINAL_STATES = ('SUCCEEDED', 'FAILED', 'CANCELED')
 LOG_LEVELS = {10: 'DEBUG', 20: 'INFO', 30: 'WARN', 40: 'ERROR', 50: 'FATAL'}
 
 
+def target_config(name, klass, raw_states):
+    """识别目标是谁：换巡检对象时只改配置，不动代码。
+
+    ``states`` 是可选的状态标签（比如"倒地""被遮挡"），逗号分隔，
+    中英文逗号都认；留空就是纯"有没有"模式。
+    """
+    label = str(name or '').strip() or '目标'
+    cls = str(klass or '').strip()
+    raw = str(raw_states or '').replace('，', ',')
+    states = [part.strip() for part in raw.split(',') if part.strip()]
+    return {'name': label, 'class': cls, 'states': states}
+
+
 def battery_band(volts, warn_v=10.5, crit_v=10.0):
     """电压 -> ok / warn / crit / unknown；坏数据一律 unknown。
 

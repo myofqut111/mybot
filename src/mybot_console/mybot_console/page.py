@@ -171,15 +171,15 @@ tr:last-child td{border-bottom:none}
     <div class="row">
       <label>任务</label>
       <select id="recTask" style="min-width:150px">
-        <option value="detect">检测灭火器（detect）</option>
+        <option value="detect" id="optDetect">检测目标（detect）</option>
         <option value="inspect">走近复核（inspect）</option>
         <option value="photo">只拍照（photo）</option>
       </select>
       <label>期望</label>
       <select id="recExpect">
         <option value="">不标</option>
-        <option value="present">应该有灭火器</option>
-        <option value="absent">应该没有</option>
+        <option value="present" id="optPresent">应该有</option>
+        <option value="absent" id="optAbsent">应该没有</option>
       </select>
       <label>等待</label><input id="recWait" type="number" value="0" step="0.5" style="width:64px">秒
       <button id="btnRecord">记下当前位姿</button>
@@ -294,6 +294,21 @@ function fmt(v, digits){
 
 /* ---------- 状态 ---------- */
 let lastState = null;
+/* 识别目标由参数决定（target_name / target_class / target_states）：
+   换巡检对象只改配置，页面文案跟着变，代码不动。 */
+let targetShown = '';
+function applyTarget(t){
+  if (!t || !t.name) return;
+  const key = t.name + '|' + (t.class || '');
+  if (key === targetShown) return;          /* 每 1 秒轮询，别反复写 DOM */
+  targetShown = key;
+  const name = t.name;
+  if ($('optDetect')) $('optDetect').textContent = '检测' + name + '（detect）';
+  if ($('optPresent')) $('optPresent').textContent = '应该有' + name;
+  if ($('optAbsent')) $('optAbsent').textContent = '应该没有' + name;
+  document.title = '巡检控制台 · ' + name;
+}
+
 async function pollState(){
   let data;
   try{
@@ -305,6 +320,7 @@ async function pollState(){
   }
   lastState = data;
   const st = data.status || {};
+  applyTarget(st.target);
   badge($('bState'), st.state || 'IDLE',
         st.state === 'IDLE' ? '' : 'ok');
   const band = st.battery_band;

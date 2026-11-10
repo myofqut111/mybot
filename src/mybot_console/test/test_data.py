@@ -12,6 +12,29 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from mybot_console import data  # noqa: E402
 
 
+class TargetConfigCase(unittest.TestCase):
+    """识别目标可配：换巡检对象只改参数，不碰代码。"""
+
+    def test_defaults(self):
+        got = data.target_config('灭火器', 'fire_extinguisher', '')
+        self.assertEqual(got['name'], '灭火器')
+        self.assertEqual(got['class'], 'fire_extinguisher')
+        self.assertEqual(got['states'], [])
+
+    def test_states_split_by_comma_in_both_forms(self):
+        got = data.target_config('椅子', 'chair', '正常, 倒地，被遮挡')
+        self.assertEqual(got['states'], ['正常', '倒地', '被遮挡'])
+
+    def test_blank_name_falls_back(self):
+        got = data.target_config('', '', '')
+        self.assertEqual(got['name'], '目标')
+        self.assertEqual(got['class'], '')
+
+    def test_whitespace_only_states_are_dropped(self):
+        got = data.target_config('x', 'y', ' , ,')
+        self.assertEqual(got['states'], [])
+
+
 class TestBatteryBand(unittest.TestCase):
     def test_bands(self):
         # 出厂默认按 3S 锂电标定：10.5 告警 / 10.0 中止
