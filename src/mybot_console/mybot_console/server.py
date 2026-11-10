@@ -14,7 +14,7 @@ import urllib.parse
 import urllib.request
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
-from . import ai, data, points, stacks
+from . import ai, data, history, points, stacks
 from .page import HTML
 
 # rosbridge 的默认 WebSocket 端口。控制台的 HTTP 端口撞上它时给专门提示——
@@ -293,6 +293,17 @@ class ConsoleServer(object):
                         'items': info['names'],
                         'active': info['active'],
                         'error': info['error']})
+
+                if path == '/api/history':
+                    # 点位历史：把报告目录里的 jsonl 折叠成"每个点最近几次在/不在"。
+                    # 只读文件，不建库——jsonl 本来就是历史，多存一份反而会不同步。
+                    days = _query_int(query, 'days', 30, low=0, high=3650)
+                    per_point = _query_int(query, 'limit', 20, low=1, high=200)
+                    return _json_response(self, history.point_history(
+                        server.bridge.reports_dir(),
+                        days=days,
+                        route=(query.get('route') or [''])[0],
+                        per_point=per_point))
                 return _json_response(self, {'error': 'not found'}, 404)
 
             # ---------------- POST ----------------

@@ -79,6 +79,12 @@ tr:last-child td{border-bottom:none}
 .dot.exited,.dot.failed{background:var(--bad)}
 .mono{font-family:ui-monospace,Consolas,monospace;font-size:12px}
 .dim{color:var(--dim)}
+.dot{display:inline-block;width:12px;height:12px;border-radius:3px;margin-right:3px;
+  vertical-align:middle;background:#39404a}
+.dot.ok{background:#2f9e44}
+.dot.bad{background:#e03131}
+.dot.warn{background:#f08c00}
+.dot.none{background:#39404a}
 #camWrap{background:#000;border-radius:8px;overflow:hidden;min-height:180px;
   display:flex;align-items:center;justify-content:center}
 #cam{max-width:100%;max-height:340px;display:block}
@@ -197,6 +203,26 @@ tr:last-child td{border-bottom:none}
     <table>
       <thead><tr><th>时间</th><th>点</th><th>结果</th><th>任务</th><th>轮/序号</th><th>备注</th></tr></thead>
       <tbody id="eventBody"><tr><td colspan="6" class="dim">选一次运行看逐点事件</td></tr></tbody>
+    </table>
+  </section>
+
+  <section class="wide">
+    <h2>点位历史</h2>
+    <div class="row">
+      <label>路线</label><select id="histRoute"><option value="">全部路线</option></select>
+      <label>范围</label>
+      <select id="histDays">
+        <option value="7">最近 7 天</option>
+        <option value="30" selected>最近 30 天</option>
+        <option value="90">最近 90 天</option>
+        <option value="0">全部</option>
+      </select>
+      <button id="btnHist">刷新</button>
+      <span class="dim" id="histHint"></span>
+    </div>
+    <table>
+      <thead><tr><th>路线 / 点位</th><th>最近几次（绿=看到了 · 红=缺 · 黄=误报 · 灰=未判定）</th><th>缺</th><th>误报</th><th>最近一次</th></tr></thead>
+      <tbody id="histBody"><tr><td colspan="5" class="dim">还没有历史，跑完一轮就会有</td></tr></tbody>
     </table>
   </section>
 
@@ -722,12 +748,92 @@ async function ask(){
 $('btnAsk').onclick = ask;
 $('askBox').addEventListener('keydown', ev => { if (ev.key === 'Enter') ask(); });
 
+/* ---------- 点位历史 ---------- */
+/* 报告页只能看"这一次"，这一块回答的是"这个点最近老出问题吗"。
+   数据直接从报告目录的 jsonl 折叠出来，没有额外的库要维护。 */
+async function loadHistory(){
+  const route = $('histRoute').value;
+  const days = $('histDays').value;
+  let out;
+  try{
+    const base = '/api/history';
+    let url = base + '?days=' + encodeURIComponent(days);
+    if (route) url += '&route=' + encodeURIComponent(route);
+    out = await (await fetch(url)).json();
+  }catch(err){ reportError('history: ' + err.message); return; }
+  if (!out || out.ok === false) return;
+
+  const sel = $('histRoute');
+  (out.routes || []).forEach(name => {
+    if ([...sel.options].some(opt => opt.value === name)) return;
+    const opt = document.createElement('option');
+    opt.value = name;
+    opt.textContent = name;
+    sel.appendChild(opt);
+  });
+
+  const body = $('histBody');
+  body.innerHTML = '';
+  if (!out.points || !out.points.length){
+    const tr = document.createElement('tr');
+    const td = document.createElement('td');
+    td.colSpan = 5;
+    td.className = 'dim';
+    td.textContent = '这个范围内没有历史';
+    tr.appendChild(td);
+    body.appendChild(tr);
+    $('histHint').textContent = '';
+    return;
+  }
+  $('histHint').textContent = out.runs + ' 轮 · ' + out.points.length + ' 个点位';
+  out.points.slice(0, 60).forEach(row => {
+    const tr = document.createElement('tr');
+
+    const name = document.createElement('td');
+    name.textContent = (row.route ? row.route + ' / ' : '') + row.point;
+    tr.appendChild(name);
+
+    const dots = document.createElement('td');
+    (row.samples || []).forEach(s => {
+      const dot = document.createElement('span');
+      const verdict = s.verdict || '';
+      dot.className = 'dot ' + (verdict === 'tp' ? 'ok'
+        : verdict === 'fn' ? 'bad'
+        : verdict === 'fp' ? 'warn'
+        : s.detected ? 'ok' : 'none');
+      dot.title = (s.time || '').replace('T', ' ') + ' · ' +
+        (verdict || '未判定') + (s.status ? ' · ' + s.status : '');
+      dots.appendChild(dot);
+    });
+    tr.appendChild(dots);
+
+    const miss = document.createElement('td');
+    miss.textContent = row.missing || 0;
+    if (row.missing) miss.style.color = '#e03131';
+    tr.appendChild(miss);
+
+    const alarm = document.createElement('td');
+    alarm.textContent = row.false_alarm || 0;
+    tr.appendChild(alarm);
+
+    const last = document.createElement('td');
+    last.textContent = (row.last_time || '').replace('T', ' ').slice(0, 16);
+    tr.appendChild(last);
+
+    body.appendChild(tr);
+  });
+}
+$('btnHist').onclick = loadHistory;
+$('histRoute').onchange = loadHistory;
+$('histDays').onchange = loadHistory;
+
 /* ---------- 启动 ---------- */
-pollState(); pollStacks(); pollLogs(); pollRuns(); loadRoutes();
+pollState(); pollStacks(); pollLogs(); pollRuns(); loadRoutes(); loadHistory();
 setInterval(pollState, 1000);
 setInterval(pollStacks, 1500);
 setInterval(pollLogs, 2000);
 setInterval(pollRuns, 3000);
+setInterval(loadHistory, 15000);   /* 历史不急着刷，15 秒够 */
 setInterval(tickCam, 900);
 tickCam();
 </script>

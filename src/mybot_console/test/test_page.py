@@ -26,6 +26,7 @@ REQUIRED_IDS = [
     'recRoute', 'recName', 'recExpect', 'btnRecord',
     'btnPoints', 'pointRows',
     'runSel', 'btnReload', 'eventBody', 'runHint',
+    'histRoute', 'histDays', 'btnHist', 'histBody', 'histHint',
     'logList', 'logLevel', 'logCounts',
     'chatLog', 'askBox', 'btnAsk',
 ]

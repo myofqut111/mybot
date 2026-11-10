@@ -288,6 +288,23 @@ class ServerCase(unittest.TestCase):
         _s, body, _c = self.get('/api/events')
         self.assertEqual(json.loads(body.decode('utf-8'))['items'], [])
 
+    def test_history_empty(self):
+        status, body, ctype = self.get('/api/history')
+        self.assertEqual(status, 200)
+        payload = json.loads(body.decode('utf-8'))
+        self.assertTrue(payload['ok'])
+        self.assertEqual(payload['points'], [])
+        self.assertIn('days', payload)
+
+    def test_history_params_are_clamped(self):
+        # 畸形参数不能把接口打挂：days/limit 走了 _query_int
+        for path in ('/api/history?days=abc', '/api/history?days=-5',
+                     '/api/history?limit=abc', '/api/history?days=99999',
+                     '/api/history?route=', '/api/history?limit=0'):
+            status, body, _c = self.get(path)
+            self.assertEqual(status, 200, path)
+            self.assertIn('points', json.loads(body.decode('utf-8')), path)
+
     def test_routes(self):
         _s, body, _c = self.get('/api/routes')
         self.assertEqual(json.loads(body.decode('utf-8'))['items'][0]['x'], 1.0)
