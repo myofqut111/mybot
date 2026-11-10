@@ -1,4 +1,4 @@
-# Fishbot 自主巡检系统
+# Mybot 自主巡检系统
 
 > ROS 2 Humble + Nav2 + YOLOv8 的差速小车：录一次路线，之后自己跑、断点续跑、到点识别、跑完出报告。
 
@@ -40,11 +40,11 @@ flowchart LR
     end
 
     subgraph 计算层["虚拟机 Ubuntu 22.04 · ROS 2 Humble"]
-        VIS["fishbot_vision<br/>camera_publisher + yolo_detector"]
+        VIS["mybot_vision<br/>camera_publisher + yolo_detector"]
         NAV["Nav2 + AMCL + EKF"]
-        P2["fishbot_patrol_v2<br/>规划 · 派活 · 报告"]
-        SAFE["fishbot_safety<br/>看门狗"]
-        CON["fishbot_console<br/>HTTP 8080 + rosbridge 9090"]
+        P2["mybot_patrol_v2<br/>规划 · 派活 · 报告"]
+        SAFE["mybot_safety<br/>看门狗"]
+        CON["mybot_console<br/>HTTP 8080 + rosbridge 9090"]
     end
 
     CAM -->|JPEG| VIS
@@ -67,7 +67,7 @@ flowchart LR
 colcon build
 
 # 2. 一条命令起全栈：TF + EKF + AMCL + Nav2 + 巡检 + 控制台
-ros2 launch fishbot_console robot.launch.py map_yaml_file:=/home/my/maps/map_v2.yaml
+ros2 launch mybot_console robot.launch.py map_yaml_file:=/home/my/maps/map_v2.yaml
 ```
 
 `robot.launch.py` 的参数：`nav:=true`（导航段，内部已串好 TF→EKF→定位→Nav2→巡检）、
@@ -78,15 +78,15 @@ ros2 launch fishbot_console robot.launch.py map_yaml_file:=/home/my/maps/map_v2.
 也可以只起某一段：
 
 ```bash
-ros2 launch fishbot_navigation navigation.launch.py rviz:=false   # 导航（不开 RViz）
-ros2 launch fishbot_console    console.launch.py                  # 只起控制台
-ros2 launch fishbot_patrol_v2  patrol_v2.launch.py nav:=false console:=false  # 只起巡检
+ros2 launch mybot_navigation navigation.launch.py rviz:=false   # 导航（不开 RViz）
+ros2 launch mybot_console    console.launch.py                  # 只起控制台
+ros2 launch mybot_patrol_v2  patrol_v2.launch.py nav:=false console:=false  # 只起巡检
 ```
 
 用命令行跑一轮（不走页面）：
 
 ```bash
-ros2 action send_goal /execute_patrol fishbot_patrol_interfaces/action/ExecutePatrol \
+ros2 action send_goal /execute_patrol mybot_patrol_interfaces/action/ExecutePatrol \
   "{route_name: 'main2', mode: 'forward', repeat_count: 1}" --feedback
 ```
 
@@ -94,16 +94,16 @@ ros2 action send_goal /execute_patrol fishbot_patrol_interfaces/action/ExecutePa
 
 | 包 | 作用 |
 | --- | --- |
-| `fishbot_patrol_v2` | 巡检执行器：规划、导航、复核、判定、进度、报告 |
-| `fishbot_patrol_route_manager` | 录点、路线存取、激活路线管理 |
-| `fishbot_patrol_task_manager` | 到点任务派发、超时、幂等去重 |
-| `fishbot_patrol_interfaces` | action / msg / srv 定义 |
-| `fishbot_console` | Web 控制台 + HTTP 接口 + rosbridge |
-| `fishbot_vision` | 取流（ESP32 `/capture`）+ YOLO 检测 + 压缩图 |
-| `fishbot_safety` | 看门狗：`/odom` 断了就持续发零速刹车 |
-| `fishbot_navigation` | Nav2 / AMCL / EKF 参数与 launch |
-| `fishbot_bringup` | 底盘、TF、雷达启动 |
-| `fishbot_patrol_executor` | v1 执行器（已被 v2 取代，仅作参考） |
+| `mybot_patrol_v2` | 巡检执行器：规划、导航、复核、判定、进度、报告 |
+| `mybot_patrol_route_manager` | 录点、路线存取、激活路线管理 |
+| `mybot_patrol_task_manager` | 到点任务派发、超时、幂等去重 |
+| `mybot_patrol_interfaces` | action / msg / srv 定义 |
+| `mybot_console` | Web 控制台 + HTTP 接口 + rosbridge |
+| `mybot_vision` | 取流（ESP32 `/capture`）+ YOLO 检测 + 压缩图 |
+| `mybot_safety` | 看门狗：`/odom` 断了就持续发零速刹车 |
+| `mybot_navigation` | Nav2 / AMCL / EKF 参数与 launch |
+| `mybot_bringup` | 底盘、TF、雷达启动 |
+| `mybot_patrol_executor` | v1 执行器（已被 v2 取代，仅作参考） |
 
 ## Web 控制台
 
@@ -148,7 +148,7 @@ ros2 action send_goal /execute_patrol fishbot_patrol_interfaces/action/ExecutePa
 
 ```bash
 sudo apt install ros-$ROS_DISTRO-rosbridge-suite      # 只装一次
-ros2 launch fishbot_console console.launch.py rosbridge:=false   # 不要实时流
+ros2 launch mybot_console console.launch.py rosbridge:=false   # 不要实时流
 ```
 
 ## 视觉
@@ -169,7 +169,7 @@ ros2 launch fishbot_console console.launch.py rosbridge:=false   # 不要实时�
 - **判定**：`expect`（基线或手填）+ 本轮检测 → 命中 / 误报 / 漏检 / 正确排除。
 - **基线**：跑完自动记，下次自动判；默认 `baseline_policy: fill`（只补空缺），
   一次误检不会把整条线上"应该有"改写成"应该没有"。
-- **报告**：`~/.ros/fishbot_patrol_report/<route>_<时间>_<exec>.jsonl` 逐点追加（跑完立刻能看），
+- **报告**：`~/.ros/mybot_patrol_report/<route>_<时间>_<exec>.jsonl` 逐点追加（跑完立刻能看），
   收尾再写 `.summary.json` 与 `.summary.txt`：
 
 ```
@@ -195,9 +195,9 @@ tools/deploy_console.sh          # 杀干净旧进程 → 编译 → 重启 → 
 ## 测试
 
 ```bash
-python3 -m unittest discover -s src/fishbot_console/test       # 246
-python3 -m unittest discover -s src/fishbot_patrol_v2/test     # 174（7 个需要真机，跳过）
-python3 -m unittest discover -s src/fishbot_safety/test        # 15
+python3 -m unittest discover -s src/mybot_console/test       # 246
+python3 -m unittest discover -s src/mybot_patrol_v2/test     # 174（7 个需要真机，跳过）
+python3 -m unittest discover -s src/mybot_safety/test        # 15
 ```
 
 纯逻辑（规划、判定、报告、基线）不依赖 `rclpy`，在 PC 上秒级跑完；控制台的测试里还有

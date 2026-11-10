@@ -1,6 +1,6 @@
 # AGENTS.md · 本仓库的硬规矩
 
-适用于 `D:\deepseek\fishbot_src`（巡检机器人全部源码）。
+适用于 `D:\deepseek\mybot_src`（巡检机器人全部源码）。
 
 ## 1. 改完代码必须同步命令手册
 

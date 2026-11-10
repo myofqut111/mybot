@@ -41,7 +41,7 @@ routes/
 # ---- 模型权重与数据集（体积大，放 Release �?LFS�?---
 # 只保留一份能直接跑的 .pt；其余都是导出产物，谁需要谁自己导出
 *.pt
-!src/fishbot_vision/yolo26n.pt
+!src/mybot_vision/yolo26n.pt
 *.pth
 *.onnx
 *.engine
