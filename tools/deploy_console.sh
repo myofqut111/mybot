@@ -8,8 +8,11 @@
 #      查不到就 PackageNotFoundError（launch 还配了 respawn，会一直刷屏重试）。
 #   3) 元数据要在中性 cwd 下验证。站在 src 里查会自欺欺人——那里本来就有 egg-info。
 set +u
+# 工作区改名过渡期：两个名字都认，谁在就用谁
+WS=${MYBOT_WS:-$HOME/mybot_full_ws}
+[ -d "$WS" ] || WS=$HOME/fishbot_full_ws
 source /opt/ros/humble/setup.bash
-source /home/my/mybot_full_ws/install/setup.bash
+source "$WS/install/setup.bash"
 
 echo "== 1. stop old =="
 pkill -f "console.launch.py" 2>/dev/null
@@ -29,15 +32,15 @@ echo "leftover rosbridge/rosapi: $left"
 ss -ltn 2>/dev/null | grep -E ":8080|:8081|:9090" || echo "8080/8081/9090 all free"
 
 echo "== 2. build =="
-cd /home/my/mybot_full_ws
+cd $WS
 colcon build --packages-select mybot_console > /tmp/build_console.log 2>&1
 echo "build exit=$?"
 
 # 兜底：把 egg-info 放进 install 的 site-packages，任何 cwd / 任何 shell 都查得到。
 # 必须"先删再拷"：只补缺失会让上一版的 egg-info 留着，升版本后
 # importlib.metadata 报告的仍是旧版本号（0.7.1 装成 0.7.0 就是这么来的）。
-SP=/home/my/mybot_full_ws/install/mybot_console/lib/python3.10/site-packages
-EI=/home/my/mybot_full_ws/build/mybot_console/mybot_console.egg-info
+SP=$WS/install/mybot_console/lib/python3.10/site-packages
+EI=$WS/build/mybot_console/mybot_console.egg-info
 if [ -d "$EI" ]; then
   rm -rf "$SP"/*.egg-info
   cp -r "$EI" "$SP/mybot_console.egg-info"

@@ -1,7 +1,7 @@
 <?xml version="1.0"?>
 <package format="3">
   <name>mybot_vision</name>
-  <version>0.1.2</version>
+  <version>0.2.0</version>
   <description>ESP32 OV3660 WiFi camera streaming and YOLO object detection for mybot.</description>
   <maintainer email="dev@example.com">Mybot Maintainer</maintainer>
   <license>Apache-2.0</license>

@@ -1,7 +1,7 @@
 <?xml version="1.0"?>
 <package format="3">
   <name>mybot_patrol_v2</name>
-  <version>0.4.9</version>
+  <version>0.5.0</version>
   <description>Patrol execution with resumable progress, failure policies and JSONL reports.</description>
   <maintainer email="dev@example.com">Mybot Maintainer</maintainer>
   <license>Apache-2.0</license>

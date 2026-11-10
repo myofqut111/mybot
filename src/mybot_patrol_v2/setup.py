@@ -9,7 +9,7 @@ package_name = 'mybot_patrol_v2'
 
 setup(
     name=package_name,
-    version='0.4.9',
+    version='0.5.0',
     packages=find_packages(exclude=['test']),
     data_files=[
         ('share/ament_index/resource_index/packages',

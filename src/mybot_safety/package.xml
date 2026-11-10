@@ -2,7 +2,7 @@
 <?xml-model href="http://download.ros.org/schema/package_format3.xsd" schematypens="http://www.w3.org/2001/XMLSchema"?>
 <package format="3">
   <name>mybot_safety</name>
-  <version>0.1.2</version>
+  <version>0.2.0</version>
   <description>速度指令看门狗：车在动但已经没人下指令时，主动发零速刹停。</description>
   <maintainer email="dev@example.com">Mybot Maintainer</maintainer>
   <license>Apache-2.0</license>
