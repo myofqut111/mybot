@@ -7,7 +7,9 @@
 
 ![工程流程图](docs/images/architecture_mybot.png)
 
-▶ **[完整版演示 · 6 分 19 秒](https://github.com/myofqut111/-)**　真机按路线走到灭火器旁 → 到点识别 → 录点建路线 → 控制台一键启停 / 日志 / AI 助手 → 跑完自动出报告
+[![演示视频](https://i1.hdslb.com/bfs/archive/d3be608957db5003a3327d633fd0a16807aadf21.jpg@1200w_630h)](https://www.bilibili.com/video/BV1DJWg6kEAf/)
+
+▶ **[B 站 · 完整版演示 6 分 19 秒](https://www.bilibili.com/video/BV1DJWg6kEAf/)**　真机按路线走到灭火器旁 → 到点识别 → 录点建路线 → 控制台一键启停 / 日志 / AI 助手 → 跑完自动出报告
 
 控制台：`http://<机器人IP>:8080`
 
