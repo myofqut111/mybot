@@ -17,7 +17,7 @@ USER_NAME="${VM_USER:-my}"
 WS="${VM_WS:-/home/$USER_NAME/fishbot_full_ws}"
 PKG_LIST="fishbot_console fishbot_patrol_v2 fishbot_safety fishbot_vision \
 fishbot_patrol_interfaces fishbot_patrol_route_manager fishbot_patrol_task_manager \
-fishbot_navigation fishbot_bringup fishbot_description fishbot_patrol_executor"
+fishbot_navigation fishbot_bringup fishbot_description fishbot_patrol_executor fishbot_explore"
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 STAGE="$ROOT/dist_vm"

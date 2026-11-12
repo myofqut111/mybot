@@ -42,6 +42,7 @@ PACKAGES = [
     'mybot_bringup',
     'mybot_description',
     'mybot_patrol_executor',
+    'mybot_explore',
 ]
 
 TEXT_EXT = {
