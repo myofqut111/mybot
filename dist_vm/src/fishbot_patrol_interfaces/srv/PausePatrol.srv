@@ -1,9 +1,0 @@
-string execution_id
----
-bool success
-string message
-string execution_id
-string state
-uint32 current_index
-uint32 completed_points
-uint32 current_loop

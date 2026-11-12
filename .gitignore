@@ -83,3 +83,6 @@ known_hosts
 .DS_Store
 Thumbs.db
 desktop.ini
+
+# 同步到虚拟机的临时打包产物
+dist_vm/
