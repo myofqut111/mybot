@@ -23,6 +23,7 @@
 """
 import json
 import math
+import time
 
 import rclpy
 from geometry_msgs.msg import Point, PoseArray, Pose
@@ -30,12 +31,14 @@ from nav_msgs.msg import OccupancyGrid
 from rclpy.action import ActionClient
 from rclpy.executors import ExternalShutdownException
 from rclpy.node import Node
-from rclpy.qos import QoSDurabilityPolicy, QoSHistoryPolicy, QoSProfile
+from rclpy.qos import (QoSDurabilityPolicy, QoSHistoryPolicy, QoSProfile,
+                       qos_profile_sensor_data)
 from sensor_msgs.msg import LaserScan
 from std_msgs.msg import String
 from std_srvs.srv import Trigger
 from visualization_msgs.msg import Marker, MarkerArray
 
+from . import carve as carve_mod
 from . import explorer as explorer_mod
 from . import frontier
 from . import pgm
@@ -59,6 +62,12 @@ class ExplorerNode(Node):
         self.declare_parameter('base_frame', 'base_link')
         self.declare_parameter('nav_action', 'navigate_to_pose')
         self.declare_parameter('map_yaml', '')     # 非空则直读 pgm，不用 /map
+        # 擦图：用激光把光束经过的未知格改成空闲，未知边界才会跟着车后退。
+        # 关掉它就退化成"只走到已知边界为止"。
+        self.declare_parameter('carve_enabled', True)
+        self.declare_parameter('carve_max_range_m', 4.0)   # 只信这么远以内的光束
+        self.declare_parameter('carve_robot_radius_m', 0.25)
+        self.declare_parameter('carve_period_s', 0.5)      # 最快多久擦一次
         self.declare_parameter('drive', False)
         self.declare_parameter('autostart', False)
         self.declare_parameter('period_s', 1.0)
@@ -69,7 +78,9 @@ class ExplorerNode(Node):
 
         # ---- 状态 ----
         self._grid = None
+        self._static_map = False          # 直读 pgm 时，忽略 /map（否则会被整张已知的图覆盖）
         self._scan_stamp = None
+        self._last_carve = 0.0
         self._explorer = explorer_mod.Explorer(self._explorer_params())
         self._goal_handle = None
         self._pending_goal = False
@@ -82,7 +93,10 @@ class ExplorerNode(Node):
                                  str(self.get_parameter('map_topic').value),
                                  self._on_map, latched)
         # 只是用来判断"传感器还活着"（暂不参与决策）
-        self.create_subscription(LaserScan, '/scan', self._on_scan, 10)
+        # 传感器数据一律 BEST_EFFORT：订阅端比发布端"宽松"总是能收到，
+        # 反过来（RELIABLE 订阅 + BEST_EFFORT 发布）一条都收不到。
+        self.create_subscription(LaserScan, '/scan', self._on_scan,
+                                 qos_profile_sensor_data)
 
         self._markers = self.create_publisher(
             MarkerArray, str(self.get_parameter('marker_topic').value), 1)
@@ -105,9 +119,12 @@ class ExplorerNode(Node):
         if mapped:
             try:
                 self._grid = pgm.load_map(mapped)
+                self._static_map = True
                 self.get_logger().info(
                     '已直读地图 %s：%dx%d（未知按 pgm 还原，不受 free_thresh 影响）'
-                    % (mapped, self._grid.width, self._grid.height))
+                    '；不再订阅 %s'
+                    % (mapped, self._grid.width, self._grid.height,
+                       self.get_parameter('map_topic').value))
             except Exception as error:
                 self.get_logger().error('读地图失败 %s：%s' % (mapped, error))
 
@@ -130,10 +147,45 @@ class ExplorerNode(Node):
 
     # ------------------------------------------------------------------ 输入
     def _on_map(self, msg):
+        if self._static_map:
+            return                        # 用直读的地图，别被外部 /map 覆盖
         self._grid = frontier.Grid.from_msg(msg)
 
     def _on_scan(self, msg):
         self._scan_stamp = msg.header.stamp
+        self._carve(msg)
+
+    def _carve(self, msg):
+        """把这一帧激光擦进内存地图（未知 -> 空闲，命中的格子 -> 障碍）。"""
+        if not bool(self.get_parameter('carve_enabled').value):
+            return
+        if self._grid is None:
+            return
+        now = time.monotonic()
+        period = float(self.get_parameter('carve_period_s').value) or 0.5
+        if now - self._last_carve < period:
+            return
+        pose = self._pose()
+        if pose is None:
+            return
+        self._last_carve = now
+        scan = {'ranges': list(msg.ranges),
+                'angle_min': msg.angle_min,
+                'angle_increment': msg.angle_increment,
+                'range_min': msg.range_min,
+                'range_max': msg.range_max}
+        try:
+            used, hit = carve_mod.carve_scan(
+                self._grid, scan, pose,
+                max_range_m=float(self.get_parameter('carve_max_range_m').value),
+                robot_radius_m=float(
+                    self.get_parameter('carve_robot_radius_m').value))
+        except Exception as error:                       # noqa: BLE001
+            self.get_logger().warning('擦图失败：%s' % error)
+            return
+        self._carve_totals = getattr(self, '_carve_totals', (0, 0))
+        self._carve_totals = (self._carve_totals[0] + used,
+                              self._carve_totals[1] + hit)
 
     def _pose(self):
         """map 系下的 (x, y, yaw)；拿不到返回 None。"""
@@ -372,6 +424,9 @@ class ExplorerNode(Node):
         snap = self._explorer.snapshot(now)
         snap['map_ready'] = self._grid is not None
         snap['scan_ready'] = self._scan_stamp is not None
+        totals = getattr(self, '_carve_totals', (0, 0))
+        snap['carved_free'] = totals[0]
+        snap['carved_occupied'] = totals[1]
         self._status.publish(String(data=json.dumps(snap, ensure_ascii=False)))
 
 

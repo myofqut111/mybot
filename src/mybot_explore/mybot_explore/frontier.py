@@ -13,6 +13,7 @@
 """
 from __future__ import print_function
 
+import collections
 import math
 
 UNKNOWN = -1
@@ -45,8 +46,10 @@ class Grid(object):
         return self.data[self.index(gx, gy)]
 
     def world_to_cell(self, x, y):
-        gx = int(math.floor((x - self.origin_x) / self.resolution))
-        gy = int(math.floor((y - self.origin_y) / self.resolution))
+        # 1e-9 是用来兜浮点的：0.05+0.35 会算出 0.39999999999999997，
+        # 除 0.1 之后被 floor 到前一格，光束终点就会差一格。
+        gx = int(math.floor((x - self.origin_x) / self.resolution + 1e-9))
+        gy = int(math.floor((y - self.origin_y) / self.resolution + 1e-9))
         return gx, gy
 
     def cell_to_world(self, gx, gy):
@@ -56,6 +59,11 @@ class Grid(object):
 
     def contains(self, gx, gy):
         return 0 <= gx < self.width and 0 <= gy < self.height
+
+    def contains_world(self, x, y):
+        """世界坐标是否落在地图范围内（擦图时用，省得先转格子再判）。"""
+        gx, gy = self.world_to_cell(x, y)
+        return self.contains(gx, gy)
 
     def is_free(self, gx, gy, occupied_thresh=50):
         value = self.at(gx, gy)
@@ -133,6 +141,63 @@ def nearest_free(grid, gx, gy, radius=6, occupied_thresh=50):
     return best
 
 
+def tight_cells(grid, radius_m, occupied_thresh=50):
+    """标出"贴着障碍"的格子（以障碍为种子做多源 BFS 膨胀）。
+
+    为什么要它：前沿点天生就贴着边界，很容易落进墙角的膨胀区里。
+    nav2 的代价地图会直接拒绝那种目标（"目标在障碍里"），
+    所以真正下发之前要把目标往外挪到"至少离墙这么远"的空闲格。
+    """
+    tight = bytearray(grid.width * grid.height)
+    radius = max(0, int(round(radius_m / grid.resolution)))
+    if radius <= 0:
+        return tight
+
+    queue = collections.deque()
+    for idx, value in enumerate(grid.data):
+        if value >= occupied_thresh:
+            tight[idx] = 1
+            queue.append((idx % grid.width, idx // grid.width))
+
+    for _ in range(radius):
+        if not queue:
+            break
+        for _ in range(len(queue)):
+            cx, cy = queue.popleft()
+            for dx, dy in NEIGHBORS4:
+                nx, ny = cx + dx, cy + dy
+                if not grid.contains(nx, ny):
+                    continue
+                idx = grid.index(nx, ny)
+                if tight[idx]:
+                    continue
+                tight[idx] = 1
+                queue.append((nx, ny))
+    return tight
+
+
+def safe_goal(grid, gx, gy, tight, search_m, occupied_thresh=50):
+    """从 (gx, gy) 往外找最近的、不贴障碍的空闲格；找不到返回 None。"""
+    limit = max(1, int(round(search_m / grid.resolution)))
+    best = None
+    best_dist = None
+    for dy in range(-limit, limit + 1):
+        for dx in range(-limit, limit + 1):
+            dist = dx * dx + dy * dy
+            if dist > limit * limit:
+                continue
+            nx, ny = gx + dx, gy + dy
+            if not grid.contains(nx, ny):
+                continue
+            if not grid.is_free(nx, ny, occupied_thresh):
+                continue
+            if tight[grid.index(nx, ny)]:
+                continue
+            if best_dist is None or dist < best_dist:
+                best, best_dist = (nx, ny), dist
+    return best
+
+
 def unknown_around(grid, gx, gy, radius_cells):
     """质心周围一圈里有多少未知格子——代表"去了能新看到多少"。"""
     count = 0
@@ -158,7 +223,7 @@ def find_frontiers(grid, robot_xy=None, min_size=4, occupied_thresh=50,
                    w_distance=0.6, w_gain=0.4, visited=None,
                    blacklist=None, blacklist_radius_m=0.6,
                    min_goal_distance_m=0.0, max_goal_distance_m=None,
-                   min_separation_m=0.0):
+                   min_separation_m=0.0, goal_clearance_m=0.0):
     """主入口：返回按分数从高到低排好的候选点。
 
     每个候选是 dict：
@@ -177,6 +242,9 @@ def find_frontiers(grid, robot_xy=None, min_size=4, occupied_thresh=50,
         return []
     groups = cluster(cells, min_size=min_size)
     radius_cells = max(1, int(round(unknown_radius_m / grid.resolution)))
+    tight = None
+    if goal_clearance_m and goal_clearance_m > 0:
+        tight = tight_cells(grid, goal_clearance_m, occupied_thresh)
 
     candidates = []
     for group in groups:
@@ -188,6 +256,12 @@ def find_frontiers(grid, robot_xy=None, min_size=4, occupied_thresh=50,
         if free is None:
             continue
         cx, cy = free
+        if tight is not None:
+            safe = safe_goal(grid, cx, cy, tight,
+                             goal_clearance_m * 2.5, occupied_thresh)
+            if safe is None:
+                continue              # 这条前沿贴着墙，去了也停不进去
+            cx, cy = safe
         gain = unknown_around(grid, cx, cy, radius_cells)
         wx, wy = grid.cell_to_world(cx, cy)
         if robot_xy is None:

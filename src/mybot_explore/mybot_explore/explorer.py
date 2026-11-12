@@ -47,6 +47,7 @@ DEFAULTS = {
     'blacklist_radius_m': 0.6,
     'min_goal_distance_m': 0.8,
     'min_separation_m': 1.0,
+    'goal_clearance_m': 0.35,
     'max_goal_distance_m': 15.0,
     'nav_timeout_s': 90.0,
     'settle_s': 1.0,
@@ -183,6 +184,7 @@ class Explorer(object):
             min_goal_distance_m=self.params['min_goal_distance_m'],
             max_goal_distance_m=self.params['max_goal_distance_m'],
             min_separation_m=self.params['min_separation_m'],
+            goal_clearance_m=self.params['goal_clearance_m'],
         )
         if not candidates:
             if self.params['return_home'] and self.start_pose is not None:

@@ -159,6 +159,42 @@ class FindFrontiersCase(unittest.TestCase):
         self.assertLess(small[0]['unknown'], big[0]['unknown'])
 
 
+class GoalClearanceCase(unittest.TestCase):
+    """前沿点天生贴着边界，直接当目标会被 nav2 拒（"目标在障碍里"）。"""
+
+    def _corridor(self, width=9, height=5):
+        # 四周是墙，中间一条横向走廊；未知只留在最上面那行的右端，
+        # 这样前沿质心天然贴着上墙，正好检验"往外挪"。
+        rows = [[OCC] * width for _ in range(height)]
+        for y in range(1, height - 1):
+            rows[y] = [OCC] + [FREE] * (width - 1)
+        rows[1][width - 1] = UNK
+        rows[2][width - 1] = OCC      # 只留一个前沿格，避免聚类被顺手带偏
+        return make_grid(rows, resolution=0.05)
+
+    def test_goal_is_pushed_away_from_walls(self):
+        g = self._corridor()
+        plain = frontier.find_frontiers(g, robot_xy=(0.05, 0.1), min_size=1)
+        safe = frontier.find_frontiers(g, robot_xy=(0.05, 0.1), min_size=1,
+                                       goal_clearance_m=0.05)
+        self.assertEqual(len(plain), 1)
+        self.assertEqual(len(safe), 1)
+        # 走廊高 3 格，膨胀 1 格后只有正中间那行合格
+        tight = frontier.tight_cells(g, 0.05)
+        self.assertFalse(bool(tight[g.index(safe[0]['gx'], safe[0]['gy'])]))
+        self.assertNotEqual(plain[0]['gy'], safe[0]['gy'])
+
+    def test_candidate_dropped_when_nowhere_to_stand(self):
+        # 单格宽的死胡同：前沿永远贴着墙，留不出安全落脚点
+        rows = [[OCC, OCC, OCC],
+                [OCC, FREE, UNK],
+                [OCC, OCC, OCC]]
+        g = make_grid(rows, resolution=0.05)
+        self.assertEqual(len(frontier.find_frontiers(g, min_size=1)), 1)
+        self.assertEqual(
+            len(frontier.find_frontiers(g, min_size=1, goal_clearance_m=0.05)), 0)
+
+
 class GridGeometryCase(unittest.TestCase):
     def test_world_cell_roundtrip(self):
         g = frontier.Grid.from_msg  # 只是确认 API 存在

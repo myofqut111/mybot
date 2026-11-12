@@ -12,6 +12,14 @@ explore_node:
     unknown_radius_m: 1.0    # 算"去了能看见多少未知"的半径
     max_candidates: 20
     min_separation_m: 1.0    # 两个候选至少隔这么远，否则只留分数高的
+    goal_clearance_m: 0.35   # 目标点离墙至少这么远（前沿天生贴边，太近 nav2 会拒）
+
+    # ---- 擦图（用激光把未知变空闲，让边界往里退）----
+    # 关掉它就只会走到已知边界为止，进不去未知区
+    carve_enabled: true
+    carve_max_range_m: 4.0   # 只信这么远以内的光束（远处噪声大）
+    carve_robot_radius_m: 0.25
+    carve_period_s: 0.5      # 最快多久擦一次
     w_distance: 0.6          # 打分权重：近的优先
     w_gain: 0.4              # 打分权重：能看见大片的优先
 

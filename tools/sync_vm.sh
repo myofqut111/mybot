@@ -10,6 +10,9 @@
 # 不碰：~/.ros 下的路线/基线/进度（文件名本来就叫 fishbot_*），也没重启任何进程。
 
 set -u
+# 打包那步自带管道，不开 pipefail 时 python 失败会被 tail 吞掉，
+# 于是脚本会拿着上一次的旧 tar 去部署——这个坑踩过一次，别删这两行。
+set -o pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 HOST="${1:-192.168.202.128}"
@@ -30,8 +33,26 @@ STAGE="$ROOT/dist_vm"
 TAR="$STAGE/fishbot_src.tar.gz"
 
 echo "== 1/5 本地打包（mybot_* → fishbot_*）=="
-PYTHON="${PYTHON:-python3}"
-command -v "$PYTHON" >/dev/null 2>&1 || PYTHON=python
+# 找一个真的能跑 python 的解释器：git-bash 里的 python3/python 可能是
+# Windows 应用商店的占位程序（一跑就 exit 49），不能只看 command -v。
+pick_python() {
+  for cand in "${PYTHON:-}" python3 python py \
+              "$HOME/.dsh/dsh-runtimes/dsh-primary-runtime/dependencies/python/python.exe" \
+              "/c/Users/$USERNAME/.dsh/dsh-runtimes/dsh-primary-runtime/dependencies/python/python.exe" \
+              "$LOCALAPPDATA/Programs/Python/Python312/python.exe" \
+              "$LOCALAPPDATA/Programs/Python/Python311/python.exe"; do
+    [ -n "$cand" ] || continue
+    [ -x "$cand" ] || command -v "$cand" >/dev/null 2>&1 || continue
+    if "$cand" -c 'import sys' >/dev/null 2>&1; then echo "$cand"; return 0; fi
+  done
+  return 1
+}
+PYTHON="$(pick_python)" || {
+  echo "找不到可用的 python：环境变量指定一个，例如"
+  echo "  PYTHON=/c/Users/你的用户名/.dsh/dsh-runtimes/dsh-primary-runtime/dependencies/python/python.exe bash tools/sync_vm.sh"
+  exit 1; }
+echo "  用 $PYTHON"
+rm -f "$TAR"                       # 先删旧包，打包失败时不会误传上一次的
 (cd "$ROOT" && "$PYTHON" tools/sync_vm.py --out "$STAGE" | tail -3) || {
   echo "打包失败（需要能跑 tools/sync_vm.py 的 python）"; exit 1; }
 [ -f "$TAR" ] || { echo "没生成 $TAR"; exit 1; }
