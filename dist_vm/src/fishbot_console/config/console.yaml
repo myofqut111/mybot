@@ -1,0 +1,61 @@
+# fishbot_console 默认参数。
+# 全部可以用 ros2 launch/run 的 -r __node:= 或 -p 覆盖。
+fishbot_console:
+  ros__parameters:
+    # ---- 话题/服务名（按仓库现名写，换名字只改这里）----
+    status_topic: /patrol/execution/status
+    image_topic: /camera/camera/image_raw
+    annotated_topic: /yolo_detector/image_annotated
+    # 默认只订阅压缩图：原始图一帧 230KB、5fps 就是 9Mbps，过 WiFi 会把
+    # 路由器打瘫（实测整网掉线）。压缩图一帧约 12KB，同样的画面。
+    # 视觉节点还没升级时，把 prefer_compressed 改成 false 退回订阅原始图。
+    prefer_compressed: true
+    compressed_image_topic: /camera/camera/image_raw/compressed
+    compressed_annotated_topic: /yolo_detector/image_annotated/compressed
+    map_topic: /map
+    global_costmap_topic: /global_costmap/costmap
+    local_costmap_topic: /local_costmap/costmap
+    scan_topic: /scan
+    scan_max_points: 400        # 一帧激光抽稀到多少个点（多了浏览器卡）
+    battery_topic: /battery/voltage
+    pose_topic: /amcl_pose
+    patrol_action: /execute_patrol
+    nav_action: /navigate_to_pose
+    route_service: /patrol_route/get
+    capture_service: /camera/camera/capture
+    reports_dir: ~/patrol_reports
+
+    # ---- 电量阈值（3S 锂电：10.5 告警 / 10.0 中止）----
+    # 12V 铅酸请改回 11.8 / 11.5，铅酸放到 10.0 会伤电池。
+    battery_warn_v: 10.5
+    battery_crit_v: 10.0
+
+    # ---- 网页服务 ----
+    http_host: 0.0.0.0
+    http_port: 8080
+    # 日志/页面里展示的地址（0.0.0.0 是绑定语义，点不开）。
+    # 留空 = 自动探测本机局域网 IP（换网段也不会写错）。
+    # 想固定成机器人那台的地址就填死，例如 192.168.1.103。
+    # 同一台虚拟机会在两个网段之间切换（能上外网时 192.168.202.x、跑 demo 时
+    # 192.168.1.x），钉死必然有一半时间是错的，所以默认留空。
+    public_host: ''
+    # 一键启停导航/建图时是否顺带拉起 RViz。
+    # 关掉的两个理由：①虚拟机没有图形会话时 RViz 起不来，整个 launch 会一起退；
+    # ②弱虚拟机上 RViz 会和 Nav2 的 20 Hz 控制循环抢 CPU，表现为"速度指令都对、
+    # 但车一顿一顿"。诊断抖动时先关掉它排除。
+    stacks_rviz: true
+    max_log_lines: 500
+
+    # ---- AI 助手（留空则只用规则回答，不需要联网）----
+    # 也可以改用环境变量 OPENAI_BASE_URL / OPENAI_API_KEY / OPENAI_MODEL
+    ai_base_url: ''
+    ai_api_key: ''
+    ai_model: 'gpt-4o-mini'
+
+    # ---- 识别目标（换巡检对象只改这三行，代码不用动）----
+    # name：页面上叫它什么（"检测<name>"/"应该有<name>"）
+    # class：模型输出的类名，要和训练时的 classes 一致
+    # states：可选的状态标签，逗号分隔（如 正常,倒地,被遮挡）；留空＝纯"有没有"模式
+    target_name: '灭火器'
+    target_class: 'fire_extinguisher'
+    target_states: ''

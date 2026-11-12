@@ -20,78 +20,21 @@ import sys
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), '..'))
 
 from mybot_explore import frontier as frontier_mod          # noqa: E402
+from mybot_explore import pgm                              # noqa: E402
 from mybot_explore import visited as visited_mod           # noqa: E402
 
 
 def read_pgm(path):
-    """读二进制 PGM（P5），返回 (width, height, [0-255 的灰度])."""
-    with open(path, 'rb') as f:
-        raw = f.read()
-    pos = 0
-    fields = []
-    while len(fields) < 4:
-        while pos < len(raw) and raw[pos:pos + 1].isspace():
-            pos += 1
-        if raw[pos:pos + 1] == b'#':
-            while pos < len(raw) and raw[pos:pos + 1] != b'\n':
-                pos += 1
-            continue
-        start = pos
-        while pos < len(raw) and not raw[pos:pos + 1].isspace():
-            pos += 1
-        fields.append(raw[start:pos])
-    magic, w, h, maxval = fields
-    assert magic == b'P5', '只支持二进制 PGM (P5)，实际是 %r' % magic
-    width, height, maxval = int(w), int(h), int(maxval)
-    pos += 1
-    pixels = raw[pos:pos + width * height]
-    if maxval != 255:
-        pixels = [int(round(v * 255.0 / maxval)) for v in bytearray(pixels)]
-    return width, height, bytearray(pixels)
+    return pgm.read_pgm(path)
 
 
 def read_yaml(path):
-    """只解析我们需要的四个字段，不依赖 pyyaml。"""
-    out = {}
-    with open(path, 'r', encoding='utf-8') as f:
-        for line in f:
-            line = line.split('#')[0].strip()
-            if ':' not in line:
-                continue
-            key, value = line.split(':', 1)
-            out[key.strip()] = value.strip()
-    origin = out.get('origin', '[0, 0, 0]').strip('[]').split(',')
-    return {
-        'image': out.get('image', '').strip('"\''),
-        'resolution': float(out.get('resolution', 0.05)),
-        'origin_x': float(origin[0]),
-        'origin_y': float(origin[1]),
-        'occupied_thresh': float(out.get('occupied_thresh', 0.65)),
-        'free_thresh': float(out.get('free_thresh', 0.25)),
-    }
+    return pgm.read_yaml(path)
 
 
 def pgm_to_grid(width, height, pixels, meta):
-    """map_saver 的 trinary 约定：254=空闲，0=障碍，中间值(205)=未知。
-
-    注意：nav2 的 map_server 用的是
-        occ = (255 - value) / 255
-        occ > occupied_thresh -> 100 ; occ < free_thresh -> 0 ; 否则 -1
-    本图的 yaml 写的是 free_thresh: 0.25，而 205 算出来是 0.196 < 0.25，
-    于是**在 nav2 眼里这 60% 的灰是"空闲"**（这也是为什么导航能直接穿过
-    未探索区域）。前沿检测要的是"真没看过"，所以这里按 trinary 的原始
-    约定还原未知，而不是照抄 nav2 的阈值。
-    """
-    data = []
-    for value in pixels:
-        if value >= 250:
-            data.append(0)          # 白：空闲
-        elif value <= 10:
-            data.append(100)        # 黑：障碍
-        else:
-            data.append(-1)         # 灰：未知
-    return frontier_mod.Grid(width, height, meta['resolution'],
-                             meta['origin_x'], meta['origin_y'], data)
+    return pgm.pgm_to_grid(width, height, pixels, meta['resolution'],
+                           meta['origin_x'], meta['origin_y'])
 
 
 def pick_pose(grid, grid_pose):

@@ -1,0 +1,84 @@
+# fishbot_vision 参数配置
+# 注意：yaml 顶层 key 必须是节点的完整路径（含 namespace），参数才会生效。
+# 摄像头是 ESP32 + OV3660，固件为 Arduino CameraWebServer：
+#   80 端口 = 网页配置界面，81 端口 = MJPEG 视频流，/capture = 单张抓拍
+
+# ---------- 摄像头取流节点（namespace=/camera, name=camera，全名 /camera/camera） ----------
+/camera/camera:
+  ros__parameters:
+    stream_url: "http://192.168.1.100:81/stream"
+    frame_id: "camera_link"
+    publish_rate: 5.0
+    # 翻转：-1=旋转180°  0=上下  1=左右  2=不翻转
+    # ⚠️ 如果改成在 ESP32 固件里设 set_vflip/set_hmirror，这里要改成 2（别翻两次）
+    flip_code: -1
+    reconnect_interval: 2.0
+    io_timeout_ms: 5000
+    # 最后一帧的保鲜期（秒）：超过这么久没新帧就**停止发布**，避免把冻结的旧帧
+    # 当成新帧发出去（会让 YOLO 对着静止图画框、巡检误判"识别成功"）。0=关闭保护。
+    max_frame_age_sec: 2.0
+    # 读流 socket 超时（秒）：这么久没收到任何字节就判定断流并重连。
+    # 15FPS 下帧间隔约 67ms，3 秒已是很宽松的上限；调小恢复更快。
+    stream_timeout_sec: 3.0
+    capture_mode: true          # 单张 /capture 轮询（ESP32 长连接会卡死）
+    capture_rate: 5.0           # 5 Hz 够巡检用（推理 2 Hz）
+    capture_url: ""             # 留空 = 由 stream_url 推导成 http://<摄像头IP>/capture
+    # ---- 压缩图（给浏览器看，省带宽：9 Mbps -> 约 0.2 Mbps）----
+    compressed_rate: 2.0        # 压缩图发布频率（Hz），0=关闭
+    jpeg_quality: 60            # JPEG 质量 0~100
+    # ---- 摄像头参数自动设置（等效于"在代码里写死"）----
+    # ESP32 的 CameraWebServer 网页改的参数只存在内存里，断电就丢；所以每次
+    # 连接（含断线重连、摄像头重启后）之前，由本节点用 HTTP 控制接口设一遍。
+    apply_camera_settings: true
+    # framesize: 5=QVGA(320x240)  8=VGA(640x480)  10=XGA(1024x768)
+    # quality  : 0~63，越小画质越好、单帧越大、帧率越低（12 左右够用）
+    # lamp=0   : 关补光灯（默认可能常亮，费电、发热、晃眼）
+    camera_settings: "framesize=8,quality=15"
+    # 控制接口地址；留空 = 从 stream_url 自动推导成 http://<摄像头IP>/control
+    camera_control_base: ""
+    camera_setup_timeout: 1.5
+
+# ---------- YOLO 检测节点（无 namespace, name=yolo_detector，全名 /yolo_detector） ----------
+/yolo_detector:
+  ros__parameters:
+    # 权重文件；走 launch 时会被 launch 里的绝对路径覆盖（有 engine 用 engine）。
+    # 这里保持 .pt，是为了 `ros2 run` 直起时也有个到处都存在的安全默认值。
+    model: "/home/xmz/models/yolo_v4_best.pt"
+    # 订阅的图像话题（取流节点发的就是这个）
+    image_topic: "/camera/camera/image_raw"
+    # 置信度阈值，低于此值的框丢弃
+    conf_threshold: 0.15
+    # Jetson Orin 有 GPU，固定 cuda:0；没有 GPU 的机器才填 cpu
+    device: "cuda:0"
+    # 推理输入分辨率（必须是 32 的倍数）。
+    # 2026-10-15 由 320 改成 640：摄像头在 ESP32 网页里设成 VGA(640x480)，
+    # 目标在模型眼里的像素数 ≈ 视角占比 × imgsz，所以 imgsz 才是"看清楚"的关键项，
+    # 320→640 等于目标有效像素翻倍（识别距离大约也翻倍）。实测推理约 10ms→30~40ms，
+    # 对 25~30FPS 的巡检绰绰有余。
+    # ⚠️ 改了这个值必须**重新导出 engine**（engine 与输入尺寸绑定）：
+    #    python3 -c "from ultralytics import YOLO; YOLO('yolo26n.pt').export(format='engine', half=True, imgsz=640, device=0)"
+    # ⚠️ 自训练时也要用同样的 imgsz=640，训练与推理输入尺寸必须一致。
+    imgsz: 640
+    # 推理频率 Hz。巡检只在到点后取结果，2Hz 已足够（停稳 2s 内能采到 4 帧）；
+    # 实时画框想更顺滑可提到 3，再高 CPU 会重新吃紧。
+    infer_frequency: 2.0
+    # 带框的图也发一份压缩的给浏览器（原始 230KB/帧 -> JPEG 12KB/帧）
+    publish_compressed: true
+    jpeg_quality: 60
+    # 断流保护：超过这么久没收到新帧，就停止推理并作废缓存检测结果，
+    # 让巡检把“摄像头掉了”如实报成失败，而不是拿冻结画面报成功。
+    stale_image_sec: 2.5
+    # 哪些 task_id 算视觉巡检任务（逗号分隔，大小写不敏感）
+    patrol_task_ids: "inpect,inspect,yolo,detect,vision"
+    # 到点后等多少秒再取检测结果（让车停稳、画面清晰）
+    patrol_settle_seconds: 2.0
+    # 标定模式：true 时后台线程轮询记录“dispatch→首次检出→连续3帧稳定”
+    # 的真实耗时并打印 [CALIB] 行，用来确定事件驱动识别窗口；标定完改回 false
+    calibration_mode: false
+    # 事件驱动：启动时是否默认持续推理。false=平时 YOLO 不推理（CPU≈0），
+    # 仅到点收 dispatch 后短暂开识别窗口；需要一直看画框时设 true，
+    # 也可运行中用 ~/set_continuous 服务临时开关
+    continuous_default: false
+    # 到点停稳（settle）之外留给识别的窗口时长（秒）。真机标定正常
+    # t_stable≈1.0~1.7s，2.5s 覆盖上限+余量；想调只改这里不用动代码
+    patrol_capture_window: 2.5

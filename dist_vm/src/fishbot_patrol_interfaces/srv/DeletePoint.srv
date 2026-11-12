@@ -1,0 +1,6 @@
+string route_name
+string point_id
+---
+bool success
+string message
+uint32 remaining

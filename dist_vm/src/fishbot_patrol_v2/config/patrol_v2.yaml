@@ -1,0 +1,87 @@
+# v2 执行器参数。
+#
+# 默认值面向「一台已经在跑 Nav2 的小车」：失败就跳过、支持断点续跑、
+# 每轮写一份报告。改这里不用改代码。
+
+patrol_executor_v2:
+  ros__parameters:
+    # --- 超时 ---------------------------------------------------
+    server_wait_timeout_s: 10.0      # 等服务 / action server 上线
+    waypoint_timeout_s: 180.0        # 单点导航超时
+    navigation_cancel_timeout_s: 10.0
+    task_result_timeout_s: 130.0     # 单点任务（拍照+识别）超时
+
+    # --- 到点校验（用定位复核 Nav2 的成功） ---------------------
+    final_position_tolerance_m: 0.30
+    final_yaw_tolerance_rad: 0.60
+    amcl_pose_max_age_s: 5.0
+    # 定位不确定性上限：超过就不做到点判定（std 取协方差对角线的平方根）
+    endpoint_max_xy_std_m: 0.15
+    endpoint_max_yaw_std_rad: 0.15
+    # 到点复核的采样窗口，取窗口内最坏残差，抓 Nav2 报成功时车还在飘
+    endpoint_stable_duration_s: 0.5
+    # true：拿不到可信定位就直接判导航失败；false：只告警，信 Nav2
+    endpoint_require_localization: false
+    # 优先用 TF(map->base_link) 复核，查不到再退回 AMCL 位姿
+    use_tf_endpoint: true
+    global_frame: map
+    robot_base_frame: base_link
+
+    # --- 失败策略 ------------------------------------------------
+    failure_policy: skip             # stop | skip | retry
+    max_retries: 1                   # 仅 failure_policy=retry 生效
+    max_consecutive_failures: 3      # 连续失败这么多次就中止整轮
+
+    # --- 可复现性 ------------------------------------------------
+    random_seed: -1                  # -1 表示每轮真随机
+
+    # --- 断点续跑 ------------------------------------------------
+    resume: true
+    progress_file: ~/.ros/patrol_progress.json
+
+    # --- 报告 ----------------------------------------------------
+    report_dir: ~/patrol_reports
+
+    # --- 主动视角复核：看不清就换个角度再看一眼 ------------------
+    # 这是「用移动能力补感知不确定性」的做法：置信度落在灰区时不硬判，
+    # 换个视角再检一次，最多 2 轮。
+    #
+    # 复核动作由 recheck_strategy 决定：
+    #   turn    原地左右各转 recheck_turn_deg 度（默认，推荐）
+    #   forward 沿当前朝向前进 recheck_forward_m 米（老做法）
+    #   both    交替：第一次转、第二次前进
+    # 转比走安全：目标常在侧面（走廊两侧的墙上/柜子边），往前走只会顶到墙，
+    # nav2 得反复重规划，一个空点位能白花 20 秒。实测就是这个现象。
+    recheck_strategy: turn
+    recheck_turn_deg: 35.0          # turn 策略每次转多少度（一来一回共 2×）
+    recheck_forward_m: 0.4          # forward 策略每次前进距离（米）
+    recheck_max_rounds: 2           # 最多走几次
+    recheck_conf_low: 0.25          # 低于它当「没看到」
+    recheck_conf_high: 0.60         # 高于它直接确认，不再走
+    recheck_on_miss: true           # 完全没检到时也要确认（压漏检）
+
+    # 想彻底关掉复核：把 recheck_max_rounds 设成 0。
+
+    # --- 电量决策：低电时「跑完当前点就收工」 --------------------
+    # 固件在 /battery/voltage 上发电压（ESP32 GPIO34 经分压）。
+    # warn 只提示，crit 在**当前点结束后**中止整轮——车停在点位上，
+    # 不在走廊中间，续跑时也能从这个点后面接着来。
+    battery_enabled: true
+    battery_topic: /battery/voltage
+    battery_warn_v: 10.5            # 3S 锂电标定值；12V 铅酸请改回 11.8
+    battery_crit_v: 10.0            # 3S 锂电标定值；12V 铅酸请改回 11.5
+    battery_hyst_v: 0.4             # 回差：回到 阈值+0.4 才解除告警
+    battery_stale_sec: 30.0         # 超过这么久没新数据就当作“不知道”
+    battery_window: 5               # 中值滤波窗口，抗单点尖峰
+
+    # --- 接口名（换话题不用改代码） ------------------------------
+    action_name: /execute_patrol
+    preempt_topic: /patrol/preempt
+    status_topic: /patrol/execution/status
+
+    # --- 期望值基线（跑完自动记，下次自动判） --------------------
+    learn_baseline: true
+    baseline_file: '~/.ros/fishbot_patrol_expect.json'
+    # fill  : 只补空缺，不覆盖已有结论（默认；防止一次误检带偏整条线）
+    # update: 每趟都用本轮结果覆盖
+    baseline_policy: fill

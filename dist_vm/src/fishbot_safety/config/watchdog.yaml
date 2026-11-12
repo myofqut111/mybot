@@ -1,0 +1,23 @@
+# 看门狗参数：跑在虚拟机上（导航、巡检、控制台都在那儿），
+# 所以它看得见"谁还在发指令"。放 Jetson 上没用——刹车要走网络，
+# 而它要防的正是网络/对端挂掉。
+safety_watchdog:
+  ros__parameters:
+    enable: true
+    # 干跑：只记日志、不发零速。第一次上车建议先这么试一遍
+    dry_run: false
+
+    cmd_topic: cmd_vel
+    odom_topic: odom
+    # 留空 = 刹车指令发回 cmd_topic（同一个话题，底盘只认最后一条）
+    brake_topic: ""
+
+    # 车在动、但这么久没有任何"非零"指令 → 判定发布者已死
+    cmd_timeout_sec: 0.5
+    # 里程计这么久没来 → 不知道车是否在动，按安全侧假设
+    odom_timeout_sec: 1.0
+    # 小于这个速度就当"没在动"，避免里程计噪声一直触发
+    move_epsilon: 0.02
+    brake_rate_hz: 20.0
+
+    state_topic: safety/watchdog

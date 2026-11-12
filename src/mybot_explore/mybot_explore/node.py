@@ -28,6 +28,7 @@ import rclpy
 from geometry_msgs.msg import Point, PoseArray, Pose
 from nav_msgs.msg import OccupancyGrid
 from rclpy.action import ActionClient
+from rclpy.executors import ExternalShutdownException
 from rclpy.node import Node
 from rclpy.qos import QoSDurabilityPolicy, QoSHistoryPolicy, QoSProfile
 from sensor_msgs.msg import LaserScan
@@ -37,6 +38,7 @@ from visualization_msgs.msg import Marker, MarkerArray
 
 from . import explorer as explorer_mod
 from . import frontier
+from . import pgm
 
 try:                                    # nav2 没装时也能起"看图模式"
     from nav2_msgs.action import NavigateToPose
@@ -56,6 +58,7 @@ class ExplorerNode(Node):
         self.declare_parameter('status_topic', '/explore/status')
         self.declare_parameter('base_frame', 'base_link')
         self.declare_parameter('nav_action', 'navigate_to_pose')
+        self.declare_parameter('map_yaml', '')     # 非空则直读 pgm，不用 /map
         self.declare_parameter('drive', False)
         self.declare_parameter('autostart', False)
         self.declare_parameter('period_s', 1.0)
@@ -97,6 +100,16 @@ class ExplorerNode(Node):
 
         self.create_service(Trigger, '~/start', self._on_start)
         self.create_service(Trigger, '~/stop', self._on_stop)
+
+        mapped = str(self.get_parameter('map_yaml').value or '')
+        if mapped:
+            try:
+                self._grid = pgm.load_map(mapped)
+                self.get_logger().info(
+                    '已直读地图 %s：%dx%d（未知按 pgm 还原，不受 free_thresh 影响）'
+                    % (mapped, self._grid.width, self._grid.height))
+            except Exception as error:
+                self.get_logger().error('读地图失败 %s：%s' % (mapped, error))
 
         period = float(self.get_parameter('period_s').value) or 1.0
         self.create_timer(period, self._tick)
@@ -367,7 +380,8 @@ def main(argv=None):
     node = ExplorerNode()
     try:
         rclpy.spin(node)
-    except KeyboardInterrupt:
+    except (KeyboardInterrupt, ExternalShutdownException):
+        # Ctrl-C 或被 timeout / systemd 送 SIGTERM 都走这里，不算错误
         pass
     finally:
         node.destroy_node()

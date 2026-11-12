@@ -1,0 +1,47 @@
+<?xml version="1.0"?>
+<!--
+  fishbot 统一 URDF（两轮差速 + 顶部 2D 激光雷达）
+  坐标系约定（全工程统一，勿再引入 base_footprint / laser_link 别名）：
+    base_link   : 车体根坐标系，EKF 发布 odom -> base_link
+    laser_frame : 雷达坐标系，docker 新版 fishbot_laser_driver_node 发布的
+                  /scan 其 frame_id 固定为 laser_frame，这里必须与之同名
+  TF 树：
+    map(建图slam/导航amcl) -> odom(EKF) -> base_link(EKF) -> laser_frame(本文件fixed)
+  本文件只负责 base_link -> laser_frame 这一条固定变换。
+-->
+<robot name="fishbot">
+
+  <!-- 车体根 link -->
+  <link name="base_link">
+    <visual>
+      <origin xyz="0 0 0" rpy="0 0 0" />
+      <geometry>
+        <cylinder length="0.12" radius="0.10" />
+      </geometry>
+      <material name="blue">
+        <color rgba="0.1 0.1 1.0 0.5" />
+      </material>
+    </visual>
+  </link>
+
+  <!-- 2D 激光雷达（frame_id = laser_frame，与驱动 /scan 一致） -->
+  <link name="laser_frame">
+    <visual>
+      <origin xyz="0 0 0" rpy="0 0 0" />
+      <geometry>
+        <cylinder length="0.02" radius="0.02" />
+      </geometry>
+      <material name="black">
+        <color rgba="0.0 0.0 0.0 0.5" />
+      </material>
+    </visual>
+  </link>
+
+  <!-- 雷达相对车体中心：正上方 0.075m（按你实车安装高度可改） -->
+  <joint name="laser_joint" type="fixed">
+    <parent link="base_link" />
+    <child link="laser_frame" />
+    <origin xyz="0 0 0.075" rpy="0 0 0" />
+  </joint>
+
+</robot>

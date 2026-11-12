@@ -11,21 +11,30 @@
 
 set -u
 
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 HOST="${1:-192.168.202.128}"
-KEY="${2:-$HOME/.ssh/id_ed25519_vm}"
+KEY="${2:-}"
+if [ -z "$KEY" ]; then
+  for cand in "$ROOT/../_ssh_keys/vm_ed25519" "$ROOT/_ssh_keys/vm_ed25519"               "$HOME/.ssh/id_ed25519_vm"; do
+    if [ -f "$cand" ]; then KEY="$cand"; break; fi
+  done
+fi
+[ -n "$KEY" ] || { echo "找不到虚拟机私钥，用第二个参数指定"; exit 1; }
 USER_NAME="${VM_USER:-my}"
 WS="${VM_WS:-/home/$USER_NAME/fishbot_full_ws}"
 PKG_LIST="fishbot_console fishbot_patrol_v2 fishbot_safety fishbot_vision \
 fishbot_patrol_interfaces fishbot_patrol_route_manager fishbot_patrol_task_manager \
 fishbot_navigation fishbot_bringup fishbot_description fishbot_patrol_executor fishbot_explore"
 
-ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 STAGE="$ROOT/dist_vm"
 TAR="$STAGE/fishbot_src.tar.gz"
 
 echo "== 1/5 本地打包（mybot_* → fishbot_*）=="
-python "$ROOT/tools/sync_vm.py" --out "$STAGE" | tail -3 || {
-  echo "打包失败"; exit 1; }
+PYTHON="${PYTHON:-python3}"
+command -v "$PYTHON" >/dev/null 2>&1 || PYTHON=python
+(cd "$ROOT" && "$PYTHON" tools/sync_vm.py --out "$STAGE" | tail -3) || {
+  echo "打包失败（需要能跑 tools/sync_vm.py 的 python）"; exit 1; }
+[ -f "$TAR" ] || { echo "没生成 $TAR"; exit 1; }
 
 echo "== 2/5 传到 $HOST =="
 scp -i "$KEY" -o IdentitiesOnly=yes -o StrictHostKeyChecking=no \
