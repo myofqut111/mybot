@@ -81,6 +81,7 @@ class ExplorerNode(Node):
         self._static_map = False          # 直读 pgm 时，忽略 /map（否则会被整张已知的图覆盖）
         self._scan_stamp = None
         self._last_carve = 0.0
+        self._warned = {}                 # 警告节流：key -> 上次打印时间
         self._explorer = explorer_mod.Explorer(self._explorer_params())
         self._goal_handle = None
         self._pending_goal = False
@@ -252,6 +253,17 @@ class ExplorerNode(Node):
             self._explorer.start((pose[0], pose[1]), now)
             self.get_logger().info('autostart：开始探索')
 
+        # 开车模式下最常见的"没反应"就是这两件事：没图、没定位。
+        # 以前这里是静默 return，用户只看到"前沿 N 个"刷屏却永远不动。
+        if drive and grid is None:
+            self._warn_at('no_map', '开车模式但没有地图：检查 /map 或 map_yaml 参数')
+        if drive and pose is None:
+            self._warn_at(
+                'no_pose',
+                '拿不到 map→%s 的位姿：车还没定位。先在 RViz 里给一个 '
+                '2D Pose Estimate（或确认 amcl 已启动），否则不会发目标'
+                % self.get_parameter('base_frame').value)
+
         if grid is not None and drive and pose is not None:
             cmd = self._explorer.step(grid, (pose[0], pose[1]), now)
             if cmd:
@@ -259,6 +271,15 @@ class ExplorerNode(Node):
 
         self._publish_markers(grid, pose)
         self._publish_status(now)
+
+    def _warn_at(self, key, message, period_s=5.0):
+        """同一条警告最多每 period_s 打一次，避免刷屏。"""
+        now = self._now()
+        last = self._warned.get(key, 0.0)
+        if now - last < period_s:
+            return
+        self._warned[key] = now
+        self.get_logger().warn(message)
 
     # ------------------------------------------------------------------ 动作
     def _handle(self, cmd, pose):
@@ -424,6 +445,8 @@ class ExplorerNode(Node):
         snap = self._explorer.snapshot(now)
         snap['map_ready'] = self._grid is not None
         snap['scan_ready'] = self._scan_stamp is not None
+        snap['pose_ready'] = self._pose() is not None
+        snap['drive'] = bool(self.get_parameter('drive').value)
         totals = getattr(self, '_carve_totals', (0, 0))
         snap['carved_free'] = totals[0]
         snap['carved_occupied'] = totals[1]
@@ -439,6 +462,10 @@ def main(argv=None):
         # Ctrl-C 或被 timeout / systemd 送 SIGTERM 都走这里，不算错误
         pass
     finally:
-        node.destroy_node()
+        try:
+            node.destroy_node()
+        except Exception as error:                       # noqa: BLE001
+            # SIGTERM 和解释器退出撞在一起时 rclpy 会抛，不属于业务错误
+            print('explore_node: 销毁节点时出错：%s' % error)
         if rclpy.ok():
             rclpy.shutdown()
