@@ -27,6 +27,7 @@ explore_node:
     drive: false             # true 才会真的发 NavigateToPose
     autostart: false         # true 时一起就开跑（否则等 /explore/start 服务）
     nav_action: navigate_to_pose
+    nav_server_wait_s: 5.0   # 等 Action server 的时长；连上之后不再重复等
     visited_radius_m: 1.2    # 走过一个点，周围这么大蛋糕算"看过"
     min_goal_distance_m: 0.8 # 太近的点不去，免得原地打转
     max_goal_distance_m: 15.0

@@ -22,6 +22,7 @@
     /explore/start /stop    Trigger，开始 / 中止
 """
 import json
+import os
 import math
 import time
 
@@ -61,6 +62,7 @@ class ExplorerNode(Node):
         self.declare_parameter('status_topic', '/explore/status')
         self.declare_parameter('base_frame', 'base_link')
         self.declare_parameter('nav_action', 'navigate_to_pose')
+        self.declare_parameter('nav_server_wait_s', 5.0)
         self.declare_parameter('map_yaml', '')     # 非空则直读 pgm，不用 /map
         # 擦图：用激光把光束经过的未知格改成空闲，未知边界才会跟着车后退。
         # 关掉它就退化成"只走到已知边界为止"。
@@ -109,6 +111,7 @@ class ExplorerNode(Node):
             String, str(self.get_parameter('status_topic').value), 1)
 
         self._nav = None
+        self._nav_ready = False
         if NavigateToPose is not None:
             self._nav = ActionClient(self, NavigateToPose,
                                      str(self.get_parameter('nav_action').value))
@@ -293,14 +296,26 @@ class ExplorerNode(Node):
         if self._nav is None:
             self.get_logger().error('没装 nav2_msgs，无法导航')
             return
-        try:
-            ready = self._nav.wait_for_server(timeout_sec=1.0)
-        except Exception:                                # noqa: BLE001
-            # 退出过程中 context 已经失效，这时 wait_for_server 会抛 RCLError
-            ready = False
-        if not ready:
-            self._warn_at('no_nav_server', 'navigate_to_pose 还没起来（Nav2 没启动？）：'
-                                            '先起导航栈，这里会自己重试', 5.0)
+        if not self._nav_ready:
+            # 第一次连 DDS 发现可能要好几百毫秒，给 5 秒；连上之后就不再等
+            try:
+                self._nav_ready = self._nav.wait_for_server(
+                    timeout_sec=float(self.get_parameter('nav_server_wait_s').value))
+            except Exception:                            # noqa: BLE001
+                # 退出过程中 context 已经失效，这时 wait_for_server 会抛 RCLError
+                self._nav_ready = False
+            if self._nav_ready:
+                self.get_logger().info('已连上 %s 的 action server'
+                                       % self.get_parameter('nav_action').value)
+        if not self._nav_ready:
+            self._warn_at(
+                'no_nav_server',
+                '连不上 %s（domain=%s, rmw=%s）：确认 Nav2 已经激活，'
+                '并且和本节点在同一个 ROS_DOMAIN_ID 里。这里会自己重试'
+                % (self.get_parameter('nav_action').value,
+                   os.environ.get('ROS_DOMAIN_ID', '0'),
+                   os.environ.get('RMW_IMPLEMENTATION', '默认')),
+                5.0)
             self._explorer.on_navigation_result(False, self._now(), 'no_server')
             return
 
@@ -452,6 +467,7 @@ class ExplorerNode(Node):
         snap['map_ready'] = self._grid is not None
         snap['scan_ready'] = self._scan_stamp is not None
         snap['pose_ready'] = self._pose() is not None
+        snap['nav_ready'] = bool(self._nav_ready)
         snap['drive'] = bool(self.get_parameter('drive').value)
         totals = getattr(self, '_carve_totals', (0, 0))
         snap['carved_free'] = totals[0]
