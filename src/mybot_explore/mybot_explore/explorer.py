@@ -249,6 +249,15 @@ class Explorer(object):
         if self.state not in (NAVIGATE, RETURN_HOME):
             return
 
+        if reason == 'no_server':
+            # 导航服务还没起来，属于"环境没就绪"，不是这个点位的错：
+            # 不计失败、不拉黑，回到选点，下一拍再试同一个。
+            self.nav_target = None
+            self.nav_kind = ''
+            self.state = SELECT
+            self.nav_started = now
+            return
+
         if self.nav_kind == 'home':
             self.state = DONE
             self.done_reason = 'returned_home' if ok else 'return_home_failed'

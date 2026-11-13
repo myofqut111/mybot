@@ -293,8 +293,14 @@ class ExplorerNode(Node):
         if self._nav is None:
             self.get_logger().error('没装 nav2_msgs，无法导航')
             return
-        if not self._nav.wait_for_server(timeout_sec=1.0):
-            self.get_logger().warn('navigate_to_pose 还没起来，下拍再试')
+        try:
+            ready = self._nav.wait_for_server(timeout_sec=1.0)
+        except Exception:                                # noqa: BLE001
+            # 退出过程中 context 已经失效，这时 wait_for_server 会抛 RCLError
+            ready = False
+        if not ready:
+            self._warn_at('no_nav_server', 'navigate_to_pose 还没起来（Nav2 没启动？）：'
+                                            '先起导航栈，这里会自己重试', 5.0)
             self._explorer.on_navigation_result(False, self._now(), 'no_server')
             return
 

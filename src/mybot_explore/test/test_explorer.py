@@ -94,6 +94,26 @@ class FailurePathTest(BaseCase):
             moved = ((cmd2['x'] - target[0]) ** 2 + (cmd2['y'] - target[1]) ** 2) ** 0.5
             self.assertGreater(moved, e.params['blacklist_radius_m'])
 
+    def test_no_server_is_not_a_failure(self):
+        """没有 nav2 时不能记失败、不能拉黑，否则几拍就自己收工了。"""
+        e = self.make(max_consecutive_failures=3)
+        e.start((0.3, 1.5), now=0.0)
+        cmd = e.step(self.grid, (0.3, 1.5), now=1.0)
+        target = (cmd['x'], cmd['y'])
+
+        for i in range(6):
+            e.on_navigation_result(False, now=2.0 + i, reason='no_server')
+            cmd = e.step(self.grid, (0.3, 1.5), now=2.5 + i)
+            self.assertNotEqual(e.state, ex.DONE)
+
+        self.assertEqual(e.blacklist, [])
+        self.assertEqual(e.consecutive_failures, 0)
+        self.assertEqual(e.stats['failed'], 0)
+        self.assertIsNotNone(cmd)
+        if cmd['kind'] == 'frontier':
+            self.assertAlmostEqual(cmd['x'], target[0], places=6)
+            self.assertAlmostEqual(cmd['y'], target[1], places=6)
+
     def test_three_failures_stop_everything(self):
         e = self.make(max_consecutive_failures=3)
         e.start((0.3, 1.5), now=0.0)
