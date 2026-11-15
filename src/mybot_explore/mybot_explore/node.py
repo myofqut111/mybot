@@ -43,11 +43,17 @@ from . import carve as carve_mod
 from . import explorer as explorer_mod
 from . import frontier
 from . import pgm
+from .explorer import _wrap_angle
 
 try:                                    # nav2 没装时也能起"看图模式"
     from nav2_msgs.action import NavigateToPose
 except Exception:                       # pragma: no cover
     NavigateToPose = None
+
+try:                                    # 到点转圈用导航栈现成的 Spin action
+    from nav2_msgs.action import Spin
+except Exception:                       # pragma: no cover
+    Spin = None
 
 
 class ExplorerNode(Node):
@@ -88,6 +94,16 @@ class ExplorerNode(Node):
         self._goal_handle = None
         self._pending_goal = False
         self._last_signature = None
+        self._last_goal = None            # 最近一次下发的目标 (x, y)，写日志用
+        self._last_best = None            # 上一次打印的"最佳前沿"，用于日志降噪
+        self._last_best_at = 0.0
+        self._spin = None                 # Spin action client（到点转圈）
+        self._spin_ready = False
+        self._spin_handle = None
+        self._spin_left = 0
+        self._spin_delta = math.pi
+        self._spin_speed = 1.2
+        self._spin_timeout = 30.0
 
         latched = QoSProfile(depth=1,
                              durability=QoSDurabilityPolicy.TRANSIENT_LOCAL,
@@ -122,6 +138,9 @@ class ExplorerNode(Node):
         if NavigateToPose is not None:
             self._nav = ActionClient(self, NavigateToPose,
                                      str(self.get_parameter('nav_action').value))
+
+        if Spin is not None:
+            self._spin = ActionClient(self, Spin, 'spin')
 
         self.create_service(Trigger, '~/start', self._on_start)
         self.create_service(Trigger, '~/stop', self._on_stop)
@@ -275,7 +294,7 @@ class ExplorerNode(Node):
                 % self.get_parameter('base_frame').value)
 
         if grid is not None and drive and pose is not None:
-            cmd = self._explorer.step(grid, (pose[0], pose[1]), now)
+            cmd = self._explorer.step(grid, (pose[0], pose[1], pose[2]), now)
             if cmd:
                 self._handle(cmd, pose)
 
@@ -294,8 +313,14 @@ class ExplorerNode(Node):
     # ------------------------------------------------------------------ 动作
     def _handle(self, cmd, pose):
         if cmd['action'] == 'cancel':
-            self.get_logger().warn('放弃当前目标：%s' % cmd.get('reason', ''))
+            self.get_logger().warn('放弃当前目标：%s（点 %.2f, %.2f）'
+                                   % (cmd.get('reason', ''),
+                                      self._last_goal[0] if self._last_goal else 0.0,
+                                      self._last_goal[1] if self._last_goal else 0.0))
             self._cancel_goal()
+            return
+        if cmd['action'] == 'spin':
+            self._spin(cmd)
             return
         if cmd['action'] != 'navigate':
             return
@@ -335,6 +360,7 @@ class ExplorerNode(Node):
         goal.pose.pose.orientation.w = math.cos(yaw / 2.0)
 
         kind = cmd.get('kind', 'frontier')
+        self._last_goal = (cmd['x'], cmd['y'])
         self.get_logger().info('去 (%s) (%.2f, %.2f) 分数 %.2f'
                                % (kind, cmd['x'], cmd['y'], cmd.get('score', 0.0)))
         self._pending_goal = True
@@ -355,8 +381,74 @@ class ExplorerNode(Node):
         status = future.result().status
         ok = (status == 4)                       # GoalStatus.STATUS_SUCCEEDED
         self._goal_handle = None
+        self._last_goal = None
         self.get_logger().info('导航结束：状态 %d' % status)
         self._explorer.on_navigation_result(ok, self._now(), 'status_%d' % status)
+
+    def _spin(self, cmd):
+        """到点后原地转一圈：用 Nav2 的 Spin action，不自己写运动控制。
+
+        nav2 的 Spin 目标 `target_yaw` 是**绝对朝向**：直接给 yaw+2π 会被
+        归一化成当前朝向（等于不动）。所以按 delta 拆成若干次 ≤180° 的
+        绝对转向，一次转完再转下一次。
+        """
+        self._spin_delta = float(cmd.get('delta', math.pi))
+        self._spin_speed = float(cmd.get('speed', 1.2))
+        self._spin_timeout = float(cmd.get('timeout', 30.0))
+        self._spin_left = int(cmd.get('rounds', 1))
+        self._spin_step()
+
+    def _spin_step(self):
+        if self._spin_left <= 0:
+            self._explorer.on_spin_result(True, self._now(), 'done')
+            return
+        if self._spin is None:
+            self.get_logger().warn('没装 nav2_msgs 的 Spin，跳过转圈')
+            self._explorer.on_spin_result(False, self._now(), 'no_spin_action')
+            return
+        if not self._spin_ready:
+            try:
+                self._spin_ready = self._spin.wait_for_server(
+                    timeout_sec=float(self.get_parameter('nav_server_wait_s').value))
+            except Exception:                            # noqa: BLE001
+                self._spin_ready = False
+        if not self._spin_ready:
+            self._warn_at('no_spin_server',
+                          '连不上 spin 的 action server（Nav2 没激活或 '
+                          'behavior_server 没起来），这一轮到点不转圈', 10.0)
+            self._explorer.on_spin_result(False, self._now(), 'no_spin_server')
+            return
+
+        pose = self._pose()
+        yaw0 = pose[2] if pose is not None else 0.0
+        goal = Spin.Goal()
+        goal.target_yaw = _wrap_angle(yaw0 + self._spin_delta)
+        goal.time_allowance.sec = int(self._spin_timeout)
+        self.get_logger().info('到点转圈：第 %d/%d 段，目标朝向 %.2f rad'
+                               % (self._spin_left, self._spin_left,
+                                  goal.target_yaw))
+        future = self._spin.send_goal_async(goal)
+        future.add_done_callback(self._on_spin_response)
+
+    def _on_spin_response(self, future):
+        handle = future.result()
+        if not handle.accepted:
+            self.get_logger().warn('转圈目标被拒绝')
+            self._explorer.on_spin_result(False, self._now(), 'rejected')
+            return
+        self._spin_handle = handle
+        handle.get_result_async().add_done_callback(self._on_spin_done)
+
+    def _on_spin_done(self, future):
+        status = future.result().status
+        self._spin_handle = None
+        ok = (status == 4)
+        self._spin_left -= 1
+        if ok and self._spin_left > 0:
+            self._spin_step()
+            return
+        self.get_logger().info('转圈结束：状态 %d' % status)
+        self._explorer.on_spin_result(ok, self._now(), 'status_%d' % status)
 
     def _cancel_goal(self):
         if self._goal_handle is not None:
@@ -380,16 +472,27 @@ class ExplorerNode(Node):
         self._poses.publish(self._pose_array(candidates))
         self._black_markers.publish(self._blacklist_array())
 
-        signature = tuple((round(c['x'], 1), round(c['y'], 1)) for c in candidates[:5])
-        if signature != self._last_signature:
-            self._last_signature = signature
-            if candidates:
-                best = candidates[0]
+        # 日志降噪：只有"最佳点挪了 ≥0.5 m"或"距上次打印 ≥5 s"才打一行。
+        # 以前按 top5 坐标签名判重，坐标每拍都在抖，等于每秒一行，把决策淹了。
+        if candidates:
+            best = candidates[0]
+            now = self._now()
+            moved = 1e9
+            if self._last_best is not None:
+                moved = math.hypot(best['x'] - self._last_best[0],
+                                   best['y'] - self._last_best[1])
+            if moved >= 0.5 or (now - self._last_best_at) >= 5.0:
+                self._last_best = (best['x'], best['y'])
+                self._last_best_at = now
                 self.get_logger().info(
                     '前沿 %d 个，最佳 (%.2f, %.2f) 分数 %.2f，未知面积 %d 格'
                     % (len(candidates), best['x'], best['y'],
                        best['score'], best['unknown']))
-            elif grid is not None:
+        elif grid is not None:
+            now = self._now()
+            if (now - self._last_best_at) >= 5.0:
+                self._last_best_at = now
+                self._last_best = None
                 self.get_logger().info('没有前沿：要么地图还没建，要么已经探完')
 
     def _marker_array(self, candidates):

@@ -33,8 +33,15 @@ explore_node:
     max_goal_distance_m: 15.0
     nav_timeout_s: 90.0      # 单个目标最多给这么久
     settle_s: 1.0            # 到点后等多久再重新算前沿
-    stuck_window_s: 10.0     # 这么久没挪窝就算卡住
-    stuck_move_m: 0.05
+    stuck_window_s: 10.0     # 这么久没"进展"就算卡住
+    stuck_move_m: 0.05       # 位移超过它算进展
+    stuck_move_rad: 0.15     # 转角超过它也算进展（原地对准不是卡住）
+    final_approach_m: 0.5    # 离目标这么近就不判卡住（最后对准本来就慢）
     max_consecutive_failures: 3
+    max_stuck_streak: 5      # 连续 stuck 这么多次才收工（stuck 本身不累加失败）
+    look_around: true        # 到点转一圈，让同一片区域被多角度看到
+    look_around_yaw: 6.283   # 一圈；会按 ≤180° 拆成多次绝对转向
+    look_around_speed: 1.2   # 名义角速度，只用于日志估算
+    look_around_timeout_s: 30.0
     max_duration_s: 1200.0   # 整场探索最多 20 分钟
     return_home: true        # 探完回起点

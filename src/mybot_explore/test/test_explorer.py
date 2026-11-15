@@ -63,8 +63,14 @@ class HappyPathTest(BaseCase):
         self.assertEqual(e.stats['succeeded'], 1)
         e.step(self.grid, (0.3, 1.5), now=5.5)     # 还没到 settle_s
         self.assertEqual(e.state, ex.SETTLE)
-        e.step(self.grid, (0.3, 1.5), now=6.5)     # 过了
+        cmd = e.step(self.grid, (0.3, 1.5), now=6.5)   # 过了：先去转一圈
+        self.assertEqual(e.state, ex.LOOK_AROUND)
+        self.assertEqual(cmd['action'], 'spin')
+        self.assertEqual(cmd['rounds'], 2)             # 2π 拆成两段 π
+        self.assertAlmostEqual(cmd['delta'], 3.1415, places=3)
+        e.on_spin_result(True, now=12.0)
         self.assertEqual(e.state, ex.SELECT)
+        self.assertEqual(e.stats['look_arounds'], 1)
 
     def test_visited_grows_as_robot_moves(self):
         e = self.make()
@@ -197,6 +203,96 @@ class FinishTest(BaseCase):
         e.start((0.3, 1.5), now=0.0)
         e._finish('no_frontiers')
         self.assertIsNone(e.step(self.grid, (0.3, 1.5), now=1.0))
+
+
+class LookAroundTest(BaseCase):
+    def test_look_around_can_be_disabled(self):
+        e = self.make(look_around=False)
+        e.start((0.3, 1.5), now=0.0)
+        e.step(self.grid, (0.3, 1.5), now=1.0)
+        e.on_navigation_result(True, now=5.0)
+        e.step(self.grid, (0.3, 1.5), now=6.5)
+        self.assertEqual(e.state, ex.SELECT)
+
+    def test_spin_timeout_returns_to_select(self):
+        e = self.make(look_around_timeout_s=5.0)
+        e.start((0.3, 1.5), now=0.0)
+        e.step(self.grid, (0.3, 1.5), now=1.0)
+        e.on_navigation_result(True, now=5.0)
+        e.step(self.grid, (0.3, 1.5), now=6.5)          # 进 look_around
+        self.assertEqual(e.state, ex.LOOK_AROUND)
+        e.step(self.grid, (0.3, 1.5), now=20.0)         # 超时
+        self.assertEqual(e.state, ex.SELECT)
+        self.assertEqual(e.stats.get('look_around_timeouts'), 1)
+
+    def test_spin_failure_still_returns_to_select(self):
+        e = self.make()
+        e.start((0.3, 1.5), now=0.0)
+        e.step(self.grid, (0.3, 1.5), now=1.0)
+        e.on_navigation_result(True, now=5.0)
+        e.step(self.grid, (0.3, 1.5), now=6.5)
+        e.on_spin_result(False, now=8.0, reason='no_spin_server')
+        self.assertEqual(e.state, ex.SELECT)
+        self.assertEqual(e.stats.get('look_around_failures'), 1)
+
+
+class StuckPolicyTest(BaseCase):
+    """A 批的核心：转向算进展、stuck 不累加失败、快到点不判卡住。"""
+
+    def _navigate(self, e, now=1.0, pose=(0.3, 1.5)):
+        e.start(pose, now=0.0)
+        cmd = e.step(self.grid, pose, now=now)
+        return cmd
+
+    def test_pure_rotation_counts_as_progress(self):
+        e = self.make(stuck_window_s=3.0, stuck_move_rad=0.15)
+        self._navigate(e)
+        # 位置不动、只转一点：不应判卡住
+        for i in range(1, 8):
+            e.step(self.grid, (0.3, 1.5, 0.10 * i), now=1.0 + i)
+        self.assertEqual(e.state, ex.NAVIGATE)
+        self.assertEqual(e.stats['stuck'], 0)
+
+    def test_no_move_no_rotate_triggers_stuck(self):
+        e = self.make(stuck_window_s=3.0)
+        self._navigate(e)
+        cmds = []
+        for i in range(1, 6):
+            cmds.append(e.step(self.grid, (0.3, 1.5, 0.0), now=1.0 + i))
+        self.assertEqual(e.stats['stuck'], 1)
+        self.assertTrue(any(c and c.get('action') == 'cancel' for c in cmds))
+
+    def test_stuck_does_not_add_consecutive_failure(self):
+        e = self.make(stuck_window_s=3.0)
+        self._navigate(e)
+        e._abandon('stuck')
+        self.assertEqual(e.consecutive_failures, 0)
+
+    def test_stuck_streak_finishes_eventually(self):
+        e = self.make(max_stuck_streak=2)
+        e.start((0.3, 1.5), now=0.0)
+        e.state = ex.NAVIGATE
+        e.nav_kind = 'frontier'
+        e.nav_target = (1.0, 1.0)
+        e._abandon('stuck')
+        e.state = ex.NAVIGATE
+        e.nav_kind = 'frontier'
+        e.nav_target = (1.0, 1.0)
+        e._abandon('stuck')
+        self.assertTrue(e.finished())
+        self.assertEqual(e.done_reason, 'stuck_streak')
+
+    def test_near_goal_skips_stuck_check(self):
+        e = self.make(stuck_window_s=1.0, final_approach_m=0.5)
+        e.start((0.3, 1.5), now=0.0)
+        e.state = ex.NAVIGATE
+        e.nav_kind = 'frontier'
+        e.nav_target = (0.5, 1.5)          # 距离 0.2 m < 0.5
+        e.nav_started = 0.0
+        e.last_progress = 0.0
+        for i in range(1, 6):
+            e.step(self.grid, (0.3, 1.5, 0.0), now=float(i))
+        self.assertEqual(e.stats['stuck'], 0)
 
 
 class SnapshotTest(BaseCase):
