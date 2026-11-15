@@ -86,6 +86,17 @@ ssh -i "$KEY" -o IdentitiesOnly=yes -o StrictHostKeyChecking=no \
       cd $WS
       source /opt/ros/humble/setup.bash
       colcon build --packages-select $PKG_LIST 2>&1 | tail -6
+      # 升版本后 site-packages 里可能还留着旧的 egg-info，importlib.metadata
+      # 会报上一版的号（先删再拷，和 deploy_console.sh 一个道理）
+      for pkg in $PKG_LIST; do
+        SP=install/\$pkg/lib/python3.10/site-packages
+        EI=\$(ls -d build/\$pkg/*.egg-info 2>/dev/null | head -1)
+        if [ -n \"\$EI\" ] && [ -d \"\$SP\" ]; then
+          rm -rf \"\$SP\"/*.egg-info
+          cp -r \"\$EI\" \"\$SP\"/\$(basename \$EI)
+          echo \"  egg-info refreshed: \$(basename \$EI)\"
+        fi
+      done
     " || { echo "编译失败：看上面 tail 的最后几行"; exit 1; }
 
 echo "== 5/5 核对版本 =="
@@ -94,10 +105,12 @@ ssh -i "$KEY" -o IdentitiesOnly=yes -o StrictHostKeyChecking=no \
       cd $WS
       source /opt/ros/humble/setup.bash
       source install/setup.bash
-      for p in fishbot-console fishbot-patrol-v2 fishbot-safety fishbot-vision; do
+      for p in fishbot-console fishbot-patrol-v2 fishbot-safety fishbot-vision fishbot-explore; do
         v=\$(timeout 20 python3 -c \"import importlib.metadata as m;print(m.version('\$p'))\" 2>/dev/null || echo '?')
         printf '  %-24s %s\n' \"\$p\" \"\$v\"
       done
+      echo "  --- 本次编译过的包（build 目录最新 6 个） ---"
+      ls -dt build/*/ 2>/dev/null | head -6 | sed 's#build/##; s#/\$##; s#^#  #'
     "
 
 echo

@@ -42,9 +42,22 @@ bash tools/sync_vm.sh 192.168.1.103  # 演示用的局域网网段
 脚本做三件事：本地把 `mybot_*` 改回 `fishbot_*` 打包（`tools/sync_vm.py`）→
 备份虚拟机旧 `src` → 解包 + `colcon build` + 打印装好的版本号。
 
+**这是每次改动的收尾动作，不是可选项**（2026-11-15 加硬）。顺序固定：
+
+```
+改代码 → 跑测试 → 改手册 → git commit → git push → bash tools/sync_vm.sh → 核对版本
+```
+
+看到 `git push` 成功就收工，等于用户机器上还是旧代码——之前反复踩过这个坑
+（他在机器上跑的和仓库里说的不是一份东西）。
+
 - 模型权重大于 5 MB 的默认不传（机器上本来就有），要传加 `--with-models`
 - `~/.ros/mybot_*.json` 会被改成 `~/.ros/fishbot_*.json`，正好对上机器上已有的路线/基线，不会丢数据
 - 脚本不重启任何进程；控制台要用新代码，得自己重启
+- 同步后**必须看一眼输出**：`Finished <<< fishbot_explore` 这类新包要出现在
+  编译列表里，否则说明 `tools/sync_vm.py` 的 PACKAGES 漏了
+- 版本号核对只打印 console/patrol/safety/vision；新包用
+  `cat ~/fishbot_full_ws/install/fishbot_X/share/fishbot_X/package.xml | grep version` 抽查
 
 ## 4. 不许做的事
 
