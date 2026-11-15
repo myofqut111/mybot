@@ -268,19 +268,31 @@ class StuckPolicyTest(BaseCase):
         e._abandon('stuck')
         self.assertEqual(e.consecutive_failures, 0)
 
-    def test_stuck_streak_finishes_eventually(self):
+    def test_stuck_never_finishes_while_frontiers_remain(self):
+        """真机教训：连 stuck 5 次就收工，会把还有 20 个前沿的探索掐死。"""
         e = self.make(max_stuck_streak=2)
         e.start((0.3, 1.5), now=0.0)
-        e.state = ex.NAVIGATE
-        e.nav_kind = 'frontier'
-        e.nav_target = (1.0, 1.0)
-        e._abandon('stuck')
-        e.state = ex.NAVIGATE
-        e.nav_kind = 'frontier'
-        e.nav_target = (1.0, 1.0)
-        e._abandon('stuck')
+        for i in range(8):
+            e.state = ex.NAVIGATE
+            e.nav_kind = 'frontier'
+            e.nav_target = (1.0 + i * 0.1, 1.0)
+            e._abandon('stuck')
+            self.assertFalse(e.finished(), 'stuck 第 %d 次就收工了' % (i + 1))
+        self.assertEqual(e.stats['stuck'], 8)
+
+    def test_blacklist_cap_finishes(self):
+        """真正的收工判据：试过的点太多（黑名单到上限）。"""
+        e = self.make(max_blacklist=3)
+        e.start((0.3, 1.5), now=0.0)
+        for i in range(3):
+            e.state = ex.NAVIGATE
+            e.nav_kind = 'frontier'
+            e.nav_target = (1.0 + i * 0.5, 1.0)
+            e._abandon('aborted')
+        e.state = ex.SELECT
+        self.assertIsNone(e.step(self.grid, (0.3, 1.5), now=2.0))
         self.assertTrue(e.finished())
-        self.assertEqual(e.done_reason, 'stuck_streak')
+        self.assertEqual(e.done_reason, 'too_many_blacklisted')
 
     def test_near_goal_skips_stuck_check(self):
         e = self.make(stuck_window_s=1.0, final_approach_m=0.5)

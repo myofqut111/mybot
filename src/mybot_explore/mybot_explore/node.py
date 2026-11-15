@@ -104,6 +104,7 @@ class ExplorerNode(Node):
         self._spin_delta = math.pi
         self._spin_speed = 1.2
         self._spin_timeout = 30.0
+        self._done_logged = False
 
         latched = QoSProfile(depth=1,
                              durability=QoSDurabilityPolicy.TRANSIENT_LOCAL,
@@ -297,6 +298,19 @@ class ExplorerNode(Node):
             cmd = self._explorer.step(grid, (pose[0], pose[1], pose[2]), now)
             if cmd:
                 self._handle(cmd, pose)
+
+        # 收工必须说清楚为什么——以前直接静默停住，用户只看到"前沿 20 个"
+        # 却不再动，完全不知道是探完了还是被掐掉了。
+        if self._explorer.finished() and not self._done_logged:
+            self._done_logged = True
+            snap = self._explorer.snapshot(now=now)
+            self.get_logger().info(
+                '探索收工：原因 %s；目标 %d 个（成功 %d / 失败 %d / 超时 %d / 卡住 %d），'
+                '黑名单 %d 个，走过 %.1f m'
+                % (snap.get('done_reason') or '未知', snap.get('goals', 0),
+                   snap.get('succeeded', 0), snap.get('failed', 0),
+                   snap.get('timeouts', 0), snap.get('stuck', 0),
+                   snap.get('blacklist', 0), snap.get('distance_m', 0.0)))
 
         self._publish_markers(grid, pose)
         self._publish_status(now)

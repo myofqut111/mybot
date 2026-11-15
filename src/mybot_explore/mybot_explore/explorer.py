@@ -72,8 +72,9 @@ DEFAULTS = {
     'look_around_speed': 1.2,
     'look_around_timeout_s': 30.0,
     'progress_epsilon_m': 0.15,
-    'max_consecutive_failures': 3,
+    'max_consecutive_failures': 10,
     'max_stuck_streak': 5,
+    'max_blacklist': 60,
     'max_duration_s': 1200.0,
     'return_home': True,
 }
@@ -234,6 +235,11 @@ class Explorer(object):
         if self.consecutive_failures >= self.params['max_consecutive_failures']:
             self.too_many_failures = True
             return self._finish('too_many_failures')
+        # 黑名单上限才是真正的"到处都试过了"的判据：每个失败的点都会被拉黑，
+        # 剩下的前沿点越来越少，最后自然走到"没有前沿"。绝不因为"失败几次"
+        # 就把还有前沿的探索掐掉——真机上一片区域连着不可达是很常见的。
+        if len(self.blacklist) >= self.params['max_blacklist']:
+            return self._finish('too_many_blacklisted')
         if grid is None:
             return None
 
@@ -324,17 +330,17 @@ class Explorer(object):
         if reason == 'timeout':
             self.stats['timeouts'] += 1
             self.consecutive_failures += 1
+            self.stats['stuck_streak'] = 0
         elif reason == 'stuck':
             self.stats['stuck'] += 1
-            # stuck 不累加；但连续 stuck 太多说明整个环境不对劲，
-            # 用单独计数兜个底，避免无限循环。
+            # stuck 只统计，**不再收工**：真机上一片区域连着不可达很常见，
+            # 以前"连续 5 次 stuck 就结束"会把还有 20 个前沿的探索直接掐死。
+            # 每个 stuck 的点照样拉黑，选点会自然绕开它；真正的收工判据是
+            # "没有前沿了"或黑名单到上限（max_blacklist）。
             self.stats['stuck_streak'] = self.stats.get('stuck_streak', 0) + 1
-            if self.stats['stuck_streak'] >= self.params['max_stuck_streak']:
-                self.stats['stuck_streak'] = 0
-                self._finish('stuck_streak')
-                return
         else:
             self.consecutive_failures += 1
+            self.stats['stuck_streak'] = 0
         self.nav_target = None
         self.nav_kind = ''
         self.state = SELECT
