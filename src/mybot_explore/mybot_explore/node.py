@@ -92,9 +92,16 @@ class ExplorerNode(Node):
         latched = QoSProfile(depth=1,
                              durability=QoSDurabilityPolicy.TRANSIENT_LOCAL,
                              history=QoSHistoryPolicy.KEEP_LAST)
-        self.create_subscription(OccupancyGrid,
-                                 str(self.get_parameter('map_topic').value),
-                                 self._on_map, latched)
+        volatile = QoSProfile(depth=1,
+                              durability=QoSDurabilityPolicy.VOLATILE,
+                              history=QoSHistoryPolicy.KEEP_LAST)
+        map_topic = str(self.get_parameter('map_topic').value)
+        # 两个订阅同一个话题，靠"谁先收到算谁"：
+        #   map_server 发的是 latched（只发一次）→ 必须 TRANSIENT_LOCAL 才收得到；
+        #   slam_toolbox 发的是 VOLATILE（周期发）→ 对 TRANSIENT_LOCAL 订阅者不兼容，
+        #   它根本不会投递。两个都订上，静态图和 SLAM 图都能用。
+        self.create_subscription(OccupancyGrid, map_topic, self._on_map, latched)
+        self.create_subscription(OccupancyGrid, map_topic, self._on_map, volatile)
         # 只是用来判断"传感器还活着"（暂不参与决策）
         # 传感器数据一律 BEST_EFFORT：订阅端比发布端"宽松"总是能收到，
         # 反过来（RELIABLE 订阅 + BEST_EFFORT 发布）一条都收不到。
