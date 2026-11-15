@@ -121,16 +121,29 @@ class FailurePathTest(BaseCase):
             self.assertAlmostEqual(cmd['y'], target[1], places=6)
 
     def test_three_failures_stop_everything(self):
-        e = self.make(max_consecutive_failures=3)
+        # return_home 关掉，只验"连续失败到上限就收工"这一条
+        e = self.make(max_consecutive_failures=3, return_home=False,
+                      blacklist_radius_m=0.05)
         e.start((0.3, 1.5), now=0.0)
         now = 1.0
         for _ in range(3):
             e.step(self.grid, (0.3, 1.5), now=now)
             e.on_navigation_result(False, now=now + 1.0)
-            now += 3.0
+            now += 5.0          # 跳过换目标的冷却
         e.step(self.grid, (0.3, 1.5), now=now)
         self.assertEqual(e.state, ex.DONE)
         self.assertEqual(e.done_reason, 'too_many_failures')
+
+    def test_retarget_cooldown_holds_selection(self):
+        """刚放弃目标后要冷几秒再选下一个，否则车会原地再转一次。"""
+        e = self.make(retarget_cooldown_s=3.0, return_home=False,
+                      blacklist_radius_m=0.05)
+        e.start((0.3, 1.5), now=0.0)
+        e.step(self.grid, (0.3, 1.5), now=0.0)
+        e.on_navigation_result(False, now=1.0)
+        self.assertIsNone(e.step(self.grid, (0.3, 1.5), now=2.0))
+        self.assertAlmostEqual(e.select_not_before, 4.0)
+        self.assertIsNotNone(e.step(self.grid, (0.3, 1.5), now=4.5))
 
     def test_nav_timeout_cancels_and_blacklists(self):
         e = self.make(nav_timeout_s=30.0)

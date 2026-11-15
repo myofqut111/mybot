@@ -33,10 +33,12 @@ explore_node:
     max_goal_distance_m: 15.0
     nav_timeout_s: 90.0      # 单个目标最多给这么久
     settle_s: 1.0            # 到点后等多久再重新算前沿
-    stuck_window_s: 10.0     # 这么久没"进展"就算卡住
-    stuck_move_m: 0.05       # 位移超过它算进展
-    stuck_move_rad: 0.15     # 转角超过它也算进展（原地对准不是卡住）
+    stuck_window_s: 15.0     # 这么久没"进展"就算卡住（2026-11-15：10->15，窄处转弯本来就慢）
+    stuck_move_m: 0.08       # 位移超过它算进展
+    stuck_move_rad: 0.30     # 转角超过它也算进展（原地对准不是卡住；0.15->0.30 少误判）
+    retarget_cooldown_s: 3.0 # 放弃目标后冷几秒再选下一个，否则车会原地又转一次
     final_approach_m: 0.5    # 离目标这么近就不判卡住（最后对准本来就慢）
+    blacklist_radius_m: 1.0  # 拉黑半径；0.6->1.0，同一个死角别换个点再来一次
     max_consecutive_failures: 10   # 只统计真的失败（abort/超时）；stuck 不算
     max_stuck_streak: 5      # 仅作诊断计数，不会因此收工
     max_blacklist: 60        # 拉黑的点数到上限才算"到处都试过了"，才收工

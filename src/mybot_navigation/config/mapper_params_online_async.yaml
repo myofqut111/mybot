@@ -26,11 +26,11 @@ slam_toolbox:
     debug_logging: false
     throttle_scans: 1
     transform_publish_period: 0.02
-    map_update_interval: 2.0
+    map_update_interval: 1.0          # 【2026-11-15】2.0->1.0 地图及时刷新，前沿判断才准
     resolution: 0.05                 # 5cm 栅格
     restamp_tf: false
     min_laser_range: 0.15             # 滤掉车身附近杂点/自反射
-    max_laser_range: 8.0              # M1C1 最大量程 8m；与 AMCL laser_max_range 一致
+    max_laser_range: 6.0              # 【2026-11-15】8.0->6.0 远处多为噪声/玻璃反射，砍掉最治漂移
     minimum_time_interval: 0.2        # 【改 0.5->0.2】每帧都参与匹配
     transform_timeout: 1.0            # WiFi 抖动时多等 TF，防 queue is full
     tf_buffer_duration: 30.0
@@ -40,8 +40,8 @@ slam_toolbox:
     # ---- 通用匹配参数 ----
     use_scan_matching: true
     use_scan_barycenter: true
-    minimum_travel_distance: 0.15     # 【改 0.2->0.15】节点更密、段间漂移更小
-    minimum_travel_heading: 0.15      # 【改 0.2->0.15】转弯更早纠偏
+    minimum_travel_distance: 0.25     # 【2026-11-15】0.15->0.25 节点少而稳，比又密又抖好
+    minimum_travel_heading: 0.25      # 【2026-11-15】0.15->0.25 同上
     check_min_dist_and_heading_precisely: false
     scan_buffer_size: 10
     scan_buffer_maximum_scan_distance: 8.0

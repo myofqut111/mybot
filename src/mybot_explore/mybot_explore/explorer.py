@@ -56,16 +56,17 @@ DEFAULTS = {
     'w_distance': 0.6,
     'w_gain': 0.4,
     'visited_radius_m': 1.2,
-    'blacklist_radius_m': 0.6,
+    'blacklist_radius_m': 1.0,
     'min_goal_distance_m': 0.8,
     'min_separation_m': 1.0,
     'goal_clearance_m': 0.35,
     'max_goal_distance_m': 15.0,
     'nav_timeout_s': 90.0,
     'settle_s': 1.0,
-    'stuck_window_s': 10.0,
-    'stuck_move_m': 0.05,
-    'stuck_move_rad': 0.15,
+    'stuck_window_s': 15.0,
+    'stuck_move_m': 0.08,
+    'stuck_move_rad': 0.30,
+    'retarget_cooldown_s': 3.0,
     'final_approach_m': 0.5,
     'look_around': True,
     'look_around_yaw': 6.283,
@@ -100,6 +101,8 @@ class Explorer(object):
         self.last_progress = 0.0
         self.settle_at = 0.0
         self.look_around_at = 0.0
+        self.select_not_before = 0.0
+        self._now = 0.0
         self.last_cancel_reason = ''
 
         # 卡住判定用的参考点：位置 + 朝向。转向本来就是"在动"，
@@ -146,6 +149,7 @@ class Explorer(object):
         if self.state == IDLE or self.state == DONE:
             return None
 
+        self._now = now
         self._observe(pose, now, grid)
 
         if self.state == SELECT:
@@ -240,6 +244,10 @@ class Explorer(object):
         # 就把还有前沿的探索掐掉——真机上一片区域连着不可达是很常见的。
         if len(self.blacklist) >= self.params['max_blacklist']:
             return self._finish('too_many_blacklisted')
+        # 刚放弃一个目标就立刻派下一个，车会原地再转一次——看起来就是"打转"。
+        # 留几秒冷却，让控制器先把上一次的取消收干净。
+        if now < self.select_not_before:
+            return None
         if grid is None:
             return None
 
@@ -344,12 +352,15 @@ class Explorer(object):
         self.nav_target = None
         self.nav_kind = ''
         self.state = SELECT
+        self.select_not_before = self._now + float(
+            self.params['retarget_cooldown_s'])
 
     # ------------------------------------------------------------------
     # 导航结果回灌
     # ------------------------------------------------------------------
 
     def on_navigation_result(self, ok, now, reason=''):
+        self._now = now
         if self.state not in (NAVIGATE, RETURN_HOME):
             return
 
