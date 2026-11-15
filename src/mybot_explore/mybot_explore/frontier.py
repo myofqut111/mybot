@@ -212,6 +212,41 @@ def unknown_around(grid, gx, gy, radius_cells):
 
 
 
+
+def despeckle(grid, occupied_thresh=50, min_neighbors=2):
+    """去掉孤立的障碍点（激光噪点），保留真正的墙与家具。
+
+    为什么需要：激光偶尔会在空地中间留下一个两个黑点，代价地图里无所谓
+    （会被膨胀抹平），但"离障碍多远"是按**每个障碍格**算的——这些噪点
+    会把可通行区打成筛子，连通性 BFS 走两步就断，前沿全被判成"到不了"。
+
+    规则：8 邻域里的障碍格少于 min_neighbors 个，就当噪点清掉。
+    一格厚的直墙，中间每格左右各有邻居（>=2），不会被误删；墙角更多。
+    """
+    total = grid.width * grid.height
+    data = list(grid.data)
+    removed = 0
+    for gy in range(grid.height):
+        for gx in range(grid.width):
+            idx = grid.index(gx, gy)
+            if grid.data[idx] < occupied_thresh:
+                continue
+            count = 0
+            for dx, dy in NEIGHBORS8:
+                nx, ny = gx + dx, gy + dy
+                if not grid.contains(nx, ny):
+                    continue
+                if grid.data[grid.index(nx, ny)] >= occupied_thresh:
+                    count += 1
+            if count < min_neighbors:
+                data[idx] = 0
+                removed += 1
+    if not removed:
+        return grid
+    return Grid(grid.width, grid.height, grid.resolution,
+                grid.origin_x, grid.origin_y, data)
+
+
 def obstacle_distance(grid, occupied_thresh=50):
     """每个格子到最近障碍的距离（米）；障碍本身是 0。
 
@@ -442,7 +477,10 @@ def find_frontiers(grid, robot_xy=None, min_size=4, occupied_thresh=50,
     reach = None
     reach_limit = 0
     if reach_clearance_m and reach_clearance_m > 0 and robot_xy is not None:
-        distance_map = obstacle_distance(grid, occupied_thresh)
+        # 先去掉孤立噪点再算距离：不然可通行区会被打成筛子，
+        # 连通性 BFS 走两步就断，所有前沿都被判成"到不了"。
+        clean = despeckle(grid, occupied_thresh)
+        distance_map = obstacle_distance(clean, occupied_thresh)
         traversable = traversable_mask(grid, reach_clearance_m,
                                        occupied_thresh, distance_map)
         reach = reachable_mask(grid, traversable, robot_xy)
