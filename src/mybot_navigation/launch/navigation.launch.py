@@ -297,7 +297,11 @@ def generate_launch_description():
             PythonLaunchDescriptionSource(
                 os.path.join(
                     get_package_share_directory('mybot_patrol_v2'),
-                    'launch', 'patrol_v2.launch.py'))),
+                    'launch', 'patrol_v2.launch.py')),
+            # 必须显式告诉巡检"导航已经起了"。patrol_v2 的 nav 参数一旦为 true，
+            # 它会 include navigation.launch.py，而后者又会 include patrol_v2 ->
+            # 无限递归，每转一圈多一整套 amcl/controller/bt_navigator。
+            launch_arguments={'nav': 'false', 'console': 'false'}.items()),
     ], condition=IfCondition(enable_patrol))
 
     # ------------------------- 6. RViz（可选，需 sudo apt install ros-humble-nav2-bringup） -------------------------

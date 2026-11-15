@@ -40,6 +40,7 @@ def generate_launch_description():
     nav = LaunchConfiguration('nav')
     patrol = LaunchConfiguration('patrol')
     rviz = LaunchConfiguration('rviz')
+    localization = LaunchConfiguration('localization')
     http_port = LaunchConfiguration('http_port')
     host = LaunchConfiguration('host')
 
@@ -52,6 +53,7 @@ def generate_launch_description():
         'mybot_navigation', 'navigation.launch.py',
         {'map_yaml_file': map_yaml_file,
          'enable_patrol': patrol,
+         'localization': localization,
          'rviz': rviz},
         condition=IfCondition(nav),
     )
@@ -88,6 +90,10 @@ def generate_launch_description():
                               description='是否起巡检栈（路线/任务管理器 + 执行器）'),
         DeclareLaunchArgument('rviz', default_value='false',
                               description='是否顺便起 RViz（要装 nav2-bringup）'),
+        DeclareLaunchArgument('localization', default_value='amcl',
+                              description='amcl = 用事先建好的地图；slam = slam_toolbox 实时建图'),
+        DeclareLaunchArgument('slam_params_file', default_value='',
+                              description='slam 模式的参数文件，留空用包内默认'),
         DeclareLaunchArgument('http_port', default_value='8080',
                               description='控制台端口'),
         DeclareLaunchArgument('host', default_value='0.0.0.0',
