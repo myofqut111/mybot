@@ -211,6 +211,193 @@ def unknown_around(grid, gx, gy, radius_cells):
     return count
 
 
+
+def obstacle_distance(grid, occupied_thresh=50):
+    """每个格子到最近障碍的距离（米）；障碍本身是 0。
+
+    以障碍为种子做多源 BFS（四邻接，一步 = 一个格子）。
+    未知格子不参与播种：它们是"没看过"，不是"挡路"。
+    到不了的格子给一个很大的数，调用方用不到。
+    """
+    total = grid.width * grid.height
+    far = float(grid.width + grid.height) * grid.resolution
+    dist = [far] * total
+    queue = collections.deque()
+    for idx, value in enumerate(grid.data):
+        if value >= occupied_thresh:
+            dist[idx] = 0.0
+            queue.append(idx)
+    step = grid.resolution
+    while queue:
+        idx = queue.popleft()
+        base = dist[idx] + step
+        gx = idx % grid.width
+        gy = idx // grid.width
+        for dx, dy in NEIGHBORS4:
+            nx, ny = gx + dx, gy + dy
+            if not grid.contains(nx, ny):
+                continue
+            nidx = grid.index(nx, ny)
+            if dist[nidx] > base:
+                dist[nidx] = base
+                queue.append(nidx)
+    return dist
+
+
+def traversable_mask(grid, clearance_m, occupied_thresh=50, distance=None):
+    """"机器人身体能过去"的格子：空闲 + 离障碍 >= clearance_m。
+
+    未知格子一律不可通行——没看过就是不敢走。
+    """
+    if distance is None:
+        distance = obstacle_distance(grid, occupied_thresh)
+    mask = bytearray(grid.width * grid.height)
+    clearance = max(0.0, float(clearance_m))
+    for idx, value in enumerate(grid.data):
+        if value != UNKNOWN and 0 <= value < occupied_thresh and \
+                distance[idx] >= clearance:
+            mask[idx] = 1
+    return mask
+
+
+def reachable_mask(grid, traversable, start_xy):
+    """从 start_xy 出发、只在可通行格子上 BFS，返回可到达的格子掩码。"""
+    mask = bytearray(grid.width * grid.height)
+    if start_xy is None:
+        return mask
+    sx, sy = grid.world_to_cell(float(start_xy[0]), float(start_xy[1]))
+    if not grid.contains(sx, sy):
+        return mask
+    # 起点本身可能在墙边（刚停下时很常见），先在附近找一格能站的
+    seed = None
+    for radius in range(0, 8):
+        for dy in range(-radius, radius + 1):
+            for dx in range(-radius, radius + 1):
+                nx, ny = sx + dx, sy + dy
+                if not grid.contains(nx, ny):
+                    continue
+                if traversable[grid.index(nx, ny)]:
+                    seed = (nx, ny)
+                    break
+            if seed:
+                break
+        if seed:
+            break
+    if seed is None:
+        return mask
+    queue = collections.deque([seed])
+    mask[grid.index(seed[0], seed[1])] = 1
+    while queue:
+        cx, cy = queue.popleft()
+        for dx, dy in NEIGHBORS4:
+            nx, ny = cx + dx, cy + dy
+            if not grid.contains(nx, ny):
+                continue
+            idx = grid.index(nx, ny)
+            if mask[idx] or not traversable[idx]:
+                continue
+            mask[idx] = 1
+            queue.append((nx, ny))
+    return mask
+
+
+def _nearest_reachable(grid, gx, gy, reach, limit_cells):
+    """在 (gx, gy) 周围找最近的可到达格子；找不到返回 None。"""
+    if reach[grid.index(gx, gy)]:
+        return gx, gy
+    best = None
+    best_dist = None
+    for dy in range(-limit_cells, limit_cells + 1):
+        for dx in range(-limit_cells, limit_cells + 1):
+            d2 = dx * dx + dy * dy
+            if d2 > limit_cells * limit_cells:
+                continue
+            nx, ny = gx + dx, gy + dy
+            if not grid.contains(nx, ny):
+                continue
+            if not reach[grid.index(nx, ny)]:
+                continue
+            if best_dist is None or d2 < best_dist:
+                best, best_dist = (nx, ny), d2
+    return best
+
+
+def seal_gaps(grid, radius_m, occupied_thresh=50):
+    """形态学闭运算：把"腿和腿之间"这种细缝算成障碍。
+
+    为什么需要：2D 激光能从凳子腿、桌腿之间穿过去，于是地图上腿之间是
+    **空闲**，前沿就长在那片"看得见但过不去"的地方；更糟的是椅子面在
+    激光平面之上，图里根本不存在，车会照着"空"开过去。
+
+    做法：先把障碍膨胀 radius_m（这样缝被填上），再腐蚀回来（障碍恢复
+    原尺寸，但被填上的缝保留）。只返回新地图，不改原对象。
+    """
+    radius = int(round(float(radius_m) / grid.resolution))
+    if radius <= 0:
+        return grid
+    total = grid.width * grid.height
+    dil = bytearray(total)
+    queue = collections.deque()
+    for idx, value in enumerate(grid.data):
+        if value >= occupied_thresh:
+            dil[idx] = 1
+            queue.append(idx)
+    for _ in range(radius):
+        if not queue:
+            break
+        for _ in range(len(queue)):
+            idx = queue.popleft()
+            gx = idx % grid.width
+            gy = idx // grid.width
+            for dx, dy in NEIGHBORS4:
+                nx, ny = gx + dx, gy + dy
+                if not grid.contains(nx, ny):
+                    continue
+                nidx = grid.index(nx, ny)
+                if dil[nidx]:
+                    continue
+                dil[nidx] = 1
+                queue.append(nidx)
+    # 腐蚀：从"没被膨胀到"的格子出发做 BFS，离它 >= radius 的膨胀格才是闭运算结果
+    depth = [0] * total
+    queue = collections.deque()
+    for idx in range(total):
+        if not dil[idx]:
+            depth[idx] = 0
+            queue.append(idx)
+        else:
+            depth[idx] = -1
+    while queue:
+        idx = queue.popleft()
+        gx = idx % grid.width
+        gy = idx // grid.width
+        nd = depth[idx] + 1
+        for dx, dy in NEIGHBORS4:
+            nx, ny = gx + dx, gy + dy
+            if not grid.contains(nx, ny):
+                continue
+            nidx = grid.index(nx, ny)
+            if depth[nidx] != -1:
+                continue
+            depth[nidx] = nd
+            queue.append(nidx)
+    data = list(grid.data)
+    added = 0
+    for idx in range(total):
+        if not dil[idx]:
+            continue
+        if depth[idx] == -1 or depth[idx] < radius:
+            continue
+        if data[idx] >= occupied_thresh:
+            continue
+        data[idx] = 100
+        added += 1
+    if not added:
+        return grid
+    return Grid(grid.width, grid.height, grid.resolution,
+                grid.origin_x, grid.origin_y, data)
+
+
 def _is_blacklisted(x, y, blacklist, radius_m):
     for bx, by in blacklist:
         if math.hypot(x - bx, y - by) <= radius_m:
@@ -223,7 +410,8 @@ def find_frontiers(grid, robot_xy=None, min_size=4, occupied_thresh=50,
                    w_distance=0.6, w_gain=0.4, visited=None,
                    blacklist=None, blacklist_radius_m=0.6,
                    min_goal_distance_m=0.0, max_goal_distance_m=None,
-                   min_separation_m=0.0, goal_clearance_m=0.0):
+                   min_separation_m=0.0, goal_clearance_m=0.0,
+                   reach_clearance_m=0.0, reach_search_m=0.6):
     """主入口：返回按分数从高到低排好的候选点。
 
     每个候选是 dict：
@@ -236,6 +424,10 @@ def find_frontiers(grid, robot_xy=None, min_size=4, occupied_thresh=50,
         blacklist_radius_m 拉黑半径
         min_goal_distance_m 太近的点不去（防止原地打转）
         max_goal_distance_m 太远的点不去
+        reach_clearance_m  机器人半径（含余量）。给了就只保留"车真能开过去"的点：
+                           离障碍 < 该值的格子不可通行，从车位做连通性 BFS，
+                           走不到的前沿直接丢弃（激光能穿过凳子腿不代表车能过）
+        reach_search_m     候选点附近多远以内有可达格子就算数
     """
     cells = frontier_cells(grid, occupied_thresh, visited=visited)
     if not cells:
@@ -245,6 +437,16 @@ def find_frontiers(grid, robot_xy=None, min_size=4, occupied_thresh=50,
     tight = None
     if goal_clearance_m and goal_clearance_m > 0:
         tight = tight_cells(grid, goal_clearance_m, occupied_thresh)
+
+    # 可达性：只在"车能站、且从车那里能连过来"的格子上选目标
+    reach = None
+    reach_limit = 0
+    if reach_clearance_m and reach_clearance_m > 0 and robot_xy is not None:
+        distance_map = obstacle_distance(grid, occupied_thresh)
+        traversable = traversable_mask(grid, reach_clearance_m,
+                                       occupied_thresh, distance_map)
+        reach = reachable_mask(grid, traversable, robot_xy)
+        reach_limit = max(1, int(round(float(reach_search_m) / grid.resolution)))
 
     candidates = []
     for group in groups:
@@ -262,6 +464,11 @@ def find_frontiers(grid, robot_xy=None, min_size=4, occupied_thresh=50,
             if safe is None:
                 continue              # 这条前沿贴着墙，去了也停不进去
             cx, cy = safe
+        if reach is not None:
+            moved = _nearest_reachable(grid, cx, cy, reach, reach_limit)
+            if moved is None:
+                continue          # 走不到这片：激光穿得过去，车过不去
+            cx, cy = moved
         gain = unknown_around(grid, cx, cy, radius_cells)
         wx, wy = grid.cell_to_world(cx, cy)
         if robot_xy is None:

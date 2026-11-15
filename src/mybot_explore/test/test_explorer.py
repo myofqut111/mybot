@@ -27,6 +27,10 @@ class BaseCase(unittest.TestCase):
             'min_goal_distance_m': 0.3,
             'visited_radius_m': 0.4,   # 小一点，免得一开场就把前沿标掉
             'settle_s': 1.0,
+            # 这套地图的三段口袋中间是未知格，彼此并不连通。
+            # 可达性会把它们判成"走不到"，那是新功能正确的行为；
+            # 但这里测的是失败计数/冷却，所以显式关掉可达性。
+            'traversable_clearance_m': 0.0,
         }
 
     def make(self, **extra):
@@ -341,3 +345,21 @@ class SnapshotTest(BaseCase):
 
 if __name__ == '__main__':
     unittest.main()
+
+
+class ReachabilityTest(BaseCase):
+    """可达性：走不到的前沿点不能派给导航。"""
+
+    def test_unreachable_pockets_are_dropped(self):
+        e = self.make(traversable_clearance_m=0.30)
+        e.start((0.3, 1.5), now=0.0)
+        cmd = e.step(self.grid, (0.3, 1.5), now=1.0)
+        self.assertIsNotNone(cmd)
+        # 车在第二段口袋里，派出去的目标必须还在第二段（y 在 1.1~1.6 之间）
+        self.assertGreaterEqual(cmd['y'], 1.1)
+        self.assertLessEqual(cmd['y'], 1.7)
+
+    def test_reachable_room_keeps_candidates(self):
+        e = self.make(traversable_clearance_m=0.0)
+        e.start((0.3, 1.5), now=0.0)
+        self.assertIsNotNone(e.step(self.grid, (0.3, 1.5), now=1.0))

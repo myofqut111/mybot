@@ -94,7 +94,11 @@ def carve_scan(grid, scan, pose, max_range_m=0.0, robot_radius_m=0.25,
         # 打到东西了：终点那格标成障碍
         # （不要求它本来是未知——光束撞上的那个面确实在那儿；
         #   一帧噪声最多留一个障碍格，下一帧擦过去就没了）
-        if distance < scan['range_max'] - 1e-6:
+        # 只有"可信范围内真的打到东西"才算障碍。
+        # 以前只要小于 range_max 就标，于是 4 m 以外那些"没回波/极弱回波"
+        # 也会在远处留下零星障碍格——局部代价地图里就是一片假墙，
+        # 控制器看到 collision ahead 就中止、回退，看起来就是"先退一段"。
+        if distance <= hit_range and distance < scan['range_max'] - 1e-6:
             wx = x0 + math.cos(angle) * distance
             wy = y0 + math.sin(angle) * distance
             if grid.contains_world(wx, wy):

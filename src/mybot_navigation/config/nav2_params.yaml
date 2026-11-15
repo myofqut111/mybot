@@ -151,7 +151,10 @@ local_costmap:
       width: 3
       height: 3
       resolution: 0.05
-      robot_radius: 0.22
+      # 用真实外形代替圆形近似：圆能过的缝，长方形车身不一定能过。
+      # 尺寸按 40 x 30 cm 取（含轮子），车不一样就改这四个点。
+      footprint: "[[-0.20, -0.15], [0.20, -0.15], [0.20, 0.15], [-0.20, 0.15]]"
+      footprint_padding: 0.03
       transform_tolerance: 1.0
       plugins: ["voxel_layer", "inflation_layer"]
       inflation_layer:
@@ -192,7 +195,10 @@ global_costmap:
       publish_frequency: 1.0
       global_frame: "map"
       robot_base_frame: "base_link"
-      robot_radius: 0.22
+      # 用真实外形代替圆形近似：圆能过的缝，长方形车身不一定能过。
+      # 尺寸按 40 x 30 cm 取（含轮子），车不一样就改这四个点。
+      footprint: "[[-0.20, -0.15], [0.20, -0.15], [0.20, 0.15], [-0.20, 0.15]]"
+      footprint_padding: 0.03
       resolution: 0.05
       track_unknown_space: true
       transform_tolerance: 1.0

@@ -12,6 +12,17 @@ explore_node:
     unknown_radius_m: 1.0    # 算"去了能看见多少未知"的半径
     max_candidates: 20
     min_separation_m: 1.0    # 两个候选至少隔这么远，否则只留分数高的
+    # 可达性：激光能从凳子腿之间穿过去，车过不去。
+    # traversable_clearance_m 是"车半径 + 余量"，小于它的格子一律当不可通行；
+    # 再从车位做连通性 BFS，走不到的前沿直接丢掉。
+    traversable_clearance_m: 0.30
+    reach_search_m: 0.6          # 候选点附近这么近有可达格子就算数
+    # 封缝：把腿与腿之间的细缝算成障碍（2D 激光看不见椅子面）。
+    # 代价是真窄门也会被封，窄门多的场地可以关掉。
+    seal_gaps: true
+    seal_radius_m: 0.25
+    # 临近目标的豁免窗口：最后 0.5 m 不判卡住，但最多豁免这么久
+    near_goal_timeout_s: 15.0
     goal_clearance_m: 0.35   # 目标点离墙至少这么远（前沿天生贴边，太近 nav2 会拒）
 
     # ---- 擦图（用激光把未知变空闲，让边界往里退）----
@@ -32,19 +43,19 @@ explore_node:
     min_goal_distance_m: 0.8 # 太近的点不去，免得原地打转
     max_goal_distance_m: 15.0
     nav_timeout_s: 90.0      # 单个目标最多给这么久
-    settle_s: 1.0            # 到点后等多久再重新算前沿
+    settle_s: 0.3            # 到点后等多久再重新算前沿（1.0->0.3，别白站着）
     stuck_window_s: 15.0     # 这么久没"进展"就算卡住（2026-11-15：10->15，窄处转弯本来就慢）
     stuck_move_m: 0.08       # 位移超过它算进展
     stuck_move_rad: 0.30     # 转角超过它也算进展（原地对准不是卡住；0.15->0.30 少误判）
     retarget_cooldown_s: 3.0 # 放弃目标后冷几秒再选下一个，否则车会原地又转一次
     final_approach_m: 0.5    # 离目标这么近就不判卡住（最后对准本来就慢）
-    blacklist_radius_m: 1.0  # 拉黑半径；0.6->1.0，同一个死角别换个点再来一次
+    blacklist_radius_m: 1.5  # 拉黑半径；到过的点也算，否则会挪 20 cm 再转一圈
     max_consecutive_failures: 10   # 只统计真的失败（abort/超时）；stuck 不算
     max_stuck_streak: 5      # 仅作诊断计数，不会因此收工
     max_blacklist: 60        # 拉黑的点数到上限才算"到处都试过了"，才收工
     look_around: true        # 到点转一圈，让同一片区域被多角度看到
     look_around_yaw: 6.283   # 一圈；会按 ≤180° 拆成多次绝对转向
-    look_around_speed: 1.2   # 名义角速度，只用于日志估算
+    look_around_speed: 2.0   # 名义角速度；1.2->2.0，一圈从 5.2 s 降到 3.1 s
     look_around_timeout_s: 30.0
     max_duration_s: 1200.0   # 整场探索最多 20 分钟
     return_home: true        # 探完回起点

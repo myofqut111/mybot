@@ -56,21 +56,29 @@ DEFAULTS = {
     'w_distance': 0.6,
     'w_gain': 0.4,
     'visited_radius_m': 1.2,
-    'blacklist_radius_m': 1.0,
+    'blacklist_radius_m': 1.5,          # 到点后整片都别再去了
     'min_goal_distance_m': 0.8,
     'min_separation_m': 1.0,
     'goal_clearance_m': 0.35,
     'max_goal_distance_m': 15.0,
     'nav_timeout_s': 90.0,
-    'settle_s': 1.0,
+    'settle_s': 0.3,
     'stuck_window_s': 15.0,
     'stuck_move_m': 0.08,
     'stuck_move_rad': 0.30,
     'retarget_cooldown_s': 3.0,
     'final_approach_m': 0.5,
+    'near_goal_timeout_s': 15.0,
+    # 可达性：车半径 + 余量。激光能从凳子腿中间穿过去，车过不去，
+    # 所以前沿点必须落在"从车这里连得过去"的格子上。
+    'traversable_clearance_m': 0.30,
+    'reach_search_m': 0.6,
+    # 封缝：把腿与腿之间的细缝算成障碍（2D 激光看不见椅子面）
+    'seal_gaps': True,
+    'seal_radius_m': 0.25,
     'look_around': True,
     'look_around_yaw': 6.283,
-    'look_around_speed': 1.2,
+    'look_around_speed': 2.0,
     'look_around_timeout_s': 30.0,
     'progress_epsilon_m': 0.15,
     'max_consecutive_failures': 10,
@@ -102,6 +110,7 @@ class Explorer(object):
         self.settle_at = 0.0
         self.look_around_at = 0.0
         self.select_not_before = 0.0
+        self._near_since = None
         self._now = 0.0
         self.last_cancel_reason = ''
 
@@ -251,8 +260,14 @@ class Explorer(object):
         if grid is None:
             return None
 
+        grid_for_plan = grid
+        if self.params.get('seal_gaps') and self.params.get('seal_radius_m', 0) > 0:
+            grid_for_plan = frontier_mod.seal_gaps(
+                grid, self.params['seal_radius_m'],
+                self.params['occupied_thresh'])
+
         candidates = frontier_mod.find_frontiers(
-            grid,
+            grid_for_plan,
             robot_xy=self.pose,
             min_size=self.params['min_size'],
             occupied_thresh=self.params['occupied_thresh'],
@@ -267,6 +282,8 @@ class Explorer(object):
             max_goal_distance_m=self.params['max_goal_distance_m'],
             min_separation_m=self.params['min_separation_m'],
             goal_clearance_m=self.params['goal_clearance_m'],
+            reach_clearance_m=self.params['traversable_clearance_m'],
+            reach_search_m=self.params['reach_search_m'],
         )
         if not candidates:
             if self.params['return_home'] and self.start_pose is not None:
@@ -301,7 +318,8 @@ class Explorer(object):
 
         # 快到目标时不做卡住判定：最后 0.5 m 往往要反复对准，
         # 位移本来就接近零，这时候判卡死会把"快到了"当成"卡住了"。
-        if self._near_goal():
+        # 但**不能无限豁免**：真卡在目标门口时，以前会一直等到 90 s 超时。
+        if self._near_goal(now):
             self.last_progress = now
             return None
 
@@ -311,14 +329,30 @@ class Explorer(object):
             return {'action': 'cancel', 'reason': 'stuck'}
         return None
 
-    def _near_goal(self):
+    def _near_goal(self, now=None):
+        """离目标很近时给卡住判定一个"豁免窗口"，但最多豁免这么久。
+
+        参数 now 为 None 时只回答"近不近"（老调用方式）。
+        """
         if self.nav_target is None or self.pose is None:
             return False
         reach = self.params.get('final_approach_m', 0.0)
         if reach <= 0.0:
             return False
-        return math.hypot(self.nav_target[0] - self.pose[0],
+        near = math.hypot(self.nav_target[0] - self.pose[0],
                           self.nav_target[1] - self.pose[1]) <= reach
+        if not near:
+            self._near_since = None
+            return False
+        if now is None:
+            return True
+        if self._near_since is None:
+            self._near_since = now
+        limit = float(self.params.get('near_goal_timeout_s', 0.0) or 0.0)
+        if limit <= 0.0:
+            return True
+        # 豁免到期后不再"续命"，让 stuck 判定正常触发，最多再等一个 stuck_window
+        return (now - self._near_since) < limit
 
     def _abandon(self, reason):
         """放弃当前目标：拉黑 + 回选点。
@@ -382,7 +416,13 @@ class Explorer(object):
             self.stats['succeeded'] += 1
             self.consecutive_failures = 0
             self.stats['stuck_streak'] = 0
+            # 到过的点也拉黑：前沿点到了以后往往还剩一点未知（只扫掉一部分），
+            # 不拉黑的话下一轮又会选中它，车挪 20 cm 再转一圈——看着就是原地转。
+            if self.nav_target is not None:
+                self.blacklist.append(self.nav_target)
+                self.stats['blacklisted'] = len(self.blacklist)
             self.nav_target = None
+            self._near_since = None
             self.nav_kind = ''
             self.state = SETTLE
             self.settle_at = now
