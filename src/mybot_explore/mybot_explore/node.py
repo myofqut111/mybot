@@ -24,6 +24,7 @@
 import json
 import os
 import math
+import traceback
 import time
 
 import rclpy
@@ -97,7 +98,9 @@ class ExplorerNode(Node):
         self._last_goal = None            # 最近一次下发的目标 (x, y)，写日志用
         self._last_best = None            # 上一次打印的"最佳前沿"，用于日志降噪
         self._last_best_at = 0.0
-        self._spin = None                 # Spin action client（到点转圈）
+        # 注意：这里**不能**叫 self._spin，否则会把下面的 _spin() 方法遮住，
+        # 触发 TypeError: 'ActionClient' object is not callable（真机踩过）
+        self._spin_client = None          # Spin action client（到点转圈）
         self._spin_ready = False
         self._spin_handle = None
         self._spin_left = 0
@@ -141,7 +144,7 @@ class ExplorerNode(Node):
                                      str(self.get_parameter('nav_action').value))
 
         if Spin is not None:
-            self._spin = ActionClient(self, Spin, 'spin')
+            self._spin_client = ActionClient(self, Spin, 'spin')
 
         self.create_service(Trigger, '~/start', self._on_start)
         self.create_service(Trigger, '~/stop', self._on_stop)
@@ -273,6 +276,31 @@ class ExplorerNode(Node):
         return self.get_clock().now().nanoseconds / 1e9
 
     def _tick(self):
+        """定时器入口：把真正的逻辑包一层，异常不许把进程带走。
+
+        真机上发生过 "TypeError: 'ActionClient' object is not callable" ——
+        rclpy 的定时器回调里抛异常会一路冒到 spin()，整个节点直接退出，
+        而 traceback 只打在终端、日志里什么都没有，看起来就像"莫名其妙退出"。
+        现在异常会写进节点日志（带堆栈），并主动停下探索、取消当前目标。
+        """
+        try:
+            self._tick_once()
+        except Exception as error:                       # noqa: BLE001
+            traceback.print_exc()
+            self.get_logger().error(
+                '探索节点内部异常，已停止探索并取消当前目标：%s' % error)
+            self.get_logger().error(traceback.format_exc())
+            try:
+                self._cancel_goal()
+            except Exception:                            # noqa: BLE001
+                pass
+            try:
+                self._explorer.state = explorer_mod.DONE
+                self._explorer.done_reason = 'internal_error'
+            except Exception:                            # noqa: BLE001
+                pass
+
+    def _tick_once(self):
         now = self._now()
         grid = self._grid
         pose = self._pose()
@@ -416,13 +444,13 @@ class ExplorerNode(Node):
         if self._spin_left <= 0:
             self._explorer.on_spin_result(True, self._now(), 'done')
             return
-        if self._spin is None:
+        if self._spin_client is None:
             self.get_logger().warn('没装 nav2_msgs 的 Spin，跳过转圈')
             self._explorer.on_spin_result(False, self._now(), 'no_spin_action')
             return
         if not self._spin_ready:
             try:
-                self._spin_ready = self._spin.wait_for_server(
+                self._spin_ready = self._spin_client.wait_for_server(
                     timeout_sec=float(self.get_parameter('nav_server_wait_s').value))
             except Exception:                            # noqa: BLE001
                 self._spin_ready = False
@@ -441,7 +469,7 @@ class ExplorerNode(Node):
         self.get_logger().info('到点转圈：第 %d/%d 段，目标朝向 %.2f rad'
                                % (self._spin_left, self._spin_left,
                                   goal.target_yaw))
-        future = self._spin.send_goal_async(goal)
+        future = self._spin_client.send_goal_async(goal)
         future.add_done_callback(self._on_spin_response)
 
     def _on_spin_response(self, future):
