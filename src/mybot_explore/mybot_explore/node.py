@@ -380,14 +380,28 @@ class ExplorerNode(Node):
         return os.path.join(directory, '%s_%s' % (prefix, stamp))
 
     def _auto_save(self, grid):
-        """先试 slam_toolbox 的 save_map，不行就退回 map_saver_cli。"""
+        """先试 slam_toolbox 的 save_map，不行就退回 map_saver_cli。
+
+        存图是"顺手做的好事"，绝不能因为它出错把探索带停：
+        整段包在 try/except 里，失败只打 warning。
+        """
+        try:
+            self._auto_save_impl(grid)
+        except Exception as error:
+            import traceback
+            self.get_logger().warning('自动存图失败（不影响探索）：%s' % error)
+            self.get_logger().debug(traceback.format_exc())
+
+    def _auto_save_impl(self, grid):
         base = self._save_base_path()
         if base is None:
             return
         used_service = False
         if self._save_client is not None and self._save_client.service_is_ready():
             request = self._save_map_srv.Request()
-            request.name = base
+            # slam_toolbox 的 SaveMap.srv 里 name 是 std_msgs/String，
+            # 直接赋 str 会报 "The 'name' field must be a sub message of type 'String'"
+            request.name.data = base
             future = self._save_client.call_async(request)
             future.add_done_callback(lambda f: self._on_save_done(f, base, True))
             used_service = True
