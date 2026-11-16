@@ -68,6 +68,32 @@ explore_node:
     max_consecutive_failures: 10   # 只统计真的失败（abort/超时）；stuck 不算
     max_stuck_streak: 5      # 仅作诊断计数，不会因此收工
     max_blacklist: 60        # 拉黑的点数到上限才算"到处都试过了"，才收工
+
+    # ---- 打滑 / 低矮障碍（2026-11-16）----
+    # 判据 A：map→odom 在长（SLAM 说没动、odom 说在走）；
+    # 判据 B：近场扫描没变而 odom 在涨。A 且 B 才判打滑。
+    slip_enabled: true
+    slip_check_period_s: 0.5
+    slip_window_s: 3.0
+    slip_odom_min_m: 0.05        # 一拍(0.5s)里 odom 走这么多才算在动（≈0.1 m/s 下限）
+    slip_map_odom_min_m: 0.08    # map→odom 漂移超过它 = odom 在说假话
+    slip_scan_change_ratio: 0.15 # 变化束占比低于它 = 扫描认为车没动
+    slip_scan_diff_m: 0.03       # 差值超过它才算"这束变了"
+    slip_scan_near_m: 3.0        # 只信这么近的束
+    slip_max_omega: 0.30         # 角速度超过它不判（原地转是正常的）
+    slip_min_valid_ratio: 0.40   # 仅供诊断
+    slip_min_hits: 20            # 近场命中束少于它就不判（空旷区没有可比性）
+    slip_min_speed: 0.05         # 命令速度≈0 不判
+    slip_confirm_s: 1.5          # 持续这么久才确认
+    slip_hold_timeout_s: 10.0    # 打滑后等它真动起来的上限
+    # 挡住点：只画有物证的那 0.5 m 短墙；其余保持未知
+    blocked_wall_enabled: true
+    blocked_wall_offset_m: 0.22  # 车头前沿离车身中心的距离
+    blocked_wall_len_m: 0.50     # 车宽 0.3 + 两侧各 0.1 余量
+    keepout_radius_m: 1.00       # 禁试区：只影响选点，不写进地图
+    blocked_persist_hits: 2      # 同一片打滑几次算"真挡住"
+    blocked_file: "~/.ros/mybot_blocked.json"
+    slam_pause_service: /slam_toolbox/pause_new_measurements
     look_around: true        # 到点转一圈，让同一片区域被多角度看到
     look_around_yaw: 6.283   # 一圈；会按 ≤180° 拆成多次绝对转向
     look_around_speed: 2.0   # 名义角速度；1.2->2.0，一圈从 5.2 s 降到 3.1 s

@@ -31,5 +31,36 @@ class ShadowingTest(unittest.TestCase):
         self.assertIn("traceback.format_exc()", tick)
 
 
+class SlipWiringTest(unittest.TestCase):
+    """打滑检测必须真的接在开车循环里，且短墙只在两处出现。"""
+
+    def test_check_slip_called_from_tick(self):
+        src = _read()
+        self.assertIn("self._check_slip(now, pose)", src)
+        self.assertIn("slip_mod.SlipDetector(", src)
+
+    def test_slip_params_declared(self):
+        src = _read()
+        self.assertIn("for key, value in slip_mod.DEFAULTS.items():", src)
+        self.assertIn("'keepout_radius_m'", src)
+
+    def test_wall_stamped_in_grid_and_clean_map(self):
+        src = _read()
+        self.assertEqual(src.count("blocked_mod.stamp_wall("), 2)
+
+    def test_keepout_only_affects_selection(self):
+        """禁试区只塞进 blacklist，不许写进地图。"""
+        src = _read()
+        self.assertIn("self._explorer.blacklist.append(", src)
+
+    def test_yaml_has_slip_block(self):
+        path = os.path.join(os.path.dirname(HERE), "config", "explore.yaml")
+        with io.open(path, encoding="utf-8") as fh:
+            text = fh.read()
+        for key in ("slip_enabled", "slip_scan_near_m", "blocked_wall_len_m",
+                    "keepout_radius_m", "blocked_file"):
+            self.assertIn(key, text)
+
+
 if __name__ == "__main__":
     unittest.main()

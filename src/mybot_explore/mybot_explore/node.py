@@ -28,7 +28,7 @@ import traceback
 import time
 
 import rclpy
-from geometry_msgs.msg import Point, PoseArray, Pose
+from geometry_msgs.msg import Point, PoseArray, Pose, Twist
 from nav_msgs.msg import OccupancyGrid
 from rclpy.action import ActionClient
 from rclpy.executors import ExternalShutdownException
@@ -37,12 +37,14 @@ from rclpy.qos import (QoSDurabilityPolicy, QoSHistoryPolicy, QoSProfile,
                        qos_profile_sensor_data)
 from sensor_msgs.msg import LaserScan
 from std_msgs.msg import String
-from std_srvs.srv import Trigger
+from std_srvs.srv import Empty, Trigger
 from visualization_msgs.msg import Marker, MarkerArray
 
+from . import blocked as blocked_mod
 from . import carve as carve_mod
 from . import explorer as explorer_mod
 from . import frontier
+from . import slip as slip_mod
 from . import pgm
 from .explorer import _wrap_angle
 
@@ -55,6 +57,11 @@ try:                                    # 到点转圈用导航栈现成的 Spin
     from nav2_msgs.action import Spin
 except Exception:                       # pragma: no cover
     Spin = None
+
+try:                                    # slam_toolbox 的 pause 是一个"切换"服务
+    from slam_toolbox.srv import Pause as PauseSrv
+except Exception:                       # pragma: no cover
+    PauseSrv = None
 
 
 class ExplorerNode(Node):
@@ -90,6 +97,18 @@ class ExplorerNode(Node):
             if key == 'period_s':
                 continue
             self.declare_parameter(key, value)
+        # 打滑 / 低矮障碍：判据参数全在 slip.DEFAULTS 里
+        for key, value in slip_mod.DEFAULTS.items():
+            self.declare_parameter(key, value)
+        # 挡住点：只画有物证的那一小段墙，其余保持未知
+        self.declare_parameter('blocked_wall_enabled', True)
+        self.declare_parameter('blocked_wall_offset_m', 0.22)
+        self.declare_parameter('blocked_wall_len_m', 0.50)
+        self.declare_parameter('keepout_radius_m', 1.00)
+        self.declare_parameter('blocked_persist_hits', 2)
+        self.declare_parameter('blocked_file', blocked_mod.DEFAULT_PATH)
+        self.declare_parameter('slam_pause_service',
+                               '/slam_toolbox/pause_new_measurements')
 
         # ---- 状态 ----
         self._grid = None
@@ -116,6 +135,25 @@ class ExplorerNode(Node):
         self._done_logged = False
         self._save_inflight = False
         self._saved_once = False
+        # ---- 打滑 / 挡住点 ----
+        self._slip = slip_mod.SlipDetector(self._slip_params())
+        self._blocked = blocked_mod.BlockedStore(
+            str(self.get_parameter('blocked_file').value))
+        self._blocked.load()
+        self._last_scan_msg = None
+        self._cmd_linear = 0.0
+        self._cmd_angular = 0.0
+        self._slam_paused = False
+        self._pause_pending = False
+        self._pause_inflight = False
+        self._wall_segments = []          # [(segment, cells)]
+        self._slips = 0
+        # slam_toolbox 的 pause_new_measurements 是"切换"服务：
+        # 调一次暂停、再调一次恢复；响应里的 status 告诉你当前是哪个状态。
+        self._pause_client = None
+        if PauseSrv is not None:
+            self._pause_client = self.create_client(
+                PauseSrv, str(self.get_parameter('slam_pause_service').value))
         try:
             from slam_toolbox.srv import SaveMap as _SaveMap
             self._save_map_srv = _SaveMap
@@ -144,6 +182,8 @@ class ExplorerNode(Node):
         # 反过来（RELIABLE 订阅 + BEST_EFFORT 发布）一条都收不到。
         self.create_subscription(LaserScan, '/scan', self._on_scan,
                                  qos_profile_sensor_data)
+        # 打滑判定要知道"命令让车走多快"，跟实际位移对比
+        self.create_subscription(Twist, '/cmd_vel', self._on_cmd_vel, 10)
 
         self._markers = self.create_publisher(
             MarkerArray, str(self.get_parameter('marker_topic').value), 1)
@@ -204,7 +244,12 @@ class ExplorerNode(Node):
 
     def _on_scan(self, msg):
         self._scan_stamp = msg.header.stamp
+        self._last_scan_msg = msg
         self._carve(msg)
+
+    def _on_cmd_vel(self, msg):
+        self._cmd_linear = float(msg.linear.x)
+        self._cmd_angular = float(msg.angular.z)
 
     def _carve(self, msg):
         """把这一帧激光擦进内存地图（未知 -> 空闲，命中的格子 -> 障碍）。"""
@@ -322,6 +367,9 @@ class ExplorerNode(Node):
         grid = self._grid
         pose = self._pose()
         drive = bool(self.get_parameter('drive').value)
+        if drive:
+            self._check_slip(now, pose)
+        self._try_pause()
 
         if (drive and self._explorer.state == explorer_mod.IDLE
                 and bool(self.get_parameter('autostart').value) and pose):
@@ -366,6 +414,169 @@ class ExplorerNode(Node):
     # ------------------------------------------------------------------
     # 收工存图（B2/B3/B4）
     # ------------------------------------------------------------------
+
+    # ------------------------------------------------------------------
+    # 打滑 / 低矮障碍
+    # ------------------------------------------------------------------
+
+    def _slip_params(self):
+        params = {}
+        for key in slip_mod.DEFAULTS:
+            try:
+                params[key] = self.get_parameter(key).value
+            except Exception:                             # noqa: BLE001
+                continue
+        return params
+
+    def _lookup_xy(self, target, source):
+        """取 target→source 的平移；拿不到返回 None。"""
+        try:
+            tf_buffer = self._tf_buffer()
+        except Exception:                                 # noqa: BLE001
+            return None
+        if tf_buffer is None:
+            return None
+        try:
+            stamp = rclpy.time.Time()
+            transform = tf_buffer.lookup_transform(target, source, stamp)
+        except Exception:                                 # noqa: BLE001
+            return None
+        translation = transform.transform.translation
+        return (translation.x, translation.y)
+
+    def _tf_buffer(self):
+        if not hasattr(self, '_tf'):
+            from tf2_ros import Buffer, TransformListener
+            self._tf = Buffer()
+            self._tf_listener = TransformListener(self._tf, self)
+        return self._tf
+
+    def _check_slip(self, now, pose):
+        if not bool(self.get_parameter('slip_enabled').value):
+            return
+        scan_msg = self._last_scan_msg
+        if scan_msg is None:
+            return
+        scan = {'ranges': list(scan_msg.ranges),
+                'angle_min': scan_msg.angle_min,
+                'angle_increment': scan_msg.angle_increment,
+                'range_min': scan_msg.range_min,
+                'range_max': scan_msg.range_max}
+        base = str(self.get_parameter('base_frame').value)
+        odom_xy = self._lookup_xy('odom', base)
+        map_odom = self._lookup_xy('map', 'odom')
+        result = self._slip.update(now, odom_pose=odom_xy, map_odom=map_odom,
+                                   scan=scan, linear=self._cmd_linear,
+                                   angular=self._cmd_angular)
+        action = result.get('action')
+        if action == 'confirmed':
+            self._on_slip_confirmed(now, pose, result)
+        elif action == 'resume':
+            self._resume_slam()
+            self.get_logger().info('车又动起来了，恢复建图')
+        elif action == 'give_up':
+            self.get_logger().warning(
+                '打滑后 %.0f 秒仍没动起来，放弃这个点（仍保持暂停建图）'
+                % float(self.get_parameter('slip_hold_timeout_s').value))
+
+    def _on_slip_confirmed(self, now, pose, result):
+        self._slips += 1
+        self.get_logger().warning(
+            '疑似低矮障碍：车在 (%.2f, %.2f) 打滑——odom 说在走，'
+            '扫描只变了 %.0f%%（近场 %.1f m 内 %d 束），map→odom 漂了 %.2f m'
+            % (pose[0], pose[1], result.get('ratio', 0.0) * 100.0,
+               result.get('near_m', 0.0), result.get('hits', 0),
+               result.get('map_odom_moved', 0.0)))
+        self._cancel_goal()
+        self._pause_slam()
+        if bool(self.get_parameter('blocked_wall_enabled').value):
+            self._mark_blocked_wall(pose)
+        keepout = float(self.get_parameter('keepout_radius_m').value)
+        spot = self._blocked.add(
+            pose[0], pose[1], pose[2], now=self._now_iso(), radius_m=keepout,
+            slip_seconds=float(self.get_parameter('slip_confirm_s').value))
+        try:
+            self._blocked.save()
+        except Exception as error:                        # noqa: BLE001
+            self.get_logger().warning('写挡住点失败：%s' % error)
+        # 只用于选点：把这一片拉黑，避免反复往里试
+        self._explorer.blacklist.append((spot['x'], spot['y']))
+        self.get_logger().info(
+            '已记挡住点 (%.2f, %.2f)，第 %d 次；禁试区半径 %.1f m'
+            % (spot['x'], spot['y'], spot['hits'], keepout))
+
+    def _mark_blocked_wall(self, pose):
+        """车头前沿画一条 0.5 m 短墙——只标有物证的那一段。"""
+        segment = blocked_mod.wall_segment(
+            pose[0], pose[1], pose[2],
+            offset_m=float(self.get_parameter('blocked_wall_offset_m').value),
+            length_m=float(self.get_parameter('blocked_wall_len_m').value))
+        self._wall_segments.append(segment)
+        if self._grid is not None:
+            try:
+                cells = blocked_mod.stamp_wall(self._grid, segment)
+                self.get_logger().info('已在图上标出 %d 格短墙' % cells)
+            except Exception as error:                    # noqa: BLE001
+                self.get_logger().warning('标短墙失败：%s' % error)
+
+    def _pause_slam(self):
+        """暂停建图；服务还没被发现就挂起，后面每拍重试。"""
+        if self._slam_paused:
+            return
+        self._pause_pending = True
+        self._try_pause()
+
+    def _try_pause(self):
+        if not getattr(self, '_pause_pending', False) or self._slam_paused:
+            return
+        if getattr(self, '_pause_inflight', False):
+            return          # 上一次请求还没回来，别连发两次（切换型服务会被切回去）
+        if self._pause_client is None:
+            self._warn_at('no_pause', '没装 slam_toolbox 的 Pause 服务，无法暂停建图')
+            return
+        if self._pause_client.wait_for_service(timeout_sec=0.2):
+            self._pause_inflight = True
+            future = self._pause_client.call_async(PauseSrv.Request())
+            future.add_done_callback(self._on_pause_done)
+        else:
+            self._warn_at('no_pause',
+                          '暂停服务还没就绪（%s），继续重试；期间坏数据仍可能进图'
+                          % str(self.get_parameter('slam_pause_service').value))
+
+    def _on_pause_done(self, future):
+        self._pause_pending = False
+        self._pause_inflight = False
+        try:
+            response = future.result()
+        except Exception as error:                        # noqa: BLE001
+            self.get_logger().warning('暂停建图失败：%s' % error)
+            return
+        self._slam_paused = bool(getattr(response, 'status', True))
+        self.get_logger().info(
+            '建图已暂停，坏数据不再进图' if self._slam_paused else '建图仍在运行')
+
+    def _resume_slam(self):
+        """再调一次同一个切换服务就恢复。"""
+        if not self._slam_paused or self._pause_client is None:
+            return
+        if self._pause_client.service_is_ready():
+            future = self._pause_client.call_async(PauseSrv.Request())
+            self._slam_paused = False
+            future.add_done_callback(self._on_resume_done)
+        else:
+            self._warn_at('no_resume', '恢复建图的服务不可用，保持暂停')
+
+    def _on_resume_done(self, future):
+        try:
+            response = future.result()
+        except Exception as error:                        # noqa: BLE001
+            self.get_logger().warning('恢复建图失败：%s' % error)
+            return
+        self.get_logger().info(
+            '建图已恢复' if not bool(getattr(response, 'status', False)) else '建图仍是暂停状态')
+
+    def _now_iso(self):
+        return time.strftime('%Y-%m-%dT%H:%M:%S', time.localtime())
 
     def _save_base_path(self):
         """~/maps/explore_20261116_1905（不带扩展名）。"""
@@ -449,6 +660,12 @@ class ExplorerNode(Node):
         except Exception as error:
             self.get_logger().warning('读回存下的地图失败：%s' % error)
             return
+        # 把"有物证的短墙"盖进推断图；原始 .pgm 不动（要严格的用原始图）
+        for segment in self._wall_segments:
+            try:
+                blocked_mod.stamp_wall(grid, segment)
+            except Exception:                             # noqa: BLE001
+                continue
         before = frontier.isolated_rate(grid)
         clean = frontier.median_despike(grid)
         after = frontier.isolated_rate(clean)
@@ -742,6 +959,12 @@ class ExplorerNode(Node):
         totals = getattr(self, '_carve_totals', (0, 0))
         snap['carved_free'] = totals[0]
         snap['carved_occupied'] = totals[1]
+        snap['slip_state'] = self._slip.state
+        snap['slip_ratio'] = round(self._slip.ratio, 3)
+        snap['slips'] = self._slips
+        snap['blocked_walls'] = len(self._wall_segments)
+        snap['keepouts'] = len(self._blocked.spots)
+        snap['slam_paused'] = bool(self._slam_paused)
         self._status.publish(String(data=json.dumps(snap, ensure_ascii=False)))
 
 
