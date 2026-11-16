@@ -153,9 +153,7 @@ local_costmap:
       resolution: 0.05
       # 用真实外形代替圆形近似：圆能过的缝，长方形车身不一定能过。
       # 尺寸按 40 x 30 cm 取（含轮子），车不一样就改这四个点。
-      # 车体 0.30 x 0.22 m（轮距 175 mm + 轮宽与外壳余量）；换车务必改这里
-      # 实测方法：量地上投影的最外缘（含防撞条），不是量轮子中心距
-      footprint: "[[-0.15, -0.11], [0.15, -0.11], [0.15, 0.11], [-0.15, 0.11]]"
+      footprint: "[[-0.20, -0.15], [0.20, -0.15], [0.20, 0.15], [-0.20, 0.15]]"
       footprint_padding: 0.03
       transform_tolerance: 1.0
       plugins: ["voxel_layer", "inflation_layer"]
@@ -199,7 +197,7 @@ global_costmap:
       robot_base_frame: "base_link"
       # 用真实外形代替圆形近似：圆能过的缝，长方形车身不一定能过。
       # 尺寸按 40 x 30 cm 取（含轮子），车不一样就改这四个点。
-      footprint: "[[-0.15, -0.11], [0.15, -0.11], [0.15, 0.11], [-0.15, 0.11]]"
+      footprint: "[[-0.20, -0.15], [0.20, -0.15], [0.20, 0.15], [-0.20, 0.15]]"
       footprint_padding: 0.03
       resolution: 0.05
       track_unknown_space: true
