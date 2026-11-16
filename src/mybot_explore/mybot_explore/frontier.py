@@ -357,6 +357,77 @@ def _nearest_reachable(grid, gx, gy, reach, limit_cells):
     return best
 
 
+def count_unknown(grid):
+    """数一下还有多少格是"不知道"。探索快结束时这个数会停止下降。"""
+    if grid is None:
+        return 0
+    return sum(1 for value in grid.data if value < 0)
+
+
+def median_despike(grid, occupied_thresh=50, radius=1):
+    """3x3 中值滤波：只针对障碍格，孤立点被抹掉，实墙几乎不变。
+
+    和 despeckle 的区别：despeckle 按"邻居少于 2 个"删，这个按邻域多数投票，
+    对"一条毛刺"这种细长噪声更狠一点，适合存图前的最后一道。
+    """
+    out = list(grid.data)
+    width, height = grid.width, grid.height
+    votes = []
+    for dy in range(-radius, radius + 1):
+        for dx in range(-radius, radius + 1):
+            votes.append((dx, dy))
+    for y in range(height):
+        for x in range(width):
+            idx = y * width + x
+            if grid.data[idx] < occupied_thresh:
+                continue
+            occupied = 0
+            free = 0
+            for dx, dy in votes:
+                nx, ny = x + dx, y + dy
+                if not grid.contains(nx, ny):
+                    continue
+                value = grid.data[grid.index(nx, ny)]
+                if value < 0:
+                    continue
+                if value >= occupied_thresh:
+                    occupied += 1
+                else:
+                    free += 1
+            if occupied * 2 < free:
+                out[idx] = 0
+    return Grid(width, height, grid.resolution, grid.origin_x, grid.origin_y, out)
+
+
+def isolated_rate(grid, occupied_thresh=50):
+    """孤立障碍率：障碍格里，8 邻域障碍邻居 <= 1 的占比。越小说明图越干净。"""
+    if grid is None:
+        return 0.0
+    total = 0
+    isolated = 0
+    width, height = grid.width, grid.height
+    for y in range(height):
+        for x in range(width):
+            if grid.data[y * width + x] < occupied_thresh:
+                continue
+            total += 1
+            neighbours = 0
+            for dy in (-1, 0, 1):
+                for dx in (-1, 0, 1):
+                    if dx == 0 and dy == 0:
+                        continue
+                    nx, ny = x + dx, y + dy
+                    if not grid.contains(nx, ny):
+                        continue
+                    if grid.data[grid.index(nx, ny)] >= occupied_thresh:
+                        neighbours += 1
+            if neighbours <= 1:
+                isolated += 1
+    if total == 0:
+        return 0.0
+    return float(isolated) / float(total)
+
+
 def seal_gaps(grid, radius_m, occupied_thresh=50):
     """形态学闭运算：把"腿和腿之间"这种细缝算成障碍。
 

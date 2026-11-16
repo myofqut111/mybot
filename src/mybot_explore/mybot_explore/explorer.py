@@ -84,6 +84,10 @@ DEFAULTS = {
     'max_consecutive_failures': 10,
     'max_stuck_streak': 5,
     'max_blacklist': 60,
+    # 收工判定：没有候选时先等这么久。期间未知格子还在变少，说明只是
+    # 暂时没有前沿（车刚走过去、地图还没更新），不该急着回家。
+    'no_frontier_grace_s': 30.0,
+    'unknown_drop_cells': 20,
     'max_duration_s': 1200.0,
     'return_home': True,
 }
@@ -110,6 +114,8 @@ class Explorer(object):
         self.settle_at = 0.0
         self.look_around_at = 0.0
         self.select_not_before = 0.0
+        self._no_frontier_since = None
+        self._unknown_at_grace = None
         self._near_since = None
         self._now = 0.0
         self.last_cancel_reason = ''
@@ -286,6 +292,22 @@ class Explorer(object):
             reach_search_m=self.params['reach_search_m'],
         )
         if not candidates:
+            # 没有候选不代表建完了：车刚走过一片区域时，地图要一两秒才更新，
+            # 前沿会"消失一下又冒出来"。所以观察一个宽限期，期间未知格子
+            # 还在变少就重新计时；真停了才收工。
+            unknown_now = frontier_mod.count_unknown(grid)
+            grace = self.params['no_frontier_grace_s']
+            if self._no_frontier_since is None:
+                self._no_frontier_since = now
+                self._unknown_at_grace = unknown_now
+                return None
+            drop = self._unknown_at_grace - unknown_now
+            if drop >= self.params['unknown_drop_cells']:
+                self._no_frontier_since = now
+                self._unknown_at_grace = unknown_now
+                return None
+            if now - self._no_frontier_since < grace:
+                return None
             if self.params['return_home'] and self.start_pose is not None:
                 self.state = RETURN_HOME
                 self.nav_kind = 'home'
@@ -294,8 +316,10 @@ class Explorer(object):
                 self.stats['goals'] += 1
                 return {'action': 'navigate', 'x': self.start_pose[0],
                         'y': self.start_pose[1], 'kind': 'home'}
-            return self._finish('no_frontiers')
+            return self._finish('map_complete')
 
+        self._no_frontier_since = None
+        self._unknown_at_grace = None
         best = candidates[0]
         self.state = NAVIGATE
         self.nav_kind = 'frontier'

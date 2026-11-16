@@ -80,6 +80,36 @@ def pgm_to_grid(width, height, pixels, resolution, origin_x, origin_y,
     return frontier_mod.Grid(width, height, resolution, origin_x, origin_y, data)
 
 
+def write_map(base_path, grid, occupied_thresh=50, origin=None):
+    """把 Grid 写回 pgm + yaml（base_path 不带扩展名）。返回 (pgm, yaml)。"""
+    if not base_path.endswith('.pgm'):
+        base_path = base_path + '.pgm'
+    lines = ['P5', '%d %d' % (grid.width, grid.height), '255']
+    header = ('\n'.join(lines) + '\n').encode('ascii')
+    body = bytearray(grid.width * grid.height)
+    for i, value in enumerate(grid.data):
+        if value < 0:
+            body[i] = 205
+        elif value >= occupied_thresh:
+            body[i] = OCCUPIED_VALUE
+        else:
+            body[i] = FREE_VALUE
+    with open(base_path, 'wb') as handle:
+        handle.write(header)
+        handle.write(bytes(body))
+
+    ox = grid.origin_x if origin is None else origin[0]
+    oy = grid.origin_y if origin is None else origin[1]
+    yaml_path = base_path[:-4] + '.yaml'
+    text = ('image: %s\nmode: trinary\nresolution: %s\norigin: [%s, %s, 0.0]\n'
+            'negate: 0\noccupied_thresh: 0.65\nfree_thresh: 0.25\n'
+            % (os.path.basename(base_path), repr(float(grid.resolution)),
+               repr(float(ox)), repr(float(oy))))
+    with open(yaml_path, 'w', encoding='utf-8', newline='\n') as handle:
+        handle.write(text)
+    return base_path, yaml_path
+
+
 def load_map(yaml_path, free_value=FREE_VALUE):
     """给一个 .yaml 路径，返回 frontier.Grid（未知已按 pgm 原始约定还原）。"""
     meta = read_yaml(yaml_path)

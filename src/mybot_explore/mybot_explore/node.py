@@ -77,6 +77,12 @@ class ExplorerNode(Node):
         self.declare_parameter('carve_max_range_m', 4.0)   # 只信这么远以内的光束
         self.declare_parameter('carve_robot_radius_m', 0.25)
         self.declare_parameter('carve_period_s', 0.5)      # 最快多久擦一次
+        # 收工自动存图：slam 模式走 /slam_toolbox/save_map，amcl 模式退回 map_saver_cli
+        self.declare_parameter('auto_save', True)
+        self.declare_parameter('save_map_dir', '~/maps')
+        self.declare_parameter('save_map_prefix', 'explore')
+        self.declare_parameter('save_map_service', '/slam_toolbox/save_map')
+        self.declare_parameter('map_despike', True)
         self.declare_parameter('drive', False)
         self.declare_parameter('autostart', False)
         self.declare_parameter('period_s', 1.0)
@@ -108,6 +114,17 @@ class ExplorerNode(Node):
         self._spin_speed = 1.2
         self._spin_timeout = 30.0
         self._done_logged = False
+        self._save_inflight = False
+        self._saved_once = False
+        try:
+            from slam_toolbox.srv import SaveMap as _SaveMap
+            self._save_map_srv = _SaveMap
+        except Exception:
+            self._save_map_srv = None
+        self._save_client = None
+        if self._save_map_srv is not None:
+            self._save_client = self.create_client(
+                self._save_map_srv, str(self.get_parameter('save_map_service').value))
 
         latched = QoSProfile(depth=1,
                              durability=QoSDurabilityPolicy.TRANSIENT_LOCAL,
@@ -339,9 +356,96 @@ class ExplorerNode(Node):
                    snap.get('succeeded', 0), snap.get('failed', 0),
                    snap.get('timeouts', 0), snap.get('stuck', 0),
                    snap.get('blacklist', 0), snap.get('distance_m', 0.0)))
+            if not self._saved_once and bool(self.get_parameter('auto_save').value):
+                self._saved_once = True
+                self._auto_save(grid)
 
         self._publish_markers(grid, pose)
         self._publish_status(now)
+
+    # ------------------------------------------------------------------
+    # 收工存图（B2/B3/B4）
+    # ------------------------------------------------------------------
+
+    def _save_base_path(self):
+        """~/maps/explore_20261116_1905（不带扩展名）。"""
+        directory = os.path.expanduser(str(self.get_parameter('save_map_dir').value))
+        try:
+            os.makedirs(directory, exist_ok=True)
+        except OSError as error:
+            self.get_logger().warning('建目录失败 %s：%s' % (directory, error))
+            return None
+        stamp = time.strftime('%Y%m%d_%H%M')
+        prefix = str(self.get_parameter('save_map_prefix').value) or 'explore'
+        return os.path.join(directory, '%s_%s' % (prefix, stamp))
+
+    def _auto_save(self, grid):
+        """先试 slam_toolbox 的 save_map，不行就退回 map_saver_cli。"""
+        base = self._save_base_path()
+        if base is None:
+            return
+        used_service = False
+        if self._save_client is not None and self._save_client.service_is_ready():
+            request = self._save_map_srv.Request()
+            request.name = base
+            future = self._save_client.call_async(request)
+            future.add_done_callback(lambda f: self._on_save_done(f, base, True))
+            used_service = True
+            self._save_inflight = True
+            self.get_logger().info('存图中（slam_toolbox）：%s' % base)
+        if not used_service:
+            self._save_with_cli(base)
+
+    def _on_save_done(self, future, base, from_service):
+        self._save_inflight = False
+        error = future.exception() if hasattr(future, 'exception') else None
+        if error is not None:
+            self.get_logger().warning('save_map 调用失败（%s），改用 map_saver_cli' % error)
+            self._save_with_cli(base)
+            return
+        if from_service:
+            self.get_logger().info('已保存：%s.pgm / %s.yaml' % (base, base))
+        self._after_save(base)
+
+    def _save_with_cli(self, base):
+        """没有 slam 服务时，用 nav2 的 map_saver_cli 从 /map 导出。"""
+        import subprocess
+        command = ['ros2', 'run', 'nav2_map_server', 'map_saver_cli',
+                   '-f', base, '-t', '/map']
+        try:
+            result = subprocess.run(command, capture_output=True, timeout=30.0)
+        except Exception as error:
+            self.get_logger().warning('map_saver_cli 起不来：%s' % error)
+            return
+        if result.returncode != 0:
+            tail = (result.stderr or b'').decode('utf-8', 'replace').strip()[-200:]
+            self.get_logger().warning('map_saver_cli 失败（%s）：%s'
+                                      % (result.returncode, tail))
+            return
+        self.get_logger().info('已保存：%s.pgm / %s.yaml（map_saver_cli）' % (base, base))
+        self._after_save(base)
+
+    def _after_save(self, base):
+        """去毛刺 + 打孤立障碍率。"""
+        if not bool(self.get_parameter('map_despike').value):
+            return
+        yaml_path = base + '.yaml'
+        try:
+            grid = pgm.load_map(yaml_path)
+        except Exception as error:
+            self.get_logger().warning('读回存下的地图失败：%s' % error)
+            return
+        before = frontier.isolated_rate(grid)
+        clean = frontier.median_despike(grid)
+        after = frontier.isolated_rate(clean)
+        clean_path = base + '_clean.pgm'
+        try:
+            pgm.write_map(clean_path, clean)
+        except Exception as error:
+            self.get_logger().warning('写去毛刺地图失败：%s' % error)
+            return
+        self.get_logger().info(
+            '去毛刺：%s（孤立障碍 %.1f%% → %.1f%%）' % (clean_path, before * 100.0, after * 100.0))
 
     def _warn_at(self, key, message, period_s=5.0):
         """同一条警告最多每 period_s 打一次，避免刷屏。"""

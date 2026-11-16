@@ -35,6 +35,21 @@ explore_node:
     w_gain: 0.4              # 打分权重：能看见大片的优先
 
     # ---- 开车 ----
+    # 收工自动存图（B2）：slam 模式走 /slam_toolbox/save_map，
+# amcl 模式没有这个服务，自动退回 map_saver_cli
+    # ---- 收工（B1/B2/B3）----
+    # 没有候选时先观察这么久：期间未知格子还在变少就说明只是暂时没前沿
+    no_frontier_grace_s: 30.0
+    unknown_drop_cells: 20   # 未知格子少掉这么多就重置上面的计时
+    # 收工自动存图：slam 模式走 /slam_toolbox/save_map，
+    # amcl 模式没有这个服务，自动退回 map_saver_cli
+    auto_save: true
+    save_map_dir: "~/maps"
+    save_map_prefix: "explore"
+    save_map_service: "/slam_toolbox/save_map"
+    # 存完再做一次 3x3 中值去毛刺，另存 *_clean.pgm
+    map_despike: true
+    # ---- 开车 ----
     drive: false             # true 才会真的发 NavigateToPose
     autostart: false         # true 时一起就开跑（否则等 /explore/start 服务）
     nav_action: navigate_to_pose

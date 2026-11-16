@@ -188,10 +188,13 @@ class FinishTest(BaseCase):
         for gy in range(self.grid.height):
             for gx in range(self.grid.width):
                 e.visited.mark(gx, gy)
-        cmd = e.step(self.grid, (0.3, 1.5), now=1.0)
+        # 第一拍只是开始观察宽限期，不立刻回家
+        self.assertIsNone(e.step(self.grid, (0.3, 1.5), now=1.0))
+        self.assertEqual(e.state, ex.SELECT)
+        cmd = e.step(self.grid, (0.3, 1.5), now=1.0 + e.params['no_frontier_grace_s'] + 1.0)
         self.assertEqual(cmd['kind'], 'home')
         self.assertEqual(e.state, ex.RETURN_HOME)
-        e.on_navigation_result(True, now=9.0)
+        e.on_navigation_result(True, now=200.0)
         self.assertEqual(e.state, ex.DONE)
         self.assertEqual(e.done_reason, 'returned_home')
 
@@ -204,8 +207,39 @@ class FinishTest(BaseCase):
                 e.visited.mark(gx, gy)
         cmd = e.step(self.grid, (0.3, 1.5), now=1.0)
         self.assertIsNone(cmd)
+        self.assertEqual(e.state, ex.SELECT)
+        cmd = e.step(self.grid, (0.3, 1.5), now=1.0 + e.params['no_frontier_grace_s'] + 1.0)
+        self.assertIsNone(cmd)
         self.assertEqual(e.state, ex.DONE)
-        self.assertEqual(e.done_reason, 'no_frontiers')
+        self.assertEqual(e.done_reason, 'map_complete')
+
+    def test_unknown_shrinking_keeps_exploring(self):
+        """没有候选、但未知区还在变小：说明地图还没更新完，不该回家。"""
+        e = self.make(return_home=True, no_frontier_grace_s=5.0, unknown_drop_cells=3)
+        e.start((0.3, 1.5), now=0.0)
+        e.ensure_visited(self.grid)
+        for gy in range(self.grid.height):
+            for gx in range(self.grid.width):
+                e.visited.mark(gx, gy)
+        self.assertIsNone(e.step(self.grid, (0.3, 1.5), now=1.0))
+        # 未知区少掉 10 格（> unknown_drop_cells）：宽限期重置
+        shrink = ex.frontier_mod.Grid(
+            self.grid.width, self.grid.height, self.grid.resolution,
+            self.grid.origin_x, self.grid.origin_y,
+            list(self.grid.data))
+        removed = 0
+        for i, v in enumerate(shrink.data):
+            if v < 0 and removed < 10:
+                shrink.data[i] = 0
+                removed += 1
+        self.assertIsNone(e.step(shrink, (0.3, 1.5), now=6.5))
+        self.assertEqual(e.state, ex.SELECT)
+        # 再等一个完整宽限期、并且未知区不再变 → 才收工
+        cmd = e.step(shrink, (0.3, 1.5), now=12.0)
+        self.assertEqual(cmd['kind'], 'home')
+        self.assertEqual(e.state, ex.RETURN_HOME)
+        e.on_navigation_result(True, now=200.0)
+        self.assertEqual(e.state, ex.DONE)
 
     def test_max_duration_stops(self):
         e = self.make(max_duration_s=100.0)
