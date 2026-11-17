@@ -234,6 +234,10 @@ TEMPLATES = {
 set +u
 source /opt/ros/humble/setup.bash
 source "$HOME/fishbot_full_ws/install/setup.bash"
+SIM_WS="$MYBOT_SIM_ROOT/ws"
+if [ -f "$SIM_WS/install/setup.bash" ]; then
+  source "$SIM_WS/install/setup.bash"     # 沙盒里改过的代码覆盖上来
+fi
 BRIDGE="$(python3 -c 'import os;print(os.path.expanduser("~/fishbot_full_ws/tools/sandbox/fault_bridge.py"))')"
 MAP="$(python3 -c 'import os;print(os.path.expanduser("~/maps/mock_partial.yaml"))')"
 ros2 run fishbot_console mock_robot --ros-args -r /scan:=/scan_raw &
@@ -248,6 +252,10 @@ exec ros2 run fishbot_explore explore_node --ros-args \\
 set +u
 source /opt/ros/humble/setup.bash
 source "$HOME/fishbot_full_ws/install/setup.bash"
+SIM_WS="$MYBOT_SIM_ROOT/ws"
+if [ -f "$SIM_WS/install/setup.bash" ]; then
+  source "$SIM_WS/install/setup.bash"     # 沙盒里改过的代码覆盖上来
+fi
 BRIDGE="$(python3 -c 'import os;print(os.path.expanduser("~/fishbot_full_ws/tools/sandbox/fault_bridge.py"))')"
 MAP="$(python3 -c 'import os;print(os.path.expanduser("~/maps/mock_partial.yaml"))')"
 ros2 run fishbot_console mock_robot --ros-args -r /scan:=/scan_raw &
@@ -472,6 +480,30 @@ def do_stop(args):
     print("已停止。残留相关进程：%s" % (left or "0"))
 
 
+def do_build(args):
+    """在沙盒里编译（改过 ws/src 之后用）。"""
+    state = load_state()
+    env = child_env(state.get("domain", 42), state.get("http_port", 8180))
+    packages = args.packages or []
+    command = ["bash", "-lc"]
+    inner = ("source /opt/ros/humble/setup.bash && "
+             "cd %s/ws && colcon build --symlink-install" % ROOT)
+    if packages:
+        inner += " --packages-select " + " ".join(packages)
+    command.append(inner)
+    print("编译中：%s" % ("全部包" if not packages else " ".join(packages)))
+    result = subprocess.run(command, env=env, capture_output=True, text=True)
+    tail = (result.stdout or "").strip().splitlines()[-12:]
+    for line in tail:
+        print("  " + line)
+    if result.returncode != 0:
+        print("编译失败（退出码 %d）" % result.returncode)
+        for line in (result.stderr or "").strip().splitlines()[-8:]:
+            print("  " + line)
+        raise SystemExit(result.returncode)
+    print("编译完成")
+
+
 def do_reset(args):
     do_stop(args)
     for name in ("build", "install", "log"):
@@ -525,6 +557,10 @@ def main(argv=None):
 
     p_stop = sub.add_parser("stop", help="停止")
     p_stop.set_defaults(func=do_stop)
+
+    p_build = sub.add_parser("build", help="编译沙盒工作区")
+    p_build.add_argument("packages", nargs="*", help="只编这些包")
+    p_build.set_defaults(func=do_build)
 
     p_reset = sub.add_parser("reset", help="清编译产物")
     p_reset.set_defaults(func=do_reset)
