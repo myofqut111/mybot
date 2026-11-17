@@ -1,5 +1,0 @@
-修复 0.2.9 启动即崩：node.py 漏 import Bool（0.2.10）
-
-mock 一跑就暴露：create_publisher(Bool, ...) 但只 import 了 String，
-ExplorerNode.__init__ 直接 NameError。补导入，并加一条静态契约用例
-（create_publisher/subscription 用到的消息类型必须 import），130 例全过。

@@ -108,6 +108,12 @@ def generate_launch_description():
             'gate_max_yaw_jitter', default_value='0.05',
             description='Gate: max TF yaw jitter over the stable window (rad)'),
         DeclareLaunchArgument(
+            'odom_shim_enabled', default_value='false',
+            description='Use odom_shim to own odom->base_link (pair with ekf_publish_tf:=false)'),
+        DeclareLaunchArgument(
+            'ekf_publish_tf', default_value='true',
+            description='Let EKF publish odom->base_link; must be false when odom_shim is on'),
+        DeclareLaunchArgument(
             'enable_ekf', default_value='true',
             description='Launch robot_localization ekf_node in this file'),
         DeclareLaunchArgument(
@@ -134,6 +140,8 @@ def generate_launch_description():
     gate_max_yaw_std = LaunchConfiguration('gate_max_yaw_std')
     gate_max_position_jitter = LaunchConfiguration('gate_max_position_jitter')
     gate_max_yaw_jitter = LaunchConfiguration('gate_max_yaw_jitter')
+    odom_shim_enabled = LaunchConfiguration('odom_shim_enabled')
+    ekf_publish_tf = LaunchConfiguration('ekf_publish_tf')
     enable_ekf = LaunchConfiguration('enable_ekf')
     localization = LaunchConfiguration('localization')
     slam_params_file = LaunchConfiguration('slam_params_file')
@@ -200,8 +208,26 @@ def generate_launch_description():
         executable='ekf_node',
         name='ekf_filter_node',
         output='screen',
-        parameters=[ekf_params_file, {'use_sim_time': use_sim_time}],
+        parameters=[ekf_params_file, {
+            'use_sim_time': use_sim_time,
+            'publish_tf': ParameterValue(ekf_publish_tf, value_type=bool),
+        }],
         condition=IfCondition(enable_ekf),
+    )
+
+    # odom_shim：接管 odom->base_link；打滑时冻结、恢复时重锚，
+    # 把假位移挡在位姿链外（治"两张图拼在一起"）。
+    odom_shim_node = Node(
+        package='mybot_explore', executable='odom_shim',
+        name='odom_shim', output='screen',
+        parameters=[{
+            'odom_topic': '/odometry/filtered',
+            'gate_topic': '/explore/scan_gate',
+            'parent_frame': 'odom',
+            'child_frame': 'base_link',
+            'use_sim_time': use_sim_time,
+        }],
+        condition=IfCondition(odom_shim_enabled),
     )
 
     # ------------------------- 2. 定位：map_server + AMCL（先 configure） -------------------------
@@ -342,6 +368,7 @@ def generate_launch_description():
     #       -> Nav2节点(configure) -> 门控 -> 门控通过后激活导航 -> 巡检/RViz
     ld.add_action(robot_state_publisher)
     ld.add_action(ekf_node)
+    ld.add_action(odom_shim_node)
     ld.add_action(scan_gate)
     ld.add_action(slam_node)
     ld.add_action(map_server)

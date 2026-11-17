@@ -9,7 +9,7 @@ package_name = 'mybot_explore'
 
 setup(
     name=package_name,
-    version='0.2.10',
+    version='0.2.11',
     packages=find_packages(exclude=['test']),
     data_files=[
         ('share/ament_index/resource_index/packages',
@@ -29,6 +29,7 @@ setup(
     entry_points={
         'console_scripts': [
             'explore_node = mybot_explore.node:main',
+            'odom_shim = mybot_explore.odom_shim_node:main',
         ],
     },
 )
