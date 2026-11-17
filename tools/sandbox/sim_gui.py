@@ -79,7 +79,9 @@ class SandboxApp(tk.Tk):
                 ("重置", self.on_reset, GREY_BTN),
                 ("停止", self.on_stop, RED),
                 ("启动", self.on_start, GREEN),
-                ("RViz", self.on_rviz, GREY_BTN)):
+                ("RViz", self.on_rviz, GREY_BTN),
+                ("源码", self.on_open_src, GREY_BTN),
+                ("终端", self.on_open_terminal, GREY_BTN)):
             tk.Button(bar, text=text, command=cmd, bg=color, fg="white",
                       relief="flat", font=FONT, padx=16, pady=6,
                       activebackground=color, cursor="hand2").pack(side="right", padx=4)
@@ -212,6 +214,7 @@ class SandboxApp(tk.Tk):
         self.log_text.tag_configure("ok", foreground="#7ee787")
         self.log_text.tag_configure("dim", foreground="#5c6672")
         self.log_text.insert("end", "还没有日志：点「启动」跑一个场景，这里会实时滚动。\n", "dim")
+        self._placeholder = True
 
     def _build_status(self):
         bar = tk.Frame(self, bg=BG)
@@ -272,7 +275,8 @@ class SandboxApp(tk.Tk):
             var = tk.BooleanVar(value=False)
             tk.Checkbutton(line, variable=var, bg=PANEL, fg=INK, selectcolor=PANEL,
                            activebackground=PANEL, borderwidth=0,
-                           highlightthickness=0).pack(side="left")
+                           highlightthickness=0,
+                           command=self.on_fault_toggle).pack(side="left")
             label = item["label"] if item["label"] != item["name"] else item["name"]
             tk.Label(line, text=label, bg=PANEL, fg=INK, font=FONT_S,
                      width=12, anchor="w").pack(side="left")
@@ -283,9 +287,12 @@ class SandboxApp(tk.Tk):
             for arg, default in (item["args"] or {}).items():
                 tk.Label(line, text=arg, bg=PANEL, fg=DIM, font=FONT_S).pack(side="left", padx=(6, 2))
                 arg_var = tk.StringVar(value=str(default))
-                tk.Entry(line, textvariable=arg_var, bg="#141821", fg=INK,
-                         insertbackground=INK, relief="flat", font=MONO,
-                         width=8).pack(side="left", ipady=1)
+                entry = tk.Entry(line, textvariable=arg_var, bg="#141821", fg=INK,
+                                 insertbackground=INK, relief="flat", font=MONO,
+                                 width=8)
+                entry.pack(side="left", ipady=1)
+                entry.bind("<Return>", lambda e: self.on_fault_toggle())
+                entry.bind("<FocusOut>", lambda e: self.on_fault_toggle())
                 args[arg] = arg_var
             tk.Label(line, text=item["topic"] or "", bg=PANEL, fg=DIM,
                      font=FONT_S).pack(side="right", padx=6)
@@ -370,6 +377,41 @@ class SandboxApp(tk.Tk):
         for line in changed:
             self._append_line("[params] " + line)
 
+    def on_fault_toggle(self):
+        """勾选/改参数即时写 faults.json —— 故障桥 1 秒内自己重载，不用重启。"""
+        active = self.write_faults_snapshot()
+        if active:
+            self._append_line("[fault] 已启用：%s" % json.dumps(active, ensure_ascii=False))
+        else:
+            self._append_line("[fault] 已全部关闭")
+
+    def on_open_terminal(self):
+        env = simcore.child_env(self.state_data.get("domain", 42),
+                                self.state_data.get("http_port", 8180))
+        script = ("cd %s; source /opt/ros/humble/setup.bash; "
+                  "source $HOME/fishbot_full_ws/install/setup.bash; "
+                  "echo '沙盒终端：ROS_DOMAIN_ID='$ROS_DOMAIN_ID; exec bash" % simcore.ROOT)
+        for term in ("x-terminal-emulator", "gnome-terminal", "xterm"):
+            try:
+                if term == "gnome-terminal":
+                    subprocess.Popen([term, "--", "bash", "-lc", script], env=env)
+                else:
+                    subprocess.Popen([term, "-e", "bash", "-lc", script], env=env)
+                return
+            except FileNotFoundError:
+                continue
+        messagebox.showwarning("终端", "没找到终端程序，手动开一个吧")
+
+    def on_open_src(self):
+        path = os.path.join(simcore.WS, "src")
+        for cmd in (["xdg-open", path], ["nautilus", path], ["thunar", path]):
+            try:
+                subprocess.Popen(cmd)
+                return
+            except FileNotFoundError:
+                continue
+        messagebox.showinfo("源码", "源码在：%s" % path)
+
     def write_faults_snapshot(self):
         active = {}
         for name, (var, args) in self.fault_vars.items():
@@ -435,6 +477,9 @@ class SandboxApp(tk.Tk):
 
     # ------------------------------------------------------------ 日志渲染
     def _append_line(self, text):
+        if getattr(self, "_placeholder", False):
+            self.log_text.delete("1.0", "end")
+            self._placeholder = False
         for line in text.splitlines():
             tag = ""
             low = line.lower()

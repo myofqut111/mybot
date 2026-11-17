@@ -234,9 +234,10 @@ TEMPLATES = {
 set +u
 source /opt/ros/humble/setup.bash
 source "$HOME/fishbot_full_ws/install/setup.bash"
+BRIDGE="$(python3 -c 'import os;print(os.path.expanduser("~/fishbot_full_ws/tools/sandbox/fault_bridge.py"))')"
 MAP="$(python3 -c 'import os;print(os.path.expanduser("~/maps/mock_partial.yaml"))')"
-ros2 run fishbot_console mock_robot &
-MOCK=$!
+ros2 run fishbot_console mock_robot --ros-args -r /scan:=/scan_raw &
+python3 "$BRIDGE" --ros-args -p root:="$MYBOT_SIM_ROOT" &
 sleep 2
 exec ros2 run fishbot_explore explore_node --ros-args \\
   -p drive:=true -p autostart:=true -p map_yaml:="$MAP" \\
@@ -247,8 +248,10 @@ exec ros2 run fishbot_explore explore_node --ros-args \\
 set +u
 source /opt/ros/humble/setup.bash
 source "$HOME/fishbot_full_ws/install/setup.bash"
+BRIDGE="$(python3 -c 'import os;print(os.path.expanduser("~/fishbot_full_ws/tools/sandbox/fault_bridge.py"))')"
 MAP="$(python3 -c 'import os;print(os.path.expanduser("~/maps/mock_partial.yaml"))')"
-ros2 run fishbot_console mock_robot &
+ros2 run fishbot_console mock_robot --ros-args -r /scan:=/scan_raw &
+python3 "$BRIDGE" --ros-args -p root:="$MYBOT_SIM_ROOT" &
 sleep 2
 exec ros2 run fishbot_explore explore_node --ros-args \\
   -p drive:=true -p autostart:=true -p map_yaml:="$MAP" \\
