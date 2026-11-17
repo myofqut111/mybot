@@ -16,6 +16,7 @@ install(
   PROGRAMS
     scripts/nav_command.py
     scripts/wait_for_localization.py
+    scripts/scan_gate.py
   DESTINATION lib/${PROJECT_NAME}
 )
 

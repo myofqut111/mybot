@@ -93,10 +93,13 @@ explore_node:
     keepout_radius_m: 1.00       # 禁试区：只影响选点，不写进地图
     blocked_persist_hits: 2      # 同一片打滑几次算"真挡住"
     blocked_file: "~/.ros/mybot_blocked.json"
-    slam_pause_service: /slam_toolbox/pause_new_measurements
     look_around: true        # 到点转一圈，让同一片区域被多角度看到
     look_around_yaw: 6.283   # 一圈；会按 ≤180° 拆成多次绝对转向
     look_around_speed: 2.0   # 名义角速度；1.2->2.0，一圈从 5.2 s 降到 3.1 s
     look_around_timeout_s: 30.0
     max_duration_s: 1200.0   # 整场探索最多 20 分钟
     return_home: true        # 探完回起点
+    scan_gate_enabled: true
+    scan_gate_topic: /explore/scan_gate
+    home_settle_s: 3.0
+    home_timeout_s: 120.0

@@ -195,8 +195,16 @@ class FinishTest(BaseCase):
         self.assertEqual(cmd['kind'], 'home')
         self.assertEqual(e.state, ex.RETURN_HOME)
         e.on_navigation_result(True, now=200.0)
+        # 到家先进"等回环"状态，过 home_settle_s 才真正收工
+        self.assertEqual(e.state, ex.SETTLE_HOME)
+        self.assertTrue(e.returned_home)
+        self.assertEqual(e.loop_closure, 'settled')
+        self.assertIsNone(e.step(self.grid, (0.3, 1.5), now=201.0))
+        self.assertFalse(e.finished())
+        self.assertIsNone(e.step(self.grid, (0.3, 1.5),
+                                 now=200.0 + e.params['home_settle_s'] + 0.1))
         self.assertEqual(e.state, ex.DONE)
-        self.assertEqual(e.done_reason, 'returned_home')
+        self.assertEqual(e.done_reason, 'map_complete')
 
     def test_no_candidates_without_home_finishes(self):
         e = self.make(return_home=False)
@@ -239,15 +247,22 @@ class FinishTest(BaseCase):
         self.assertEqual(cmd['kind'], 'home')
         self.assertEqual(e.state, ex.RETURN_HOME)
         e.on_navigation_result(True, now=200.0)
-        self.assertEqual(e.state, ex.DONE)
+        self.assertEqual(e.state, ex.SETTLE_HOME)
 
     def test_max_duration_stops(self):
         e = self.make(max_duration_s=100.0)
         e.start((0.3, 1.5), now=0.0)
         e.state = ex.SELECT
         cmd = e.step(self.grid, (0.3, 1.5), now=200.0)
-        self.assertIsNone(cmd)
+        # 超时也先回家做回环，不再就地停
+        self.assertEqual(cmd['kind'], 'home')
+        self.assertEqual(e.stop_reason, 'timeout')
+        self.assertEqual(e.state, ex.RETURN_HOME)
+        e.on_navigation_result(False, now=250.0, reason='aborted')
+        self.assertEqual(e.state, ex.DONE)
         self.assertEqual(e.done_reason, 'timeout')
+        self.assertFalse(e.returned_home)
+        self.assertEqual(e.loop_closure, 'failed')
 
     def test_done_is_terminal(self):
         e = self.make()
@@ -285,6 +300,50 @@ class LookAroundTest(BaseCase):
         e.on_spin_result(False, now=8.0, reason='no_spin_server')
         self.assertEqual(e.state, ex.SELECT)
         self.assertEqual(e.stats.get('look_around_failures'), 1)
+
+
+class HomeReturnTest(BaseCase):
+    """收工回家：四种自然收工都先回家，再等回环才收工。"""
+
+    def _run_to_finish(self, **extra):
+        e = self.make(**extra)
+        e.start((0.3, 1.5), now=0.0)
+        e.state = ex.SELECT
+        return e
+
+    def test_failures_also_return_home(self):
+        e = self._run_to_finish(max_consecutive_failures=1)
+        e.consecutive_failures = 1
+        cmd = e.step(self.grid, (0.3, 1.5), now=2.0)
+        self.assertEqual(cmd['kind'], 'home')
+        self.assertEqual(e.stop_reason, 'too_many_failures')
+
+    def test_return_home_disabled_finishes_in_place(self):
+        e = self._run_to_finish(return_home=False)
+        e.state = ex.SELECT
+        cmd = e.step(self.grid, (0.3, 1.5), now=99999.0)
+        self.assertIsNone(cmd)
+        self.assertTrue(e.finished())
+        self.assertEqual(e.loop_closure, 'skipped')
+
+    def test_no_start_pose_finishes_in_place(self):
+        e = self.make(return_home=True)
+        e.start((0.3, 1.5), now=0.0)
+        e.start_pose = None          # 模拟"没记下起点"
+        e.state = ex.SELECT
+        cmd = e.step(self.grid, (0.3, 1.5), now=99999.0)
+        self.assertIsNone(cmd)
+        self.assertTrue(e.finished())
+
+    def test_settle_waits_before_done(self):
+        e = self._run_to_finish(max_duration_s=10.0, home_settle_s=4.0)
+        e.step(self.grid, (0.3, 1.5), now=11.0)
+        e.on_navigation_result(True, now=100.0)
+        self.assertEqual(e.state, ex.SETTLE_HOME)
+        e.step(self.grid, (0.3, 1.5), now=103.0)
+        self.assertFalse(e.finished(), '没过 home_settle_s 就收工了')
+        e.step(self.grid, (0.3, 1.5), now=104.5)
+        self.assertTrue(e.finished())
 
 
 class StuckPolicyTest(BaseCase):
@@ -341,9 +400,10 @@ class StuckPolicyTest(BaseCase):
             e.nav_target = (1.0 + i * 0.5, 1.0)
             e._abandon('aborted')
         e.state = ex.SELECT
-        self.assertIsNone(e.step(self.grid, (0.3, 1.5), now=2.0))
-        self.assertTrue(e.finished())
-        self.assertEqual(e.done_reason, 'too_many_blacklisted')
+        cmd = e.step(self.grid, (0.3, 1.5), now=2.0)
+        self.assertEqual(cmd['kind'], 'home')
+        self.assertEqual(e.stop_reason, 'too_many_blacklisted')
+        self.assertFalse(e.finished(), '还没到家就不该结束')
 
     def test_near_goal_skips_stuck_check(self):
         e = self.make(stuck_window_s=1.0, final_approach_m=0.5)

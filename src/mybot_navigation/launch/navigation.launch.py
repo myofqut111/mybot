@@ -81,6 +81,13 @@ def generate_launch_description():
             'slam_params_file', default_value='',
             description='slam 模式下的 slam_toolbox 参数文件；留空用包内的 '
                         'mapper_params_online_async.yaml'),
+        DeclareLaunchArgument(
+            'scan_gate_enabled', default_value='true',
+            description='是否让 /scan 先过门控再进 slam：打滑时只丢那几帧，'
+                        '不再整段暂停建图'),
+        DeclareLaunchArgument(
+            'scan_gate_max_s', default_value='5.0',
+            description='门控单次关闭上限（秒）；到点强制放行，绝不把建图掐死'),
         # 下面 6 个是定位门控 wait_for_localization.py 的参数
         DeclareLaunchArgument(
             'gate_stable_duration', default_value='2.0',
@@ -135,6 +142,8 @@ def generate_launch_description():
     rviz_config = LaunchConfiguration('rviz_config')
 
     # 两种定位模式：amcl = 静态地图 + AMCL；slam = 边跑边建图（探索用）
+    scan_gate_enabled = LaunchConfiguration('scan_gate_enabled')
+    scan_gate_max_s = LaunchConfiguration('scan_gate_max_s')
     use_slam = PythonExpression(["'", localization, "' == 'slam'"])
     use_amcl = PythonExpression(["'", localization, "' != 'slam'"])
     # slam 模式没有 /amcl_pose，定位门控没有意义，直接跳过
@@ -202,6 +211,20 @@ def generate_launch_description():
     amcl = LifecycleNode(
         package='nav2_amcl', executable='amcl',
         name='amcl', condition=IfCondition(use_amcl), **lifecycle_kwargs)
+
+    # 扫描门控：/scan → /scan_filtered。slam 订 /scan_filtered，
+    # 这样"打滑丢帧"和"建图"解耦——以前整段 pause 会把地图一起停掉。
+    scan_gate = Node(
+        package='mybot_navigation', executable='scan_gate.py',
+        name='scan_gate', output='screen',
+        parameters=[{
+            'input_topic': '/scan',
+            'output_topic': '/scan_filtered',
+            'control_topic': '/explore/scan_gate',
+            'max_closed_s': ParameterValue(scan_gate_max_s, value_type=float),
+        }],
+        condition=IfCondition(PythonExpression(
+            ["'", use_slam, "' == 'True' and '", scan_gate_enabled, "' == 'true'"])))
 
     # slam 模式：slam_toolbox 自己发 /map 和 map->odom，替代 map_server + AMCL
     slam_node = IncludeLaunchDescription(
@@ -319,6 +342,7 @@ def generate_launch_description():
     #       -> Nav2节点(configure) -> 门控 -> 门控通过后激活导航 -> 巡检/RViz
     ld.add_action(robot_state_publisher)
     ld.add_action(ekf_node)
+    ld.add_action(scan_gate)
     ld.add_action(slam_node)
     ld.add_action(map_server)
     ld.add_action(amcl)

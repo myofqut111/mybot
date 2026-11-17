@@ -6,6 +6,7 @@ import unittest
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 NODE = os.path.join(os.path.dirname(HERE), "mybot_explore", "node.py")
+YAML = os.path.join(os.path.dirname(HERE), "config", "explore.yaml")
 
 
 def _read():
@@ -64,3 +65,26 @@ class SlipWiringTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+class GateContractTest(unittest.TestCase):
+    """门控接线：不许再出现"整段暂停建图"的写法。"""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.node = io.open(NODE, encoding='utf-8').read()
+        cls.yaml = io.open(YAML, encoding='utf-8').read()
+
+    def test_no_permanent_pause(self):
+        self.assertNotIn('保持暂停', self.node,
+                         '不允许把"保持暂停"当成终态：那样地图会永久冻结')
+        self.assertNotIn('PauseSrv', self.node, '暂停服务已被扫描门控取代')
+
+    def test_gate_wired(self):
+        self.assertIn('_close_gate', self.node)
+        self.assertIn('_open_gate', self.node)
+        self.assertIn("declare_parameter('scan_gate_enabled'", self.node)
+        self.assertIn('scan_gate_enabled', self.yaml)
+
+    def test_home_settle_params_shipped(self):
+        self.assertIn('home_settle_s', self.yaml)
+        self.assertIn('home_timeout_s', self.yaml)

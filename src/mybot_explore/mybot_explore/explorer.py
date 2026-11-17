@@ -45,6 +45,7 @@ NAVIGATE = 'navigate'
 SETTLE = 'settle'
 LOOK_AROUND = 'look_around'
 RETURN_HOME = 'return_home'
+SETTLE_HOME = 'settle_home'
 DONE = 'done'
 
 DEFAULTS = {
@@ -90,6 +91,8 @@ DEFAULTS = {
     'unknown_drop_cells': 20,
     'max_duration_s': 1200.0,
     'return_home': True,
+    'home_settle_s': 3.0,
+    'home_timeout_s': 120.0,
 }
 
 
@@ -101,6 +104,11 @@ class Explorer(object):
 
         self.state = IDLE
         self.done_reason = ''
+        self.stop_reason = ''
+        self.returned_home = False
+        self.loop_closure = ''
+        self.home_arrived_at = None
+        self.settle_until = None
         self.start_pose = None
         self.pose = None
 
@@ -151,6 +159,11 @@ class Explorer(object):
         self.last_progress = now
         self.state = SELECT
         self.done_reason = ''
+        self.stop_reason = ''
+        self.returned_home = False
+        self.loop_closure = ''
+        self.home_arrived_at = None
+        self.settle_until = None
 
     def finished(self):
         return self.state == DONE
@@ -201,6 +214,11 @@ class Explorer(object):
             return None
         if self.state == RETURN_HOME:
             return self._watch_progress(now)
+        if self.state == SETTLE_HOME:
+            # 到家后再等 home_settle_s：slam 需要这几秒把回环后的位姿写进图
+            if self.settle_until is not None and now >= self.settle_until:
+                return self._finish(self.stop_reason or 'returned_home')
+            return None
         return None
 
     # ------------------------------------------------------------------
@@ -250,15 +268,15 @@ class Explorer(object):
 
     def _select(self, grid, now):
         if now - self.started_at > self.params['max_duration_s']:
-            return self._finish('timeout')
+            return self._begin_return_home('timeout')
         if self.consecutive_failures >= self.params['max_consecutive_failures']:
             self.too_many_failures = True
-            return self._finish('too_many_failures')
+            return self._begin_return_home('too_many_failures')
         # 黑名单上限才是真正的"到处都试过了"的判据：每个失败的点都会被拉黑，
         # 剩下的前沿点越来越少，最后自然走到"没有前沿"。绝不因为"失败几次"
         # 就把还有前沿的探索掐掉——真机上一片区域连着不可达是很常见的。
         if len(self.blacklist) >= self.params['max_blacklist']:
-            return self._finish('too_many_blacklisted')
+            return self._begin_return_home('too_many_blacklisted')
         # 刚放弃一个目标就立刻派下一个，车会原地再转一次——看起来就是"打转"。
         # 留几秒冷却，让控制器先把上一次的取消收干净。
         if now < self.select_not_before:
@@ -308,15 +326,7 @@ class Explorer(object):
                 return None
             if now - self._no_frontier_since < grace:
                 return None
-            if self.params['return_home'] and self.start_pose is not None:
-                self.state = RETURN_HOME
-                self.nav_kind = 'home'
-                self.nav_target = self.start_pose
-                self.nav_started = now
-                self.stats['goals'] += 1
-                return {'action': 'navigate', 'x': self.start_pose[0],
-                        'y': self.start_pose[1], 'kind': 'home'}
-            return self._finish('map_complete')
+            return self._begin_return_home('map_complete')
 
         self._no_frontier_since = None
         self._unknown_at_grace = None
@@ -336,7 +346,10 @@ class Explorer(object):
     # ------------------------------------------------------------------
 
     def _watch_progress(self, now):
-        if now - self.nav_started > self.params['nav_timeout_s']:
+        limit = self.params['nav_timeout_s']
+        if self.nav_kind == 'home':
+            limit = self.params.get('home_timeout_s', limit)
+        if now - self.nav_started > limit:
             self._abandon('timeout')
             return {'action': 'cancel', 'reason': 'timeout'}
 
@@ -388,6 +401,8 @@ class Explorer(object):
         self.last_cancel_reason = reason
         if self.nav_kind == 'home':
             self.state = DONE
+            self.returned_home = False
+            self.loop_closure = 'failed'
             self.done_reason = 'return_home_failed'
             return
         if self.nav_target is not None:
@@ -432,8 +447,18 @@ class Explorer(object):
             return
 
         if self.nav_kind == 'home':
-            self.state = DONE
-            self.done_reason = 'returned_home' if ok else 'return_home_failed'
+            self.nav_target = None
+            self.nav_kind = ''
+            if ok:
+                self.returned_home = True
+                self.loop_closure = 'settled'
+                self.home_arrived_at = now
+                self.settle_until = now + float(self.params['home_settle_s'])
+                self.state = SETTLE_HOME
+            else:
+                self.returned_home = False
+                self.loop_closure = 'failed'
+                self._finish(self.stop_reason or 'return_home_failed')
             return
 
         if ok:
@@ -471,9 +496,27 @@ class Explorer(object):
     # 收工
     # ------------------------------------------------------------------
 
+    def _begin_return_home(self, stop_reason):
+        """自然收工：先回起点（为了回环），再等几秒才真正结束。"""
+        self.stop_reason = stop_reason
+        if self.params.get('return_home') and self.start_pose is not None:
+            self.state = RETURN_HOME
+            self.nav_kind = 'home'
+            self.nav_target = (self.start_pose[0], self.start_pose[1])
+            self.nav_started = self._now
+            self.last_progress = self._now
+            self.loop_closure = 'pending'
+            self.stats['goals'] = self.stats.get('goals', 0) + 1
+            return {'action': 'navigate', 'x': self.start_pose[0],
+                    'y': self.start_pose[1], 'kind': 'home'}
+        self.loop_closure = 'skipped'
+        return self._finish(stop_reason)
+
     def _finish(self, reason):
         self.state = DONE
         self.done_reason = reason
+        if not self.stop_reason:
+            self.stop_reason = reason
         return None
 
     # ------------------------------------------------------------------
@@ -487,6 +530,9 @@ class Explorer(object):
             'blacklist': len(self.blacklist),
             'consecutive_failures': self.consecutive_failures,
             'last_cancel_reason': self.last_cancel_reason,
+            'stop_reason': self.stop_reason,
+            'returned_home': self.returned_home,
+            'loop_closure': self.loop_closure,
         }
         out.update(self.stats)
         if now is not None and self.started_at is not None:

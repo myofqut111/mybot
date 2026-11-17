@@ -58,10 +58,6 @@ try:                                    # 到点转圈用导航栈现成的 Spin
 except Exception:                       # pragma: no cover
     Spin = None
 
-try:                                    # slam_toolbox 的 pause 是一个"切换"服务
-    from slam_toolbox.srv import Pause as PauseSrv
-except Exception:                       # pragma: no cover
-    PauseSrv = None
 
 
 class ExplorerNode(Node):
@@ -107,8 +103,8 @@ class ExplorerNode(Node):
         self.declare_parameter('keepout_radius_m', 1.00)
         self.declare_parameter('blocked_persist_hits', 2)
         self.declare_parameter('blocked_file', blocked_mod.DEFAULT_PATH)
-        self.declare_parameter('slam_pause_service',
-                               '/slam_toolbox/pause_new_measurements')
+        self.declare_parameter('scan_gate_enabled', True)
+        self.declare_parameter('scan_gate_topic', '/explore/scan_gate')
 
         # ---- 状态 ----
         self._grid = None
@@ -143,17 +139,13 @@ class ExplorerNode(Node):
         self._last_scan_msg = None
         self._cmd_linear = 0.0
         self._cmd_angular = 0.0
-        self._slam_paused = False
-        self._pause_pending = False
-        self._pause_inflight = False
+        self._gate_closed = False
+        self._gate_changed_at = None
         self._wall_segments = []          # [(segment, cells)]
         self._slips = 0
-        # slam_toolbox 的 pause_new_measurements 是"切换"服务：
-        # 调一次暂停、再调一次恢复；响应里的 status 告诉你当前是哪个状态。
-        self._pause_client = None
-        if PauseSrv is not None:
-            self._pause_client = self.create_client(
-                PauseSrv, str(self.get_parameter('slam_pause_service').value))
+        # 扫描门控：打滑时只让 scan_gate 丢那几帧，不整段暂停建图
+        self._gate_pub = self.create_publisher(
+            Bool, str(self.get_parameter('scan_gate_topic').value), 10)
         try:
             from slam_toolbox.srv import SaveMap as _SaveMap
             self._save_map_srv = _SaveMap
@@ -369,7 +361,6 @@ class ExplorerNode(Node):
         drive = bool(self.get_parameter('drive').value)
         if drive:
             self._check_slip(now, pose)
-        self._try_pause()
 
         if (drive and self._explorer.state == explorer_mod.IDLE
                 and bool(self.get_parameter('autostart').value) and pose):
@@ -472,11 +463,14 @@ class ExplorerNode(Node):
         if action == 'confirmed':
             self._on_slip_confirmed(now, pose, result)
         elif action == 'resume':
-            self._resume_slam()
+            self._open_gate('车已恢复移动')
             self.get_logger().info('车又动起来了，恢复建图')
         elif action == 'give_up':
+            # 放弃这个点就立刻把门控打开：地图必须继续长，不能因为一个点
+            # 就让它一直停在"丢帧"状态（以前这里会一直停着不收帧，整图都冻住）
+            self._open_gate('放弃该点')
             self.get_logger().warning(
-                '打滑后 %.0f 秒仍没动起来，放弃这个点（仍保持暂停建图）'
+                '打滑后 %.0f 秒仍没动起来，放弃这个点（已恢复建图）'
                 % float(self.get_parameter('slip_hold_timeout_s').value))
 
     def _on_slip_confirmed(self, now, pose, result):
@@ -488,7 +482,7 @@ class ExplorerNode(Node):
                result.get('near_m', 0.0), result.get('hits', 0),
                result.get('map_odom_moved', 0.0)))
         self._cancel_goal()
-        self._pause_slam()
+        self._close_gate('打滑确认')
         if bool(self.get_parameter('blocked_wall_enabled').value):
             self._mark_blocked_wall(pose)
         keepout = float(self.get_parameter('keepout_radius_m').value)
@@ -519,61 +513,28 @@ class ExplorerNode(Node):
             except Exception as error:                    # noqa: BLE001
                 self.get_logger().warning('标短墙失败：%s' % error)
 
-    def _pause_slam(self):
-        """暂停建图；服务还没被发现就挂起，后面每拍重试。"""
-        if self._slam_paused:
+    def _set_gate(self, closed, reason=''):
+        """告诉 scan_gate 要不要丢帧。只丢帧，不暂停建图。"""
+        if not bool(self.get_parameter('scan_gate_enabled').value):
             return
-        self._pause_pending = True
-        self._try_pause()
-
-    def _try_pause(self):
-        if not getattr(self, '_pause_pending', False) or self._slam_paused:
+        if closed == self._gate_closed:
             return
-        if getattr(self, '_pause_inflight', False):
-            return          # 上一次请求还没回来，别连发两次（切换型服务会被切回去）
-        if self._pause_client is None:
-            self._warn_at('no_pause', '没装 slam_toolbox 的 Pause 服务，无法暂停建图')
-            return
-        if self._pause_client.wait_for_service(timeout_sec=0.2):
-            self._pause_inflight = True
-            future = self._pause_client.call_async(PauseSrv.Request())
-            future.add_done_callback(self._on_pause_done)
+        self._gate_closed = closed
+        self._gate_changed_at = self._now()
+        msg = Bool()
+        msg.data = bool(closed)
+        self._gate_pub.publish(msg)
+        if closed:
+            self.get_logger().info('扫描门控：关闭（%s）—— 这几帧不进图，建图继续'
+                                   % (reason or ''))
         else:
-            self._warn_at('no_pause',
-                          '暂停服务还没就绪（%s），继续重试；期间坏数据仍可能进图'
-                          % str(self.get_parameter('slam_pause_service').value))
+            self.get_logger().info('扫描门控：打开（%s）' % (reason or ''))
 
-    def _on_pause_done(self, future):
-        self._pause_pending = False
-        self._pause_inflight = False
-        try:
-            response = future.result()
-        except Exception as error:                        # noqa: BLE001
-            self.get_logger().warning('暂停建图失败：%s' % error)
-            return
-        self._slam_paused = bool(getattr(response, 'status', True))
-        self.get_logger().info(
-            '建图已暂停，坏数据不再进图' if self._slam_paused else '建图仍在运行')
+    def _close_gate(self, reason=''):
+        self._set_gate(True, reason)
 
-    def _resume_slam(self):
-        """再调一次同一个切换服务就恢复。"""
-        if not self._slam_paused or self._pause_client is None:
-            return
-        if self._pause_client.service_is_ready():
-            future = self._pause_client.call_async(PauseSrv.Request())
-            self._slam_paused = False
-            future.add_done_callback(self._on_resume_done)
-        else:
-            self._warn_at('no_resume', '恢复建图的服务不可用，保持暂停')
-
-    def _on_resume_done(self, future):
-        try:
-            response = future.result()
-        except Exception as error:                        # noqa: BLE001
-            self.get_logger().warning('恢复建图失败：%s' % error)
-            return
-        self.get_logger().info(
-            '建图已恢复' if not bool(getattr(response, 'status', False)) else '建图仍是暂停状态')
+    def _open_gate(self, reason=''):
+        self._set_gate(False, reason)
 
     def _now_iso(self):
         return time.strftime('%Y-%m-%dT%H:%M:%S', time.localtime())
@@ -964,7 +925,7 @@ class ExplorerNode(Node):
         snap['slips'] = self._slips
         snap['blocked_walls'] = len(self._wall_segments)
         snap['keepouts'] = len(self._blocked.spots)
-        snap['slam_paused'] = bool(self._slam_paused)
+        snap['scan_gate'] = 'closed' if self._gate_closed else 'open'
         self._status.publish(String(data=json.dumps(snap, ensure_ascii=False)))
 
 
