@@ -85,7 +85,23 @@ explore_node:
     slip_min_hits: 20            # 近场命中束少于它就不判（空旷区没有可比性）
     slip_min_speed: 0.05         # 命令速度≈0 不判
     slip_confirm_s: 1.5          # 持续这么久才确认
-    slip_hold_timeout_s: 10.0    # 打滑后等它真动起来的上限
+    slip_hold_timeout_s: 10.0
+
+    # ---- 推台阶 / 顶矮墙：只有"扫描没变但 odom 在涨"这一条（不靠 map→odom）----
+    # 打滑和顶住长得几乎一样，区别在于：打滑时 slam 会去修正 map→odom（A 成立），
+    # 推台阶时车在世界里真没动、slam 无从修正（A 恒为 0）。所以这条只靠 B。
+    blocked_enabled: true
+    block_window_s: 3.0
+    block_odom_min_m: 0.30
+    block_scan_change_ratio: 0.10
+    block_scan_near_m: 1.0
+    block_scan_diff_m: 0.03
+    block_min_hits: 8
+    block_min_speed: 0.05
+    block_max_omega: 0.20
+    block_confirm_s: 1.0
+    block_cooldown_s: 5.0
+    slip_debug: false    # 打滑后等它真动起来的上限
     # 挡住点：只画有物证的那 0.5 m 短墙；其余保持未知
     blocked_wall_enabled: true
     blocked_wall_offset_m: 0.22  # 车头前沿离车身中心的距离

@@ -127,10 +127,16 @@ class SlipDetectorCase(unittest.TestCase):
         self.assertIsNone(result['action'])
         self.assertEqual(result['reason'], 'not_slipping')
 
-    def test_scan_static_but_no_drift_is_not_enough(self):
-        """判据 B 成立但 map→odom 没长 → 不是打滑（比如原地等）。"""
+    def test_scan_static_but_no_drift_is_not_slip(self):
+        """判据 B 成立但 map→odom 没长 → 不是**打滑**。
+
+        这种形态（扫描不动、odom 在涨、slam 不漂）其实是"推台阶/顶矮墙"，
+        0.2.12 起由 `_check_blocked` 判成 `blocked`（取消目标 + 标短墙），
+        但绝不能走打滑那条路（关建图）—— 因为这时扫描是可信的。
+        """
         result = self.drive(6, drift_step=0.0)
-        self.assertIsNone(result['action'])
+        self.assertNotIn(result['action'], ('confirmed',))
+        self.assertNotEqual(result['state'], slip_mod.HOLD)
 
     def test_confirms_after_confirm_window(self):
         result = self.drive(5)

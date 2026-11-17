@@ -14,6 +14,11 @@
 
 A 与 B 必须同时成立，并排除三种正常情况：原地转、空旷区、本来就没让走。
 
+**例外：推台阶 / 顶矮墙。** 这时车在世界里真的没动、扫描也真的没变，slam 没有
+任何依据去修正 ``map→odom``，判据 A 恒为 0 —— 只按 A+B 永远判不出来（真机踩过：
+车顶住台阶一路打滑还不肯停）。所以另开一条**只靠 B** 的判据：跨 3 秒比两帧扫描
+（变化 <10%）且 odom 涨了 ≥0.30 m，就判"被顶住"（``action='blocked'``）。
+
 状态机：
 
     IDLE ──(疑)──> SUSPECT ──(持续 1.5 s)──> CONFIRMED ──(由外部处理)──> HOLD
@@ -38,6 +43,18 @@ DEFAULTS = {
     'slip_min_hits': 20,
     'slip_min_speed': 0.05,
     'slip_confirm_s': 1.5,
+    # ---- 推台阶 / 顶墙：只有 B 单独成立（map→odom 不会漂，因为世界里车真没动）----
+    'blocked_enabled': True,
+    'block_window_s': 3.0,
+    'block_odom_min_m': 0.30,
+    'block_scan_change_ratio': 0.10,
+    'block_scan_near_m': 1.0,
+    'block_scan_diff_m': 0.03,
+    'block_min_hits': 8,
+    'block_min_speed': 0.05,
+    'block_max_omega': 0.20,
+    'block_confirm_s': 1.0,
+    'block_cooldown_s': 5.0,
     'slip_hold_timeout_s': 10.0,
 }
 
@@ -116,8 +133,18 @@ class SlipDetector(object):
         self._prev_scan = None
         self._prev_odom = None
         self._prev_map_odom = None
-        self._window = []          # [(t, x, y)] 只存 map→odom
+        self._window = []
+        self._hist = []
+        self._block_suspect_at = None
+        self._block_until = 0.0          # [(t, x, y)] 只存 map→odom
         self._last_tick = None
+        # 推台阶/顶墙：跨 block_window_s 的两帧对比
+        self._hist = []
+        self._block_suspect_at = None
+        self._block_until = 0.0
+        self.block_ratio = 0.0
+        self.block_odom_moved = 0.0
+        self.block_hits = 0
 
     # ---------- 对外 ----------
 
@@ -212,6 +239,13 @@ class SlipDetector(object):
                 return self.snapshot(action='give_up')
             return self.snapshot(action=None)
 
+        # 4.5) 推台阶 / 顶墙：只靠 B 的独立判据（跨窗口比两帧扫描）
+        blocked_action = self._check_blocked(now, scan, odom_pose, linear, angular)
+        if blocked_action == 'suspect':
+            return self.snapshot(action='suspect')
+        if blocked_action == 'blocked':
+            return self.snapshot(action='blocked')
+
         # 5) 排除三种正常情况
         blocked = self._excluded(linear, angular)
         if blocked:
@@ -250,6 +284,63 @@ class SlipDetector(object):
 
         return self.snapshot(action=None)
 
+    def _check_blocked(self, now, scan, odom_pose, linear, angular):
+        """推台阶 / 顶矮墙：只靠"扫描没变但 odom 在涨"。
+
+        返回 ``'suspect'`` / ``'blocked'`` / ``None``。
+        """
+        params = self.params
+        if not params.get('blocked_enabled', True):
+            return None
+        if now < self._block_until:
+            return None
+        if scan is None or odom_pose is None:
+            return None
+
+        window = float(params['block_window_s'])
+        self._hist.append((float(now), scan, (float(odom_pose[0]), float(odom_pose[1]))))
+        keep_from = now - window * 2.0
+        while len(self._hist) > 2 and self._hist[0][0] < keep_from:
+            self._hist.pop(0)
+
+        target = now - window
+        best = None
+        for item in self._hist:
+            if best is None or abs(item[0] - target) < abs(best[0] - target):
+                best = item
+        if best is None or abs(best[0] - target) > window * 0.5:
+            return None
+
+        ratio, _valid, hits = scan_compare(
+            best[1], scan, near_m=params['block_scan_near_m'],
+            diff_m=params['block_scan_diff_m'],
+            range_max=params.get('slip_scan_range_max'))
+        moved = math.hypot(odom_pose[0] - best[2][0], odom_pose[1] - best[2][1])
+        self.block_ratio = ratio
+        self.block_odom_moved = moved
+        self.block_hits = hits
+
+        # 只在"确实在往前开"的时候判：原地转、没让走、近处没东西都要放过
+        if (abs(angular) > params['block_max_omega']
+                or abs(linear) < params['block_min_speed']
+                or hits < params['block_min_hits']):
+            self._block_suspect_at = None
+            return None
+
+        if (ratio < params['block_scan_change_ratio']
+                and moved >= params['block_odom_min_m']):
+            if self._block_suspect_at is None:
+                self._block_suspect_at = now
+                return 'suspect'
+            if now - self._block_suspect_at >= params['block_confirm_s']:
+                self._block_suspect_at = None
+                self._block_until = now + float(params['block_cooldown_s'])
+                return 'blocked'
+            return None
+
+        self._block_suspect_at = None
+        return None
+
     def _excluded(self, linear, angular):
         params = self.params
         if abs(angular) > params['slip_max_omega']:
@@ -274,4 +365,7 @@ class SlipDetector(object):
             'odom_moved': round(self.odom_moved, 4),
             'map_odom_moved': round(self.map_odom_moved, 4),
             'hold_for': round(self.hold_for, 2),
+            'block_ratio': round(self.block_ratio, 4),
+            'block_odom_moved': round(self.block_odom_moved, 4),
+            'block_hits': self.block_hits,
         }

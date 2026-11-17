@@ -94,6 +94,7 @@ class ExplorerNode(Node):
                 continue
             self.declare_parameter(key, value)
         # 打滑 / 低矮障碍：判据参数全在 slip.DEFAULTS 里
+        self.declare_parameter('slip_debug', False)
         for key, value in slip_mod.DEFAULTS.items():
             self.declare_parameter(key, value)
         # 挡住点：只画有物证的那一小段墙，其余保持未知
@@ -459,12 +460,28 @@ class ExplorerNode(Node):
         result = self._slip.update(now, odom_pose=odom_xy, map_odom=map_odom,
                                    scan=scan, linear=self._cmd_linear,
                                    angular=self._cmd_angular)
+        if bool(self.get_parameter('slip_debug').value):
+            # 排障用：到底哪一路数据没进来（默认关，不影响正常运行）
+            if now - getattr(self, '_slip_dbg_at', 0.0) >= 2.0:
+                self._slip_dbg_at = now
+                self.get_logger().info(
+                    '滑移诊断：scan=%s odom=%s map_odom=%s linear=%.2f angular=%.2f '
+                    'ratio=%.3f hits=%d block_ratio=%.3f block_moved=%.2f state=%s'
+                    % ('有' if scan_msg is not None else '无',
+                       '有' if odom_xy is not None else '无',
+                       '有' if map_odom is not None else '无',
+                       self._cmd_linear, self._cmd_angular,
+                       result.get('ratio', 0.0), result.get('hits', 0),
+                       result.get('block_ratio', 0.0), result.get('block_odom_moved', 0.0),
+                       result.get('state', '')))
         action = result.get('action')
         if action == 'confirmed':
             self._on_slip_confirmed(now, pose, result)
         elif action == 'resume':
             self._open_gate('车已恢复移动')
             self.get_logger().info('车又动起来了，恢复建图')
+        elif action == 'blocked':
+            self._on_blocked(now, pose, result)
         elif action == 'give_up':
             # 放弃这个点就立刻把门控打开：地图必须继续长，不能因为一个点
             # 就让它一直停在"丢帧"状态（以前这里会一直停着不收帧，整图都冻住）
@@ -472,6 +489,36 @@ class ExplorerNode(Node):
             self.get_logger().warning(
                 '打滑后 %.0f 秒仍没动起来，放弃这个点（已恢复建图）'
                 % float(self.get_parameter('slip_hold_timeout_s').value))
+
+    def _on_blocked(self, now, pose, result):
+        """推台阶 / 顶矮墙：车在往前开、odom 在涨，但世界没变。
+
+        和打滑的区别：这种情况扫描是**可信的**（车真的没动、墙真的在那儿），
+        所以不关扫描门控，只取消目标、标一段短墙、把这一片拉黑。
+        """
+        self._blocked_hits = getattr(self, '_blocked_hits', 0) + 1
+        self.get_logger().warning(
+            '疑似被顶住（台阶/矮障）：车在 (%.2f, %.2f)，odom %.2f 秒里涨了 %.2f m，'
+            '但 %.1f m 内 %d 束扫描只变了 %.0f%%'
+            % (pose[0], pose[1], float(self.get_parameter('block_window_s').value),
+               result.get('block_odom_moved', 0.0),
+               float(self.get_parameter('block_scan_near_m').value),
+               result.get('block_hits', 0),
+               result.get('block_ratio', 0.0) * 100.0))
+        self._cancel_goal()
+        if bool(self.get_parameter('blocked_wall_enabled').value):
+            self._mark_blocked_wall(pose)
+        keepout = float(self.get_parameter('keepout_radius_m').value)
+        spot = self._blocked.add(
+            pose[0], pose[1], pose[2], now=self._now_iso(), radius_m=keepout,
+            slip_seconds=float(self.get_parameter('block_window_s').value))
+        try:
+            self._blocked.save()
+        except Exception as error:                        # noqa: BLE001
+            self.get_logger().warning('写挡住点失败：%s' % error)
+        self._explorer.blacklist.append((spot['x'], spot['y']))
+        self.get_logger().info(
+            '已把这一片列为禁试区（半径 %.1f m），换下一个点' % keepout)
 
     def _on_slip_confirmed(self, now, pose, result):
         self._slips += 1
@@ -921,6 +968,7 @@ class ExplorerNode(Node):
         snap['carved_free'] = totals[0]
         snap['carved_occupied'] = totals[1]
         snap['slip_state'] = self._slip.state
+        snap['blocked_hits'] = getattr(self, '_blocked_hits', 0)
         snap['slip_ratio'] = round(self._slip.ratio, 3)
         snap['slips'] = self._slips
         snap['blocked_walls'] = len(self._wall_segments)
