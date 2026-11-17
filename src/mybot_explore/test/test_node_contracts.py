@@ -88,3 +88,22 @@ class GateContractTest(unittest.TestCase):
     def test_home_settle_params_shipped(self):
         self.assertIn('home_settle_s', self.yaml)
         self.assertIn('home_timeout_s', self.yaml)
+
+
+class ImportContractTest(unittest.TestCase):
+    """静态检查：用了哪个消息类型，就必须 import。
+
+    真机上踩过：node.py 里 create_publisher(Bool, ...) 却没 import Bool，
+    单测全绿、一启动就 NameError 退出（mock 一跑立刻暴露）。
+    """
+
+    def test_message_types_are_imported(self):
+        import re
+        src = _read()
+        used = set(re.findall(
+            r'create_(?:publisher|subscription)\(\s*([A-Z][A-Za-z0-9_]*)', src))
+        used |= set(re.findall(r'\b([A-Z][A-Za-z0-9_]*)\.Goal\(\)', src))
+        self.assertTrue(used, '没找到任何消息类型用法？')
+        for name in sorted(used):
+            pattern = r'from [\w.]+ import [^\n]*\b%s\b' % name
+            self.assertRegex(src, pattern, '用到了 %s 却没有 import' % name)

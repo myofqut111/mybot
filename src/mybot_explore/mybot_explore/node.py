@@ -36,7 +36,7 @@ from rclpy.node import Node
 from rclpy.qos import (QoSDurabilityPolicy, QoSHistoryPolicy, QoSProfile,
                        qos_profile_sensor_data)
 from sensor_msgs.msg import LaserScan
-from std_msgs.msg import String
+from std_msgs.msg import Bool, String
 from std_srvs.srv import Empty, Trigger
 from visualization_msgs.msg import Marker, MarkerArray
 
