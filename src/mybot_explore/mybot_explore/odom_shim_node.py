@@ -59,6 +59,7 @@ class OdomShim(Node):
         self._last_msg = None
         self._last_rx = None
         self._warned = False
+        self._stale_warned = False
 
         self._broadcaster = TransformBroadcaster(self)
         self._state_pub = self.create_publisher(String, '/odom_shim/state', 10)
@@ -116,9 +117,13 @@ class OdomShim(Node):
         if (self._last_rx is not None
                 and not self._anchor.frozen):
             age = (now - self._last_rx).nanoseconds / 1e9
-            if age > self._warn_after:
+            if age > self._warn_after and not self._stale_warned:
+                # 只报一次：_tick 是 20 Hz，不节流会一夜刷 160 MB 日志
                 self.get_logger().warning(
-                    '里程计断流 %.1f 秒，仍在按最后一次位姿发 TF' % age)
+                    '里程计断流 %.1f 秒，仍在按最后一次位姿发 TF（只提示一次，恢复后重新计时）' % age)
+                self._stale_warned = True
+        else:
+            self._stale_warned = False
 
         pose = odom_anchor.pose_of(self._last_msg)
         shaped = self._anchor.apply(pose)

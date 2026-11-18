@@ -109,10 +109,14 @@ def generate_launch_description():
             description='Gate: max TF yaw jitter over the stable window (rad)'),
         DeclareLaunchArgument(
             'odom_shim_enabled', default_value='false',
-            description='Use odom_shim to own odom->base_link (pair with ekf_publish_tf:=false)'),
+            description='Use odom_shim to own odom->base_link (ekf_publish_tf follows automatically)'),
         DeclareLaunchArgument(
-            'ekf_publish_tf', default_value='true',
-            description='Let EKF publish odom->base_link; must be false when odom_shim is on'),
+            'ekf_publish_tf',
+            # 默认跟着 odom_shim 走：开 shim 就让 EKF 闭嘴，避免两个广播者抢同一个 TF。
+            default_value=PythonExpression(
+                ["'false' if '", LaunchConfiguration('odom_shim_enabled'),
+                 "' == 'true' else 'true'"]),
+            description='Let EKF publish odom->base_link; auto-false when odom_shim is on'),
         DeclareLaunchArgument(
             'enable_ekf', default_value='true',
             description='Launch robot_localization ekf_node in this file'),
