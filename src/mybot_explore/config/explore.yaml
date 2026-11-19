@@ -59,7 +59,11 @@ explore_node:
     max_goal_distance_m: 15.0
     nav_timeout_s: 90.0      # 单个目标最多给这么久
     settle_s: 0.3            # 到点后等多久再重新算前沿（1.0->0.3，别白站着）
-    stuck_window_s: 15.0     # 这么久没"进展"就算卡住（2026-11-15：10->15，窄处转弯本来就慢）
+    stuck_window_s: 15.0
+    # nav2 突然不吭声（不发 cmd_vel 也不报错）多久就放弃这个点
+    nav_silence_s: 3.0
+    nav_silence_linear: 0.02
+    nav_silence_angular: 0.05     # 这么久没"进展"就算卡住（2026-11-15：10->15，窄处转弯本来就慢）
     stuck_move_m: 0.08       # 位移超过它算进展
     stuck_move_rad: 0.30     # 转角超过它也算进展（原地对准不是卡住；0.15->0.30 少误判）
     retarget_cooldown_s: 3.0 # 放弃目标后冷几秒再选下一个，否则车会原地又转一次

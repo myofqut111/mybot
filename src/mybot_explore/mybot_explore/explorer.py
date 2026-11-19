@@ -65,6 +65,10 @@ DEFAULTS = {
     'nav_timeout_s': 90.0,
     'settle_s': 0.3,
     'stuck_window_s': 15.0,
+    # nav2 突然不吭声（既不发 cmd_vel 也不报错）多久就放弃这个点
+    'nav_silence_s': 3.0,
+    'nav_silence_linear': 0.02,
+    'nav_silence_angular': 0.05,
     'stuck_move_m': 0.08,
     'stuck_move_rad': 0.30,
     'retarget_cooldown_s': 3.0,
@@ -111,6 +115,7 @@ class Explorer(object):
         self.settle_until = None
         self.start_pose = None
         self.pose = None
+        self.yaw = None
 
         self.visited = None          # visited.VisitedLayer，第一次拿到 grid 时建
         self.blacklist = []           # [(x, y), ...]
@@ -118,6 +123,9 @@ class Explorer(object):
         self.nav_target = None
         self.nav_kind = ''
         self.nav_started = 0.0
+        self._silent_since = None
+        self.cmd_linear = 0.0
+        self.cmd_angular = 0.0
         self.last_progress = 0.0
         self.settle_at = 0.0
         self.look_around_at = 0.0
@@ -241,6 +249,8 @@ class Explorer(object):
             if moved >= self.params['progress_epsilon_m']:
                 self.stats['distance_m'] += moved
         self.pose = (x, y)
+        if yaw is not None:
+            self.yaw = yaw
 
         # 位移或转角任一够大就说明"车在动"，重置卡住计时
         if self._ref_x is None:
@@ -359,6 +369,21 @@ class Explorer(object):
         if self._near_goal(now):
             self.last_progress = now
             return None
+
+        # nav2 静默：既没线速度也没角速度 —— 车杵着不动，nav2 也没报错。
+        # 这种情况"轮子在转"的证据一条都没有，卡住判据（靠 odom 在涨）永远不触发，
+        # 只能干等 stuck_window_s。实测一次白丢 13 秒，这里 3 秒就放弃。
+        silent = (abs(self.cmd_linear) < self.params.get('nav_silence_linear', 0.02)
+                  and abs(self.cmd_angular) < self.params.get('nav_silence_angular', 0.05))
+        if silent:
+            if self._silent_since is None:
+                self._silent_since = now
+            elif now - self._silent_since >= self.params.get('nav_silence_s', 3.0):
+                self._silent_since = None
+                self._abandon('nav_silent')
+                return {'action': 'cancel', 'reason': 'nav_silent'}
+        else:
+            self._silent_since = None
 
         idle_for = now - self.last_progress
         if idle_for > self.params['stuck_window_s']:

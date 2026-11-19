@@ -390,6 +390,8 @@ class ExplorerNode(Node):
                 self._open_gate('顶住已过 %.0f 秒' % closed_for)
 
         if grid is not None and drive and pose is not None:
+            self._explorer.cmd_linear = float(self._cmd_linear)
+            self._explorer.cmd_angular = float(self._cmd_angular)
             cmd = self._explorer.step(grid, (pose[0], pose[1], pose[2]), now)
             if cmd:
                 self._handle(cmd, pose)
