@@ -61,7 +61,9 @@ explore_node:
     settle_s: 0.3            # 到点后等多久再重新算前沿（1.0->0.3，别白站着）
     stuck_window_s: 15.0
     # nav2 突然不吭声（不发 cmd_vel 也不报错）多久就放弃这个点
-    nav_silence_s: 3.0
+    nav_silence_s: 5.0
+    # 目标刚发出去的这几秒允许 nav2 静默（它在规划 / 恢复），别急着掐
+    nav_silence_after_s: 8.0
     nav_silence_linear: 0.02
     nav_silence_angular: 0.05     # 这么久没"进展"就算卡住（2026-11-15：10->15，窄处转弯本来就慢）
     stuck_move_m: 0.08       # 位移超过它算进展
