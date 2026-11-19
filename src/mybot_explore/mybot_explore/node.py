@@ -130,6 +130,7 @@ class ExplorerNode(Node):
         self._spin_speed = 1.2
         self._spin_timeout = 30.0
         self._done_logged = False
+        self._block_closed_at = None    # 被顶住时关了门控的时刻
         self._save_inflight = False
         self._saved_once = False
         # ---- 打滑 / 挡住点 ----
@@ -383,10 +384,10 @@ class ExplorerNode(Node):
         # 否则地图永远不再更新（比"脏数据"更糟）。
         if self._block_closed_at is not None:
             cooldown = 2.0 * float(self.get_parameter('block_cooldown_s').value)
-            if now - self._block_closed_at >= max(cooldown, 8.0):
+            closed_for = now - self._block_closed_at
+            if closed_for >= max(cooldown, 8.0):
                 self._block_closed_at = None
-                self._open_gate('顶住已过 %.0f 秒' % (now - self._block_closed_at
-                                                      if self._block_closed_at else 0.0))
+                self._open_gate('顶住已过 %.0f 秒' % closed_for)
 
         if grid is not None and drive and pose is not None:
             cmd = self._explorer.step(grid, (pose[0], pose[1], pose[2]), now)
