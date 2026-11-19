@@ -101,6 +101,11 @@ explore_node:
     block_max_omega: 0.20
     block_confirm_s: 1.0
     block_cooldown_s: 5.0
+    # 转不动（原地顶住）：|w| 够大、odom 的 yaw 变了、扫描却没变
+    block_turn_min_omega: 0.15
+    block_turn_min_rad: 0.20
+    # 低台阶激光看不见：近场命中太少时自动把半径放大（1→2→4 m）
+    block_near_expand: true
     slip_debug: false    # 打滑后等它真动起来的上限
     # 挡住点：只画有物证的那 0.5 m 短墙；其余保持未知
     blocked_wall_enabled: true

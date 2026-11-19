@@ -26,13 +26,15 @@ def generate_launch_description():
     params = LaunchConfiguration('params_file')
     drive = LaunchConfiguration('drive')
     autostart = LaunchConfiguration('autostart')
+    slip_debug = LaunchConfiguration('slip_debug')
 
     node = Node(
         package='mybot_explore',
         executable='explore_node',
         name='explore_node',
         output='screen',
-        parameters=[params, {'drive': drive, 'autostart': autostart}],
+        parameters=[params, {'drive': drive, 'autostart': autostart,
+                             'slip_debug': slip_debug}],
     )
 
     return LaunchDescription([
@@ -42,5 +44,7 @@ def generate_launch_description():
                               description='true=真的发 NavigateToPose 让车走'),
         DeclareLaunchArgument('autostart', default_value='false',
                               description='true=一起就自动开始，不用调服务'),
+        DeclareLaunchArgument('slip_debug', default_value='false',
+                              description='每 2 秒打一行滑移/顶住诊断（排障用）'),
         node,
     ])

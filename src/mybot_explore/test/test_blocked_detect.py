@@ -112,5 +112,62 @@ class BlockedTest(unittest.TestCase):
         self.assertNotIn('blocked', actions)
 
 
+class BlockedTurnCase(unittest.TestCase):
+    """原地顶住（转不动）：|w| 大、odom 的 yaw 变了、扫描没变。
+
+    旧判据里 |angular| > block_max_omega 直接排除，所以这种最常见的卡死形态
+    从来不会触发（用户现场：台阶顶住后轮子一直转、车不停、点云跟着换方向）。
+    """
+
+    def _params(self, **kw):
+        params = dict(slip.DEFAULTS)
+        params['block_confirm_s'] = 0.0
+        params.update(kw)
+        return params
+
+    def _scan(self, base=3.0):
+        return {'ranges': [base] * 360, 'angle_min': -3.14159,
+                'angle_increment': 6.28318 / 360.0,
+                'range_min': 0.05, 'range_max': 6.0}
+
+    def test_turning_in_place_counts_as_blocked(self):
+        det = slip.SlipDetector(self._params())
+        scan = self._scan()
+        # 一直在转，但扫描一点没变，odom 的 yaw 从 0 涨到 0.6
+        det.update(0.0, odom_pose=(0.0, 0.0, 0.0), map_odom=(0.0, 0.0),
+                   scan=scan, linear=0.0, angular=0.5)
+        det.update(2.0, odom_pose=(0.0, 0.0, 0.0), map_odom=(0.0, 0.0),
+                   scan=scan, linear=0.0, angular=0.5)
+        det.update(3.2, odom_pose=(0.01, 0.0, 0.4), map_odom=(0.0, 0.0),
+                   scan=scan, linear=0.0, angular=0.5)
+        last = det.update(4.4, odom_pose=(0.01, 0.0, 0.6), map_odom=(0.0, 0.0),
+                          scan=scan, linear=0.0, angular=0.5)
+        self.assertEqual(last.get('action'), 'blocked')
+
+    def test_real_rotation_does_not_fire(self):
+        det = slip.SlipDetector(self._params())
+        turn = self._scan(3.0)
+        turned = {'ranges': [3.0 + 0.5 * (i % 3) for i in range(360)],
+                  'angle_min': -3.14159, 'angle_increment': 6.28318 / 360.0,
+                  'range_min': 0.05, 'range_max': 6.0}
+        det.update(0.0, odom_pose=(0.0, 0.0, 0.0), map_odom=(0.0, 0.0),
+                   scan=turn, linear=0.0, angular=0.5)
+        last = det.update(3.2, odom_pose=(0.01, 0.0, 0.6), map_odom=(0.0, 0.0),
+                          scan=turned, linear=0.0, angular=0.5)
+        self.assertNotEqual(last.get('action'), 'blocked')
+
+    def test_low_step_with_few_near_hits_still_fires(self):
+        """低台阶：激光看不见，1 m 内没几束——近场半径要自动放大。"""
+        det = slip.SlipDetector(self._params(block_min_hits=50))
+        scan = self._scan(3.0)          # 全在 3 m，1 m 内 0 束
+        det.update(0.0, odom_pose=(0.0, 0.0, 0.0), map_odom=(0.0, 0.0),
+                   scan=scan, linear=0.15, angular=0.0)
+        det.update(3.2, odom_pose=(0.30, 0.0, 0.0), map_odom=(0.0, 0.0),
+                   scan=scan, linear=0.15, angular=0.0)
+        last = det.update(4.4, odom_pose=(0.45, 0.0, 0.0), map_odom=(0.0, 0.0),
+                          scan=scan, linear=0.15, angular=0.0)
+        self.assertEqual(last.get('action'), 'blocked')
+
+
 if __name__ == '__main__':
     unittest.main()

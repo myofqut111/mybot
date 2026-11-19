@@ -1,7 +1,7 @@
 <?xml version="1.0"?>
 <package format="3">
   <name>mybot_explore</name>
-  <version>0.2.12</version>
+  <version>0.2.13</version>
   <description>Frontier-based autonomous exploration, step 1: visualise frontiers only.</description>
   <maintainer email="dev@example.com">Mybot Maintainer</maintainer>
   <license>Apache-2.0</license>

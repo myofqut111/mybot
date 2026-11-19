@@ -55,6 +55,10 @@ DEFAULTS = {
     'block_max_omega': 0.20,
     'block_confirm_s': 1.0,
     'block_cooldown_s': 5.0,
+    # 转不动（原地顶住/轮子空转）：|ω| 够大、odom 的 yaw 变了、但扫描没变
+    'block_turn_min_omega': 0.15,
+    'block_turn_min_rad': 0.20,
+    'block_near_expand': True,
     'slip_hold_timeout_s': 10.0,
 }
 
@@ -62,6 +66,17 @@ IDLE = 'idle'
 SUSPECT = 'suspect'
 CONFIRMED = 'confirmed'
 HOLD = 'hold'
+
+
+def _wrap(angle):
+    """把角度折到 (-pi, pi]。slip.py 里判"转了多少"必须走这个，否则跨 ±pi 会炸。"""
+    if angle is None:
+        return None
+    while angle > math.pi:
+        angle -= 2.0 * math.pi
+    while angle <= -math.pi:
+        angle += 2.0 * math.pi
+    return angle
 
 
 def _finite(value):
@@ -145,6 +160,7 @@ class SlipDetector(object):
         self.block_ratio = 0.0
         self.block_odom_moved = 0.0
         self.block_hits = 0
+        self.block_dyaw = None
 
     # ---------- 对外 ----------
 
@@ -298,7 +314,9 @@ class SlipDetector(object):
             return None
 
         window = float(params['block_window_s'])
-        self._hist.append((float(now), scan, (float(odom_pose[0]), float(odom_pose[1]))))
+        yaw = float(odom_pose[2]) if len(odom_pose) > 2 else 0.0
+        self._hist.append((float(now), scan,
+                           (float(odom_pose[0]), float(odom_pose[1])), yaw))
         keep_from = now - window * 2.0
         while len(self._hist) > 2 and self._hist[0][0] < keep_from:
             self._hist.pop(0)
@@ -311,24 +329,53 @@ class SlipDetector(object):
         if best is None or abs(best[0] - target) > window * 0.5:
             return None
 
+        near = float(params['block_scan_near_m'])
         ratio, _valid, hits = scan_compare(
-            best[1], scan, near_m=params['block_scan_near_m'],
+            best[1], scan, near_m=near,
             diff_m=params['block_scan_diff_m'],
             range_max=params.get('slip_scan_range_max'))
+        # 低台阶激光看不见它：近场命中太少时把半径放大再看（1 m → 2 m → 4 m）。
+        # 否则"命中太少"会把最需要判的情况挡在门外（真机踩过：顶住台阶一路打滑）。
+        if params.get('block_near_expand', True):
+            tries = 0
+            while hits < params['block_min_hits'] and tries < 2:
+                near *= 2.0
+                tries += 1
+                ratio, _valid, hits = scan_compare(
+                    best[1], scan, near_m=near,
+                    diff_m=params['block_scan_diff_m'],
+                    range_max=params.get('slip_scan_range_max'))
+                if hits >= params['block_min_hits']:
+                    break
         moved = math.hypot(odom_pose[0] - best[2][0], odom_pose[1] - best[2][1])
         self.block_ratio = ratio
         self.block_odom_moved = moved
         self.block_hits = hits
 
-        # 只在"确实在往前开"的时候判：原地转、没让走、近处没东西都要放过
-        if (abs(angular) > params['block_max_omega']
-                or abs(linear) < params['block_min_speed']
-                or hits < params['block_min_hits']):
+        # 两种形态：
+        #   往前顶  —— 车在往前开、odom 位移够，扫描没变
+        #   转不动  —— 车在使劲转、odom 的 yaw 变了，扫描还是没变
+        # 之前只认第一种，而"原地空转"恰好是 |ω| 大 → 被排除 → 永远不触发。
+        yaw_now = float(odom_pose[2]) if len(odom_pose) > 2 else None
+        yaw_ref = float(best[3]) if len(best) > 3 else None
+        dyaw = None
+        if yaw_now is not None and yaw_ref is not None:
+            dyaw = _wrap(yaw_now - yaw_ref)
+        self.block_dyaw = dyaw
+
+        translating = (abs(angular) <= params['block_max_omega']
+                       and abs(linear) >= params['block_min_speed']
+                       and moved >= params['block_odom_min_m'])
+        turning = (dyaw is not None
+                   and abs(angular) >= params['block_turn_min_omega']
+                   and abs(dyaw) >= params['block_turn_min_rad'])
+
+        if hits < params['block_min_hits'] or not (translating or turning):
             self._block_suspect_at = None
             return None
 
         if (ratio < params['block_scan_change_ratio']
-                and moved >= params['block_odom_min_m']):
+                and (moved >= params['block_odom_min_m'] or turning)):
             if self._block_suspect_at is None:
                 self._block_suspect_at = now
                 return 'suspect'
@@ -368,4 +415,5 @@ class SlipDetector(object):
             'block_ratio': round(self.block_ratio, 4),
             'block_odom_moved': round(self.block_odom_moved, 4),
             'block_hits': self.block_hits,
+            'block_dyaw': self.block_dyaw,
         }
