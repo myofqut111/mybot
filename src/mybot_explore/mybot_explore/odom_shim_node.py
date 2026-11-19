@@ -31,6 +31,7 @@ from geometry_msgs.msg import TransformStamped
 from nav_msgs.msg import Odometry
 from rclpy.node import Node
 from std_msgs.msg import Bool, String
+from tf2_msgs.msg import TFMessage
 from tf2_ros import TransformBroadcaster
 
 from . import odom_anchor
@@ -61,16 +62,79 @@ class OdomShim(Node):
         self._warned = False
         self._stale_warned = False
 
+        # ---- TF 仲裁：谁在发 odom→base_link -----------------------------
+        # 两个节点同时发同一对 TF 会让扫描的位姿忽 A 忽 B，slam 大量丢帧、
+        # 建图糊成扇形。所以先静默一段时间偷听：这期间我们自己一个字都不发，
+        # 只要在 /tf 上看见 odom→base_link，就说明已经有人占了，我们退让。
+        self.declare_parameter('arbitration', True)
+        self.declare_parameter('arbitration_s', 3.0)
+        self.declare_parameter('foreign_epsilon_m', 0.10)
+        self.declare_parameter('foreign_epsilon_rad', 0.15)
+        self._arbitration = bool(self.get_parameter('arbitration').value)
+        self._arbitration_s = float(self.get_parameter('arbitration_s').value)
+        self._eps_m = float(self.get_parameter('foreign_epsilon_m').value)
+        self._eps_rad = float(self.get_parameter('foreign_epsilon_rad').value)
+        self._started_at = self.get_clock().now()
+        self._listening = self._arbitration      # 静默窗口内只偷听，不发布
+        self._yielded = False                    # 已让位给别的广播者
+        self._yield_reason = ''
+        self._published = None                   # 我们最后一次发出去的 (x, y, yaw)
+        self._got_first_odom = False
+
         self._broadcaster = TransformBroadcaster(self)
         self._state_pub = self.create_publisher(String, '/odom_shim/state', 10)
 
         self.create_subscription(Odometry, self._odom_topic, self._on_odom, 20)
         self.create_subscription(Bool, self._gate_topic, self._on_gate, 10)
+        self.create_subscription(TFMessage, '/tf', self._on_tf, 100)
         self.create_timer(1.0 / max(rate, 1.0), self._tick)
 
-        self.get_logger().info(
-            'odom_shim 已启动：%s → %s（源 %s，冻结信号 %s）'
-            % (self._parent, self._child, self._odom_topic, self._gate_topic))
+        if self._arbitration:
+            self.get_logger().info(
+                'odom_shim 已启动：%s → %s（源 %s）。先静默 %.1f 秒确认没人也在发这对 TF'
+                % (self._parent, self._child, self._odom_topic, self._arbitration_s))
+        else:
+            self.get_logger().info(
+                'odom_shim 已启动：%s → %s（源 %s，冻结信号 %s，仲裁已关）'
+                % (self._parent, self._child, self._odom_topic, self._gate_topic))
+
+    # ---- TF 仲裁 --------------------------------------------------------
+    def _on_tf(self, msg):
+        """判断这一帧 odom→base_link 是不是"别人"发的。
+
+        静默窗口内：我们自己没发过，所以只要看见就是别人的。
+        接管之后：消息里既有我们的也有别人的；我们的数值和 _published 一致，
+        别人的会明显不同 —— 差超过阈值就说明撞车了，立刻让位。
+        """
+        if not self._arbitration or self._yielded:
+            return
+        for transform in msg.transforms:
+            if (transform.header.frame_id.strip('/') != self._parent.strip('/')
+                    or transform.child_frame_id.strip('/') != self._child.strip('/')):
+                continue
+            x = transform.transform.translation.x
+            y = transform.transform.translation.y
+            quat = transform.transform.rotation
+            yaw = odom_anchor._yaw_of(quat)
+            if self._published is None:
+                self._yield('检测到已经有节点在发 %s→%s（我们还没发过）'
+                            % (self._parent, self._child))
+                return
+            dx = x - self._published[0]
+            dy = y - self._published[1]
+            dyaw = abs(odom_anchor._wrap(yaw - self._published[2]))
+            if math.hypot(dx, dy) > self._eps_m or dyaw > self._eps_rad:
+                self._yield('检测到另一个节点也在发 %s→%s（本次差 %.2f m / %.2f rad）'
+                            % (self._parent, self._child, math.hypot(dx, dy), dyaw))
+                return
+
+    def _yield(self, reason):
+        self._yielded = True
+        self._yield_reason = reason
+        self.get_logger().error(
+            '%s。我已停止发布 TF（退让，当前行为与没开 odom_shim 一致）。'
+            '要用 odom_shim：把 EKF 的 publish_tf 关掉（ekf_publish_tf:=false），再重启我' % reason)
+
 
     # ---- 订阅 -----------------------------------------------------------
     def _on_odom(self, msg):
@@ -129,6 +193,23 @@ class OdomShim(Node):
         shaped = self._anchor.apply(pose)
         if shaped is None:
             return
+
+        # 静默窗口：只看不发。窗口走完没人占位，才轮到我们。
+        if self._listening:
+            elapsed = (now - self._started_at).nanoseconds / 1e9
+            if elapsed < self._arbitration_s:
+                self._publish_state(now, None)
+                return
+            self._listening = False
+            if not self._yielded:
+                self.get_logger().info(
+                    '静默 %.1f 秒内没别人发 %s→%s，odom_shim 开始接管'
+                    % (self._arbitration_s, self._parent, self._child))
+
+        if self._yielded:
+            self._publish_state(now, None)
+            return
+
         x, y, yaw = shaped
         transform = TransformStamped()
         transform.header.stamp = now.to_msg()
@@ -143,9 +224,18 @@ class OdomShim(Node):
         transform.transform.rotation.z = quat[2]
         transform.transform.rotation.w = quat[3]
         self._broadcaster.sendTransform(transform)
+        self._published = (x, y, yaw)
 
+        self._publish_state(now, (x, y, yaw))
+
+    def _publish_state(self, now, published):
         state = self._anchor.snapshot()
         state['age_s'] = round((now - self._last_rx).nanoseconds / 1e9, 2) if self._last_rx else None
+        state['arbitration'] = self._arbitration
+        state['listening'] = self._listening
+        state['yielded'] = self._yielded
+        if self._yield_reason:
+            state['yield_reason'] = self._yield_reason
         message = String()
         message.data = repr(state).replace("'", '"')
         self._state_pub.publish(message)

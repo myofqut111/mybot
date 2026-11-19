@@ -147,3 +147,20 @@ class NodeContractTest(unittest.TestCase):
 
 if __name__ == '__main__':
     unittest.main()
+
+
+class QuaternionObjectTest(unittest.TestCase):
+    """geometry_msgs 的 Quaternion 不能 unpack，_yaw_of 必须两种都吃。"""
+
+    class _Q(object):
+        def __init__(self, x, y, z, w):
+            self.x, self.y, self.z, self.w = x, y, z, w
+
+    def test_accepts_ros_quaternion_object(self):
+        import sys, os
+        sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+        from mybot_explore import odom_anchor
+        yaw = 0.7
+        q = odom_anchor._quat_of(yaw)
+        self.assertAlmostEqual(odom_anchor._yaw_of(self._Q(*q)), yaw, places=6)
+        self.assertAlmostEqual(odom_anchor._yaw_of(q), yaw, places=6)

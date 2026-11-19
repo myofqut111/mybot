@@ -49,8 +49,15 @@ def _wrap(angle):
 
 
 def _yaw_of(q):
-    """四元数 (x, y, z, w) → 偏航角。"""
-    x, y, z, w = q
+    """四元数 → 偏航角。
+
+    既接受 (x, y, z, w) 元组，也接受 ROS 的 Quaternion 对象
+    （geometry_msgs 那个不能直接 unpack，传错了会 TypeError）。
+    """
+    try:
+        x, y, z, w = q
+    except TypeError:
+        x, y, z, w = q.x, q.y, q.z, q.w
     siny = 2.0 * (w * z + x * y)
     cosy = 1.0 - 2.0 * (y * y + z * z)
     return math.atan2(siny, cosy)
