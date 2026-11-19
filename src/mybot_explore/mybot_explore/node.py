@@ -498,7 +498,7 @@ class ExplorerNode(Node):
                 self._slip_dbg_at = now
                 self.get_logger().info(
                     '滑移诊断：scan=%s odom=%s map_odom=%s linear=%.2f angular=%.2f '
-                    'ratio=%.3f hits=%d block_ratio=%.3f block_moved=%.2f block_dyaw=%s state=%s'
+                    'ratio=%.3f hits=%d block_ratio=%.3f block_moved=%.2f block_dyaw=%s state=%s 卡死判定=%s'
                     % ('有' if scan_msg is not None else '无',
                        '有' if odom_xy is not None else '无',
                        '有' if map_odom is not None else '无',
@@ -506,7 +506,8 @@ class ExplorerNode(Node):
                        result.get('ratio', 0.0), result.get('hits', 0),
                        result.get('block_ratio', 0.0), result.get('block_odom_moved', 0.0),
                        result.get('block_dyaw'),
-                       result.get('state', '')))
+                       result.get('state', ''),
+                       result.get('block_reason') or '-'))
         action = result.get('action')
         if action == 'confirmed':
             self._on_slip_confirmed(now, pose, result)

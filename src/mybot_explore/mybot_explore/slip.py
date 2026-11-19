@@ -161,6 +161,7 @@ class SlipDetector(object):
         self.block_odom_moved = 0.0
         self.block_hits = 0
         self.block_dyaw = None
+        self.block_reason = ''
 
     # ---------- 对外 ----------
 
@@ -307,10 +308,13 @@ class SlipDetector(object):
         """
         params = self.params
         if not params.get('blocked_enabled', True):
+            self.block_reason = '开关关着'
             return None
         if now < self._block_until:
+            self.block_reason = '冷却中（刚报过一次）'
             return None
         if scan is None or odom_pose is None:
+            self.block_reason = '没有扫描或没有里程计'
             return None
 
         window = float(params['block_window_s'])
@@ -327,6 +331,7 @@ class SlipDetector(object):
             if best is None or abs(item[0] - target) < abs(best[0] - target):
                 best = item
         if best is None or abs(best[0] - target) > window * 0.5:
+            self.block_reason = '历史帧不够（还没跑够 %.0f 秒）' % window
             return None
 
         near = float(params['block_scan_near_m'])
@@ -370,7 +375,23 @@ class SlipDetector(object):
                    and abs(angular) >= params['block_turn_min_omega']
                    and abs(dyaw) >= params['block_turn_min_rad'])
 
-        if hits < params['block_min_hits'] or not (translating or turning):
+        if hits < params['block_min_hits']:
+            self.block_reason = ('命中太少（%d < %d 束，近场已放大到 %.1f m）'
+                                 % (hits, params['block_min_hits'], near))
+            self._block_suspect_at = None
+            return None
+        if not (translating or turning):
+            if abs(angular) > params['block_max_omega'] and (dyaw is None
+                                                            or abs(dyaw) < params['block_turn_min_rad']):
+                self.block_reason = ('在转但 odom 的 yaw 只变了 %s（要 ≥ %.2f rad）'
+                                     % ('无' if dyaw is None else '%.2f rad' % abs(dyaw),
+                                        params['block_turn_min_rad']))
+            elif abs(linear) < params['block_min_speed']:
+                self.block_reason = ('没让往前走（|v|=%.2f < %.2f）'
+                                     % (abs(linear), params['block_min_speed']))
+            else:
+                self.block_reason = ('位移不够（%.2f m < %.2f m）'
+                                     % (moved, params['block_odom_min_m']))
             self._block_suspect_at = None
             return None
 
@@ -378,6 +399,7 @@ class SlipDetector(object):
                 and (moved >= params['block_odom_min_m'] or turning)):
             if self._block_suspect_at is None:
                 self._block_suspect_at = now
+                self.block_reason = '疑似，等够 %.1f 秒确认' % params['block_confirm_s']
                 return 'suspect'
             if now - self._block_suspect_at >= params['block_confirm_s']:
                 self._block_suspect_at = None
@@ -385,6 +407,8 @@ class SlipDetector(object):
                 return 'blocked'
             return None
 
+        self.block_reason = ('扫描变了 %.0f%%（阈值 %.0f%%）'
+                             % (ratio * 100.0, params['block_scan_change_ratio'] * 100.0))
         self._block_suspect_at = None
         return None
 
@@ -416,4 +440,5 @@ class SlipDetector(object):
             'block_odom_moved': round(self.block_odom_moved, 4),
             'block_hits': self.block_hits,
             'block_dyaw': self.block_dyaw,
+            'block_reason': self.block_reason,
         }
