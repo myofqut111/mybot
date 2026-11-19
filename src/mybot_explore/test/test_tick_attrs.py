@@ -50,9 +50,13 @@ class TickAttributesInitializedTest(unittest.TestCase):
             '这些属性在 _tick_once 里用了，但 __init__ 没赋初值：%s' % missing)
 
     def test_block_closed_at_is_initialized(self):
+        # 回退到 0.2.12 后这个属性不存在了；等重新启用"顶住关门控"时再打开这条断言。
         init_src = ast.get_source_segment(self.source, self._method('__init__')) or ''
-        self.assertIn('self._block_closed_at', init_src,
-                      '__init__ 里必须给 _block_closed_at 赋初值（0.2.13 事故）')
+        if '_block_closed_at' in self.source:
+            self.assertIn('self._block_closed_at', init_src,
+                          '__init__ 里必须给 _block_closed_at 赋初值（0.2.13 事故）')
+        else:
+            self.skipTest('当前版本没有 _block_closed_at（0.2.12 回退态）')
 
 
 if __name__ == '__main__':

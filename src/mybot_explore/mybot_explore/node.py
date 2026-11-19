@@ -130,7 +130,6 @@ class ExplorerNode(Node):
         self._spin_speed = 1.2
         self._spin_timeout = 30.0
         self._done_logged = False
-        self._block_closed_at = None    # 被顶住时关了门控的时刻
         self._save_inflight = False
         self._saved_once = False
         # ---- 打滑 / 挡住点 ----
@@ -380,18 +379,7 @@ class ExplorerNode(Node):
                 '2D Pose Estimate（或确认 amcl 已启动），否则不会发目标'
                 % self.get_parameter('base_frame').value)
 
-        # 被顶住时关了门控，但车可能一直被顶着不退：到时间必须自己开回来，
-        # 否则地图永远不再更新（比"脏数据"更糟）。
-        if self._block_closed_at is not None:
-            cooldown = 2.0 * float(self.get_parameter('block_cooldown_s').value)
-            closed_for = now - self._block_closed_at
-            if closed_for >= max(cooldown, 8.0):
-                self._block_closed_at = None
-                self._open_gate('顶住已过 %.0f 秒' % closed_for)
-
         if grid is not None and drive and pose is not None:
-            self._explorer.cmd_linear = float(self._cmd_linear)
-            self._explorer.cmd_angular = float(self._cmd_angular)
             cmd = self._explorer.step(grid, (pose[0], pose[1], pose[2]), now)
             if cmd:
                 self._handle(cmd, pose)
@@ -448,28 +436,6 @@ class ExplorerNode(Node):
         translation = transform.transform.translation
         return (translation.x, translation.y)
 
-    def _lookup_pose(self, target, source):
-        """取 target→source 的 (x, y, yaw)；拿不到返回 None。
-
-        转不动的判据需要 yaw：原地顶住时车轮空转、odom 的 yaw 在变，但车身没转。
-        """
-        try:
-            tf_buffer = self._tf_buffer()
-        except Exception:                                 # noqa: BLE001
-            return None
-        if tf_buffer is None:
-            return None
-        try:
-            stamp = rclpy.time.Time()
-            transform = tf_buffer.lookup_transform(target, source, stamp)
-        except Exception:                                 # noqa: BLE001
-            return None
-        translation = transform.transform.translation
-        rotation = transform.transform.rotation
-        siny = 2.0 * (rotation.w * rotation.z + rotation.x * rotation.y)
-        cosy = 1.0 - 2.0 * (rotation.y * rotation.y + rotation.z * rotation.z)
-        return (translation.x, translation.y, math.atan2(siny, cosy))
-
     def _tf_buffer(self):
         if not hasattr(self, '_tf'):
             from tf2_ros import Buffer, TransformListener
@@ -489,7 +455,7 @@ class ExplorerNode(Node):
                 'range_min': scan_msg.range_min,
                 'range_max': scan_msg.range_max}
         base = str(self.get_parameter('base_frame').value)
-        odom_xy = self._lookup_pose('odom', base)
+        odom_xy = self._lookup_xy('odom', base)
         map_odom = self._lookup_xy('map', 'odom')
         result = self._slip.update(now, odom_pose=odom_xy, map_odom=map_odom,
                                    scan=scan, linear=self._cmd_linear,
@@ -500,16 +466,14 @@ class ExplorerNode(Node):
                 self._slip_dbg_at = now
                 self.get_logger().info(
                     '滑移诊断：scan=%s odom=%s map_odom=%s linear=%.2f angular=%.2f '
-                    'ratio=%.3f hits=%d block_ratio=%.3f block_moved=%.2f block_dyaw=%s state=%s 卡死判定=%s'
+                    'ratio=%.3f hits=%d block_ratio=%.3f block_moved=%.2f state=%s'
                     % ('有' if scan_msg is not None else '无',
                        '有' if odom_xy is not None else '无',
                        '有' if map_odom is not None else '无',
                        self._cmd_linear, self._cmd_angular,
                        result.get('ratio', 0.0), result.get('hits', 0),
                        result.get('block_ratio', 0.0), result.get('block_odom_moved', 0.0),
-                       result.get('block_dyaw'),
-                       result.get('state', ''),
-                       result.get('block_reason') or '-'))
+                       result.get('state', '')))
         action = result.get('action')
         if action == 'confirmed':
             self._on_slip_confirmed(now, pose, result)
@@ -543,9 +507,7 @@ class ExplorerNode(Node):
                result.get('block_ratio', 0.0) * 100.0))
         self._cancel_goal()
         if bool(self.get_parameter('blocked_wall_enabled').value):
-            self._close_gate('被顶住')
-        self._block_closed_at = now
-        self._mark_blocked_wall(pose)
+            self._mark_blocked_wall(pose)
         keepout = float(self.get_parameter('keepout_radius_m').value)
         spot = self._blocked.add(
             pose[0], pose[1], pose[2], now=self._now_iso(), radius_m=keepout,

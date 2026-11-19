@@ -36,11 +36,7 @@ class BaseCase(unittest.TestCase):
     def make(self, **extra):
         p = dict(self.params)
         p.update(extra)
-        e = ex.Explorer(p)
-        # 0.2.16 加了"nav2 静默"看门狗：cmd_vel 一直是 0 会先触发它。
-        # 这些用例测的是卡住判定，所以这里假装 nav2 还在发指令。
-        e.cmd_linear = 0.18
-        return e
+        return ex.Explorer(p)
 
 
 class StartTest(BaseCase):
