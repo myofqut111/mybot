@@ -105,7 +105,7 @@ ssh -i "$KEY" -o IdentitiesOnly=yes -o StrictHostKeyChecking=no \
       cd $WS
       source /opt/ros/humble/setup.bash
       source install/setup.bash
-      for p in fishbot-console fishbot-patrol-v2 fishbot-safety fishbot-vision fishbot-explore; do
+      for p in fishbot-console fishbot-patrol-v2 fishbot-safety fishbot-vision fishbot-explore fishbot-slip; do
         v=\$(timeout 20 python3 -c \"import importlib.metadata as m;print(m.version('\$p'))\" 2>/dev/null || echo '?')
         printf '  %-24s %s\n' \"\$p\" \"\$v\"
       done
