@@ -67,6 +67,7 @@ class SlipExecutor(Node):
         get = lambda n: self.get_parameter(n).value  # noqa: E731
         self.dry_run = bool(get('dry_run'))
         self.measure = str(get('measure')).lower()
+        self._measure_default = self.measure
         self.foreign_tol = float(get('foreign_tol'))
         self.stuck_after_s = float(get('stuck_after_s'))
         self.back_speed = float(get('back_speed'))
@@ -163,15 +164,19 @@ class SlipExecutor(Node):
         expect = self._expected_lin
         if expect is None:
             return
-        diff = abs(float(msg.linear.x) - expect)
+        val = float(msg.linear.x)
+        if abs(val) <= 0.02:
+            # 别人只是在踩刹车（发 0），不算抢——只有真的在驱车才叫抢
+            return
+        diff = abs(val - expect)
         if diff <= self.foreign_tol:
             return
         first = self._foreign is None
-        self._foreign = (time.monotonic(), float(msg.linear.x))
+        self._foreign = (time.monotonic(), val)
         if first:
             self.get_logger().warn(
                 '/cmd_vel 上还有别人在发：他要 %.2f m/s，我要 %.2f m/s'
-                % (float(msg.linear.x), expect))
+                % (val, expect))
 
     def _on_action(self, msg):
         try:
@@ -222,6 +227,7 @@ class SlipExecutor(Node):
         self._q_sum = 0.0
         self._expected_lin = None
         self._foreign = None
+        self.measure = self._measure_default     # 上一个动作可能降级过，重置
         if self.measure == 'odom' and self.pose is not None:
             self.monitor.update(*self.pose)
         self.get_logger().warn('执行动作 %s：目标 %.2f（量法 %s，%s）'
@@ -248,9 +254,21 @@ class SlipExecutor(Node):
                          why='别人也在发 /cmd_vel（%.2f m/s），先停掉再恢复'
                              % self._foreign[1])
             return
-        if now - self.started_at > self.stuck_after_s and self.monitor.progress() < 0.01:
+        if now - self.started_at > self.stuck_after_s and self.monitor.progress() < 0.01 \
+                and self._odom_travel < 0.02:
+            # 激光量不出、里程计也没动，才算真卡住；只看激光会把
+            # "ICP 没跟上"误判成"车没动"，然后一转身就再也不后退了
             self._finish(ok=False, why='动作 %.1fs 一点没动' % (now - self.started_at))
             return
+
+        # 激光测不出来（视野太窄、贴墙、ICP 失败）时退回里程计：
+        # 少一次精确验收，也好过永远判"没动"然后不后退
+        if self.measure == 'scan' and self._scan_used == 0 and self._odom_travel > 0.02 \
+                and now - self.started_at > 1.0:
+            self.get_logger().warn('激光这一窗没量到位移，改用里程计验收（结果仅供参考）')
+            self.measure = 'odom'
+            if self.pose is not None:
+                self.monitor.update(*self.pose)
 
         act = self.action
         twist = Twist()
