@@ -47,6 +47,7 @@ class SlipNode(Node):
         self.declare_parameter('action_topic', '/slip/action')
         self.declare_parameter('report_topic', '/slip/report')
         self.declare_parameter('debug_period_s', 5.0)   # 0 = 不打采样日志
+        self.declare_parameter('alternate_after_fail', True)  # 失败后换姿势
         self.declare_parameter('window_s', 0.3)
         self.declare_parameter('min_samples', 2)
         self.declare_parameter('warmup_s', 2.0)
@@ -66,7 +67,9 @@ class SlipNode(Node):
         self.recovery_enabled = bool(gp('recovery_enabled').value)
 
         self.agg = windows_mod.WindowAggregator(self.win_params)
-        self.machine = state_mod.SlipStateMachine()
+        self.machine = state_mod.SlipStateMachine(
+            {'alternate_after_fail':
+             bool(self.get_parameter('alternate_after_fail').value)})
         # 没有执行器时不要进 RECOVERY：否则动作没人接，状态卡在那儿
         self.machine.allow_recovery = self.recovery_enabled
         self.ranges_params = dict(ranges_mod.DEFAULTS)
