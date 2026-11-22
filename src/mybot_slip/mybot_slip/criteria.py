@@ -26,6 +26,7 @@ DEFAULTS = {
     'thresh_scale': 0.5,      # 自适应系数：thresh_eff = min(abs, scale*denc)
     'thresh_lat_m': 0.03,     # 横向滑移
     'thresh_over_m': 0.03,    # 过位移（下坡滑行）
+    'min_shortfall_m': 0.03,  # P1/P2 的绝对差下限（ICP 噪声 ~1.5 cm，取 2σ）
     'stall_eps_m': 0.005,     # 堵转：几乎没有位移
     'stall_eps_omega': 0.05,  # 堵转：几乎没有转角 rad/s
     'stall_cmd_linear': 0.05,
@@ -150,12 +151,14 @@ def evaluate(win, params=None, fit=None):
     if scan_trusted and not turning and abs(denc) > effective_threshold(denc, p):
         s = _slip_ratio(denc, fit['dx'], floor=v_floor)
         ratios['linear'] = s
-        if s >= p['r_high']:
+        shortfall = denc - (fit['dx'] or 0.0)
+        # 低速度下 ICP 的绝对误差和位移同量级，差得不够多就不判
+        if s >= p['r_high'] and shortfall >= p['min_shortfall_m']:
             cands.append(('LINEAR_SLIP', s,
                           '编码器 %.3fm，激光只有 %.3fm（滑移率 %.2f，激光可信度 %.2f）'
                           % (denc, fit['dx'], s, fit['quality'])))
         # ---------- P2 过位移 / 侧滑 ----------
-        if s <= -p['r_high'] and abs(denc) > effective_threshold(denc, p):
+        if s <= -p['r_high'] and -shortfall >= max(p['min_shortfall_m'], p['thresh_over_m']):
             cands.append(('OVERRUN', -s, '车体走了 %.3fm，轮子只记了 %.3fm（下坡/被推）'
                           % (fit['dx'], denc)))
         if abs(cmd_w) < 0.10 and abs(fit.get('dy') or 0.0) > p['thresh_lat_m']:

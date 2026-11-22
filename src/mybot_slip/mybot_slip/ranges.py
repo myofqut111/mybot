@@ -31,11 +31,20 @@ DEFAULTS = {
 }
 
 
+def _field(scan, key, default=0.0):
+    """dict 和 LaserScan 消息都能取字段（回放时传的是消息）。"""
+    if isinstance(scan, dict):
+        val = scan.get(key)
+    else:
+        val = getattr(scan, key, None)
+    return default if val is None else val
+
+
 def _points(scan, min_range=0.05, max_ratio=0.98):
-    rs = scan.get('ranges') or []
-    a0 = float(scan.get('angle_min', 0.0))
-    inc = float(scan.get('angle_increment', 0.0))
-    rmax = float(scan.get('range_max', 0.0) or 0.0)
+    rs = _field(scan, 'ranges', []) or []
+    a0 = float(_field(scan, 'angle_min', 0.0))
+    inc = float(_field(scan, 'angle_increment', 0.0))
+    rmax = float(_field(scan, 'range_max', 0.0) or 0.0)
     limit = rmax * max_ratio if rmax > 0 else float('inf')
     pts = []
     for i, r in enumerate(rs):

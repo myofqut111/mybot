@@ -1,16 +1,19 @@
 # mybot_slip · 差速轮打滑检测与恢复
 
-按 `差速轮机器人打滑检测与恢复方案_v1.1.docx` 落地。**当前进度：判据层与状态机的纯逻辑（42 例单测全过），ROS 节点尚未接。**
+按 `差速轮机器人打滑检测与恢复方案_v1.1.docx` 落地。**当前进度：判据/状态机 + ROS 节点（0.2.0），离线回放 0 误动作；动作执行与 Nav2 协作未做。**
 
 ## 这一版有什么
 
 | 文件 | 作用 | 对应方案 |
 |---|---|---|
 | `mybot_slip/windows.py` | 0.3 s **非重叠**窗口聚合：里程计积分、左右轮差分、陀螺积分、激光按时间取配对帧、指令覆盖门槛、起步 warmup | §5.1 / 5.4 |
-| `mybot_slip/ranges.py` | 用两帧激光做**点对点 ICP 一步**，估出车体真实平移 `(dx, dy, dθ)`，带鲁棒剔除与可信度评分 | §4.1 / 7.3 的实测来源 |
-| `mybot_slip/criteria.py` | P1 直行、P2 过位移/侧滑、P3 左右轮、P4 旋转、P5 堵转 + 传感器自相矛盾；自适应阈值 `min(thresh_abs, 0.5·d_enc)`；滞回 `r_high/r_low` | §5.2 / 5.3 / 6.1 |
+| `mybot_slip/ranges.py` | 用两帧激光做**点对点 ICP 一步**，估出车体真实平移 `(dx, dy, dθ)`，带鲁棒剔除与可信度评分；dict 与 LaserScan 消息都能吃 | §4.1 / 7.3 的实测来源 |
+| `mybot_slip/criteria.py` | P1 直行、P2 过位移/侧滑、P3 左右轮、P4 旋转、P5 堵转 + 传感器自相矛盾；自适应阈值 `min(thresh_abs, 0.5·d_enc)`；绝对差下限 `min_shortfall_m`；滞回 `r_high/r_low` | §5.2 / 5.3 / 6.1 |
 | `mybot_slip/state.py` | `NORMAL → SLIP → RECOVERY → CHECK`，**按类型分流**：STALL 只转向不后退，其余后退 0.10~0.30 m 再判；连续失败升级为「调大膨胀」，用尽则 `FAILED` | §6.2 / 6.3 |
+| `mybot_slip/slip_node.py` | ROS 节点：订阅五路输入，20 Hz 轮询窗口，发 `/slip/state`（JSON）；`wheel_joints` 缺失自动降级；采样率过低打 WARN | §3 |
 | `config/slip.yaml` | 全部参数（分组注释） | §7 |
+| `launch/slip.launch.py` | `ros2 launch fishbot_slip slip.launch.py` | — |
+| `tools/replay_slip.py` | 拿 bag 离线回放：统计候选窗口与**确认次数**（发布门槛） | §8 验收
 
 ## 为什么不用「扫描变化百分比」
 
@@ -22,6 +25,19 @@
 2. **自适应阈值**。0.1 m/s × 0.3 s 只有 3 cm，固定 5 cm 门槛会让「完全卡死」在数学上永远判不出来。
 3. **STALL 绝不后退**。轮子本来转不动，后退指令同样发不出去，只会白等。
 4. **滞回**。`r_high=0.60` 确认、`r_low=0.36` 解除，中间区域保持恢复状态，避免状态抖动。
+5. **确认要"持续"**。`confirm_windows=2` 且两次间隔至少 `confirm_window_s=1.0` ——0.3 s 的窗口里出现一次疑似，不够动手。
+6. **绝对差下限**。0.18 m/s × 0.3 s 只有 5.4 cm，ICP 噪声约 1.5 cm；短差不到 3 cm 时比例再高也不判，否则低速时全是误报。
+
+## 离线回放结果（发布门槛）
+
+```bash
+python3 tools/replay_slip.py ~/bags/2026
+# 288 s / 960 窗（422 窗无指令，跳过）/ 候选 5 / **确认 0**
+python3 tools/replay_slip.py ~/bags/2020
+# 51 s / 170 窗 / 候选 0 / 确认 0
+```
+
+已知局限：这两段包里**没有真的打滑**，所以回放只能证明"不误报"，证明不了"能报"。灵敏度是算出来的：0.3 s 窗、0.18 m/s 巡航时位移 5.4 cm，叠加 1.5 cm 的 ICP 噪声，能可靠分辨的是**≥50% 的滑移**；想抓 20% 这种轻滑，需要把窗口放到 1 s 以上（代价是反应慢 3 倍）。
 
 ## 跑测试
 
@@ -33,8 +49,9 @@ python3 -m unittest discover -s test -v
 
 ## 还没做（下一步）
 
-- [ ] `slip_node.py`：订阅 `/odom` `/wheel_joints` `/imu` `/scan` `/cmd_vel`，发布 `/slip/state`（std_msgs/String JSON）
+- [x] `slip_node.py`：订阅 `/odom` `/wheel_joints` `/imu` `/scan` `/cmd_vel`，发布 `/slip/state`（std_msgs/String JSON）
 - [ ] 动作执行：后退走 `nav2_msgs/BackUp` 或直接发 `cmd_vel` + 激光闭环；脱困走 `nav2_msgs/Spin`
 - [ ] Nav2 协作：`/slip/inflate` 时临时把局部 `inflation_radius` 调大（`costmap` 参数服务）
-- [ ] 用 `~/bags/2026` 离线回放验证三类滑移各能报一次
+- [x] 用 `~/bags/2026` 离线回放验证「不误动作」（0 确认）
+- [ ] 真机复现一次真打滑（垫子/斜坡），确认能报出来
 - [ ] 固件烧完后接上真实 `/wheel_joints`（`sensor_msgs/JointState`，左右累计米）

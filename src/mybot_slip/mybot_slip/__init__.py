@@ -6,6 +6,7 @@
     ranges   —— 两帧激光求真实平移（ICP 一步）
     criteria —— P1~P5 判据与滞回
     state    —— 恢复状态机（按类型分流）
+    slip_node—— ROS 节点：订阅五路输入，发 /slip/state
 """
 
-__version__ = '0.1.0'
+__version__ = '0.2.0'
