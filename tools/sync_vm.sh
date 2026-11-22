@@ -113,7 +113,8 @@ ssh -i "$KEY" -o IdentitiesOnly=yes -o StrictHostKeyChecking=no \
       source install/setup.bash
       for p in fishbot-console fishbot-patrol-v2 fishbot-safety fishbot-vision fishbot-explore fishbot-slip; do
         v=\$(timeout 20 python3 -c \"import importlib.metadata as m;print(m.version('\$p'))\" 2>/dev/null || echo '?')
-        printf '  %-24s %s\n' \"\$p\" \"\$v\"
+        mv=\$(timeout 20 python3 -c \"import \${p//-/_} as x;print(getattr(x,'__version__','-'))\" 2>/dev/null || echo '-')
+        printf '  %-24s 元数据 %-8s 模块 %s\n' \"\$p\" \"\$v\" \"\$mv\"
       done
       echo "  --- 本次编译过的包（build 目录最新 6 个） ---"
       ls -dt build/*/ 2>/dev/null | head -6 | sed 's#build/##; s#/\$##; s#^#  #'

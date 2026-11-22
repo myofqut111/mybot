@@ -1,5 +1,6 @@
 from glob import glob
 import os
+import re
 
 from setuptools import find_packages, setup
 
@@ -7,9 +8,17 @@ from setuptools import find_packages, setup
 package_name = 'mybot_patrol_v2'
 
 
+def _version():
+    """版本只写一处：mybot_patrol_v2/__init__.py 的 __version__。"""
+    here = os.path.abspath(os.path.dirname(__file__))
+    with open(os.path.join(here, package_name, '__init__.py'), encoding='utf-8') as fp:
+        match = re.search(r"__version__\s*=\s*['\"]([^'\"]+)", fp.read())
+    return match.group(1) if match else '0.0.0'
+
+
 setup(
     name=package_name,
-    version='0.5.0',
+    version=_version(),
     packages=find_packages(exclude=['test']),
     data_files=[
         ('share/ament_index/resource_index/packages',

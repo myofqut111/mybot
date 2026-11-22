@@ -1,13 +1,23 @@
 from glob import glob
 import os
+import re
 
 from setuptools import find_packages, setup
 
 package_name = 'mybot_console'
 
+
+def _version():
+    """版本只写一处：mybot_console/__init__.py 的 __version__。"""
+    here = os.path.abspath(os.path.dirname(__file__))
+    with open(os.path.join(here, package_name, '__init__.py'), encoding='utf-8') as fp:
+        match = re.search(r"__version__\s*=\s*['\"]([^'\"]+)", fp.read())
+    return match.group(1) if match else '0.0.0'
+
+
 setup(
     name=package_name,
-    version='0.9.1',
+    version=_version(),
     packages=find_packages(exclude=['test']),
     # JS 依赖（Leaflet / roslib / eventemitter2）必须跟着包一起装：
     # 普通 colcon build 只拷 .py，不加 package_data 的话 /static/leaflet.js 会 404，
