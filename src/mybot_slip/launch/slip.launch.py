@@ -16,10 +16,15 @@ from launch.substitutions import LaunchConfiguration
 from launch_ros.actions import Node
 
 
+def _bool(text):
+    return str(text).strip().lower() in ('1', 'true', 'yes', 'on')
+
+
 def _nodes(context):
-    recovery = LaunchConfiguration('recovery').perform(context)
-    dry = LaunchConfiguration('executor_dry_run').perform(context)
-    mux = LaunchConfiguration('with_mux').perform(context).lower() in ('1', 'true', 'yes')
+    recovery = _bool(LaunchConfiguration('recovery').perform(context))
+    dry = _bool(LaunchConfiguration('executor_dry_run').perform(context))
+    mux = _bool(LaunchConfiguration('with_mux').perform(context))
+    alternate = _bool(LaunchConfiguration('alternate_after_fail').perform(context))
     scan = LaunchConfiguration('scan_topic').perform(context)
     cmd = LaunchConfiguration('cmd_topic').perform(context)
     nav_in = LaunchConfiguration('nav_topic').perform(context)
@@ -36,7 +41,7 @@ def _nodes(context):
             parameters=[{
                 'scan_topic': scan,
                 'recovery_enabled': recovery,
-                'alternate_after_fail': LaunchConfiguration('alternate_after_fail'),
+                'alternate_after_fail': alternate,
             }],
         ),
         Node(
