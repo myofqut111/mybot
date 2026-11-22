@@ -137,5 +137,47 @@ class RecoveryTest(unittest.TestCase):
             self.assertIn(k, snap)
 
 
+class NoExecutorTest(unittest.TestCase):
+    """执行器不在时的行为：不卡死、别装死。"""
+
+    def _confirm(self, m, t0=0.0, n=3):
+        for i in range(n):
+            m.step(t0 + i * 0.6, verdict('LINEAR_SLIP'))
+
+    def test_recovery_disabled_stays_in_slip(self):
+        m = st.SlipStateMachine({'confirm_window_s': 0.0})
+        m.allow_recovery = False
+        self._confirm(m)
+        self.assertEqual(m.state, st.SLIP)
+        self.assertIsNone(m.pending_action)
+
+    def test_action_timeout_does_not_hang(self):
+        m = st.SlipStateMachine({'confirm_window_s': 0.0, 'action_timeout_s': 2.0})
+        self._confirm(m)
+        self.assertEqual(m.state, st.RECOVERY)
+        out = m.step(10.0, verdict('LINEAR_SLIP'))
+        self.assertEqual(out['action'], 'none')
+        self.assertEqual(m.state, st.CHECK)
+        self.assertEqual(m.stats['timeouts'], 1)
+
+    def test_action_before_timeout_waits(self):
+        m = st.SlipStateMachine({'confirm_window_s': 0.0, 'action_timeout_s': 20.0})
+        self._confirm(m)
+        out = m.step(1.4, verdict('LINEAR_SLIP'))
+        self.assertIsNone(out['action'])
+        self.assertEqual(m.state, st.RECOVERY)
+
+    def test_failed_state_resets_after_cooldown(self):
+        m = st.SlipStateMachine({'confirm_window_s': 0.0, 'max_recovery': 2,
+                                 'recovery_cooldown_s': 5.0})
+        self._confirm(m)
+        for i in range(3):
+            m.on_action_done(1.0 + i, ok=False)
+        self.assertEqual(m.state, st.FAILED)
+        out = m.step(30.0, verdict())
+        self.assertEqual(out['action'], 'reset')
+        self.assertEqual(m.state, st.NORMAL)
+
+
 if __name__ == '__main__':
     unittest.main()

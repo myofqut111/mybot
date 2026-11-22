@@ -64,6 +64,8 @@ class SlipNode(Node):
 
         self.agg = windows_mod.WindowAggregator(self.win_params)
         self.machine = state_mod.SlipStateMachine()
+        # 没有执行器时不要进 RECOVERY：否则动作没人接，状态卡在那儿
+        self.machine.allow_recovery = self.recovery_enabled
         self.ranges_params = dict(ranges_mod.DEFAULTS)
 
         # ---------------- 状态 ----------------
@@ -223,6 +225,19 @@ class SlipNode(Node):
     def _publish(self, win, verdict, action=None):
         snap = self._snapshot()
         fit = (verdict.get('detail') or {}).get('fit') or {}
+        act = dict(action or {})
+        if act.get('action'):
+            act_out = {'kind': act.get('action'), 'why': act.get('reason')}
+            for k in ('distance', 'yaw', 'speed', 'timeout_s'):
+                if act.get(k) is not None:
+                    act_out[k] = _round(act.get(k))
+        elif self.machine.state == 'slip' and verdict.get('slip'):
+            act_out = {'kind': None,
+                       'why': '已确认滑移，但恢复动作被禁用'
+                              '（recovery_enabled=false，只报不动）'}
+        else:
+            act_out = {'kind': None, 'why': '无动作'}
+
         payload = {
             'stamp': round(win.get('t1', 0.0), 3),
             'state': snap['state'],
@@ -233,7 +248,7 @@ class SlipNode(Node):
             'ratios': {k: round(float(v), 3)
                        for k, v in (verdict.get('ratios') or {}).items()},
             'reasons': list(verdict.get('reasons') or [])[:4],
-            'action': (action or {}).get('action'),
+            'action': act_out,
             'fit': {
                 'ok': bool(fit.get('ok')),
                 'dx': _round(fit.get('dx')),

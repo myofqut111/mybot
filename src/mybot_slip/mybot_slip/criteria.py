@@ -133,8 +133,13 @@ def evaluate(win, params=None, fit=None):
                           % (dtheta_enc / dt, dtheta_imu / dt, s_w)))
 
     # ---------- P3 左右轮独立滑移 ----------
-    if win.get('wheel_ok') and dtheta_imu is not None and scan_trusted and not turning:
-        dx = fit.get('dx') or 0.0
+    # 前置条件：车体确实往前走了，「单轮期望位移」才有意义。
+    # dx≈0 时 exp_l = dx - half ≈ 0，而 d_left > 0，会算出 -1.0 这种假滑移率；
+    # 那其实是「整体没动」，归 P1 管，这里不该参与（否则真机上满屏 -1.0）。
+    dx = fit.get('dx') or 0.0
+    p3_allowed = dx >= p['min_shortfall_m']
+    if win.get('wheel_ok') and dtheta_imu is not None and scan_trusted \
+            and not turning and p3_allowed:
         half = 0.5 * p['wheel_base_m'] * dtheta_imu
         exp_l = dx - half
         exp_r = dx + half

@@ -77,6 +77,14 @@ class CriteriaTest(unittest.TestCase):
         self.assertTrue(r['slip'])
         self.assertIn(r['type'], ('WHEEL_L', 'LINEAR_SLIP'))
 
+    def test_no_wheel_ratio_when_body_not_moving(self):
+        """车体没动时单轮期望位移无定义，不能吐出 -1.0 的假滑移率。"""
+        r = criteria.evaluate(win(denc=0.037, d_left=0.037, d_right=0.037,
+                                  dtheta_imu=0.009), fit=fit(dx=0.0))
+        self.assertNotIn('wheel_l', r['ratios'])
+        self.assertNotIn('wheel_r', r['ratios'])
+        self.assertEqual(r['type'], 'LINEAR_SLIP')
+
     def test_lateral_slip(self):
         r = criteria.evaluate(win(denc=0.05, cmd=(0.18, 0.0)),
                               fit=fit(dx=0.05, dy=0.06))

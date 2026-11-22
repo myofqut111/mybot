@@ -39,6 +39,7 @@ DEFAULTS = {
     'recovery_cooldown_s': 60.0,
     'settle_s': 0.8,           # 动作后静置（等滤波器/里程计稳定）
     'stall_no_back': True,
+    'action_timeout_s': 8.0,   # 动作发出去但没人执行/没回调时的超时（防止卡死在 recovery）
 }
 
 NORMAL = 'normal'
@@ -69,8 +70,21 @@ class SlipStateMachine(object):
         self.settle_until = None
         self.cooldown_until = None
         self.last_action = None
+        self.allow_recovery = True       # 执行器不在时由节点置 False：只报不动
+        self.failed_at = None
         self.history = []                # [(t, state, type)]，限量
-        self.stats = {'recoveries': 0, 'failures': 0, 'escapes': 0, 'backs': 0}
+        self.stats = {'recoveries': 0, 'failures': 0, 'escapes': 0, 'backs': 0,
+                      'timeouts': 0}
+
+    # ------------------------------------------------------------------
+    def reset_failure(self):
+        self.state = NORMAL
+        self.type = None
+        self.slip_count = 0
+        self.clean_count = 0
+        self.first_slip_at = None
+        self.recoveries = 0
+        self.failed_at = None
 
     # ------------------------------------------------------------------
     def step(self, now, verdict):
@@ -81,6 +95,16 @@ class SlipStateMachine(object):
         if self.cooldown_until and now < self.cooldown_until:
             return self._idle('cooldown')
 
+        if self.state == FAILED:
+            # 失败不是终点：过了冷却期回到观察态，否则一次失败就永久躺平
+            if self.failed_at is not None and \
+                    now - self.failed_at >= self.p['recovery_cooldown_s']:
+                self.reset_failure()
+                self.cooldown_until = None
+                return {'action': 'reset', 'state': self.state,
+                        'reason': '失败冷却结束，重新观察'}
+            return self._idle('failed')
+
         if self.state == NORMAL:
             return self._step_normal(now, verdict)
         if self.state == SLIP:
@@ -88,8 +112,24 @@ class SlipStateMachine(object):
         if self.state == CHECK:
             return self._step_check(now, verdict)
         if self.state == RECOVERY:
-            return self._idle('waiting action')
+            return self._step_recovery(now)
         return self._idle('failed')
+
+    def _step_recovery(self, now):
+        """等执行器回调；没人执行就超时退出，绝不停在这里。"""
+        if self.pending_action is None:
+            return self._idle('waiting action')
+        if self.action_deadline and now > self.action_deadline:
+            self.pending_action = None
+            self.action_deadline = None
+            self.last_action = None
+            self.stats['timeouts'] += 1
+            self.state = CHECK
+            self.clean_count = 0
+            self.settle_until = now + self.p['settle_s']
+            return {'action': 'none', 'state': self.state,
+                    'reason': '动作超时未被执行（没有执行器？），本轮作废'}
+        return self._idle('waiting action')
 
     def on_action_done(self, now, ok, moved=None):
         """动作结束回调：ok 表示动作本身成功（后退走够了 / 转向完成）。"""
@@ -104,6 +144,7 @@ class SlipStateMachine(object):
             self.recoveries += 1
             if self.recoveries >= self.p['max_recovery']:
                 self.state = FAILED
+                self.failed_at = now
                 self.stats['failures'] += 1
                 return {'action': 'abort', 'reason': '恢复次数用尽'}
             if self.recoveries >= self.p['inflate_try']:
@@ -121,6 +162,7 @@ class SlipStateMachine(object):
                     self.recoveries += 1
                     if self.recoveries >= self.p['max_recovery']:
                         self.state = FAILED
+                        self.failed_at = now
                         self.stats['failures'] += 1
                         return {'action': 'abort', 'reason': '后退距离不足且次数用尽'}
                     if self.recoveries >= self.p['inflate_try']:
@@ -155,6 +197,9 @@ class SlipStateMachine(object):
             span = now - first
             if (self.slip_count >= self.p['confirm_windows']
                     and span >= self.p['confirm_window_s'] - 1e-9):
+                if not self.allow_recovery:
+                    # 没有执行器：只报警不动手，但状态留住，别让人以为已经好了
+                    return self._idle('slip confirmed (recovery disabled)')
                 return self._start_recovery(now, verdict)
             return self._idle('confirming')
         # 中间闪了一窗干净：退回 NORMAL，但保留类型供日志
@@ -192,12 +237,14 @@ class SlipStateMachine(object):
         self.stats['recoveries'] += 1
         if self.recoveries > self.p['max_recovery']:
             self.state = FAILED
+            self.failed_at = now
             self.stats['failures'] += 1
             return {'action': 'abort', 'reason': '恢复次数超过上限 %d' % self.p['max_recovery']}
         act = self._make_action(self.type, verdict)
         self.state = RECOVERY
         self.pending_action = act
-        self.action_deadline = now + (act.get('timeout_s') or 6.0)
+        self.action_deadline = now + max(act.get('timeout_s') or 6.0,
+                                         self.p['action_timeout_s'])
         self.last_action = act
         return dict(act)
 
