@@ -1,6 +1,6 @@
 # mybot_slip · 差速轮打滑检测与恢复
 
-按 `差速轮机器人打滑检测与恢复方案_v1.1.docx` 落地。**当前进度：判据/状态机 + ROS 节点（0.2.0），离线回放 0 误动作；动作执行与 Nav2 协作未做。**
+按 `差速轮机器人打滑检测与恢复方案_v1.1.docx` 落地。**当前进度：判据/状态机 + ROS 节点 + 动作执行 + 速度仲裁 + 膨胀动作（0.4.1），离线回放 0 误动作，mock 全链 PASS；真机只差一次真打滑复现。**
 
 ## 这一版有什么
 
@@ -83,11 +83,40 @@ ros2 launch fishbot_slip slip.launch.py scan_topic:=/scan recovery:=true with_mu
 仲裁规则：恢复动作最后一条速度 0.5 秒内只听恢复的，之后交还导航；
 两路都没在发就发零速。切换时日志会打「速度指令让给恢复动作 / 回到导航」。
 
+### 整机一条命令（推荐）
+
+上面两步已经接进控制台的整机 launch，加 `with_slip:=true` 就会自动把 Nav2 的速度
+改到 `/cmd_vel_nav` 并起仲裁：
+
+```bash
+ros2 launch fishbot_console robot.launch.py with_slip:=true
+# 自主建图（slam）时同样适用
+ros2 launch fishbot_console robot.launch.py localization:=slam with_slip:=true
+```
+
+起来后 `/cmd_vel` 的发布者应该**只有 `cmd_mux` 一个**，Nav2 在 `/cmd_vel_nav` 上。
+
+## 膨胀半径动作（0.4.1）
+
+`inflate` 用参数服务临时把 `local_costmap`/`global_costmap` 的
+`inflation_layer.inflation_radius` 调大（默认 0.55），保持 `inflate_hold_s`（默认 8 s）
+后还原；退出、`abort`、超时都会兜底还原，不会把改过的值留在代价地图上。
+
+```bash
+ros2 param get /local_costmap/local_costmap inflation_layer.inflation_radius   # 0.40
+# 触发一次后：动作期间 0.55，保持时间到 → 0.40
+```
+
+两个坑记在这里，省得下次再踩：
+1. 节点名是 `/local_costmap/local_costmap`（中间有下划线），按 `%s%scostmap` 拼会拼错；
+2. 别在定时器回调里 `spin_until_future_complete` 等参数回应——executor 正忙着跑这个
+   回调，回应永远等不到。要 `call_async` + `add_done_callback`。
+
 ## 还没做（下一步）
 
 - [x] `slip_node.py`：订阅 `/odom` `/wheel_joints` `/imu` `/scan` `/cmd_vel`，发布 `/slip/state`（std_msgs/String JSON）
-- [x] 动作执行：`back`（`/cmd_vel` + 里程计闭环）、`escape`（原地转）
-- [ ] Nav2 协作：`/slip/inflate` 时临时把局部 `inflation_radius` 调大（`costmap` 参数服务）
+- [x] 动作执行：`back`（`/cmd_vel` + 激光闭环）、`escape`（原地转）
+- [x] Nav2 协作：`inflate` 临时把 `inflation_radius` 调大，保持后还原（`call_async`，退出兜底）
 - [x] 与 Nav2 抢 `/cmd_vel` 的仲裁（`cmd_mux`：恢复优先 0.5 s，之后交还导航）
 - [x] 用 `~/bags/2026` 离线回放验证「不误动作」（0 确认）
 - [ ] 真机复现一次真打滑（垫子/斜坡），确认能报出来

@@ -11,6 +11,8 @@
   ros2 launch mybot_console robot.launch.py map_yaml_file:=~/maps/lab.yaml
   ros2 launch mybot_console robot.launch.py nav:=false      # 只起巡检 + 控制台
   ros2 launch mybot_console robot.launch.py patrol:=false   # 只起导航 + 控制台
+  ros2 launch mybot_console robot.launch.py localization:=slam   # 边跑边建图
+  ros2 launch mybot_console robot.launch.py with_slip:=true      # 开打滑检测+恢复（接管 /cmd_vel）
 
 注意：视觉节点跑在主控板（Jetson）上，不在这里起。只要两边在同一个 ROS_DOMAIN_ID，
 控制台和巡检会自动看到它的 /camera/camera/image_raw 与 /patrol/task/result。
@@ -18,7 +20,8 @@
 import os
 
 from launch import LaunchDescription
-from launch.actions import DeclareLaunchArgument, GroupAction, IncludeLaunchDescription
+from launch.actions import (DeclareLaunchArgument, GroupAction, IncludeLaunchDescription,
+                            OpaqueFunction)
 from launch.conditions import IfCondition, UnlessCondition
 from launch.launch_description_sources import PythonLaunchDescriptionSource
 from launch.substitutions import LaunchConfiguration, PathJoinSubstitution
@@ -41,6 +44,9 @@ def generate_launch_description():
     patrol = LaunchConfiguration('patrol')
     rviz = LaunchConfiguration('rviz')
     localization = LaunchConfiguration('localization')
+    with_slip = LaunchConfiguration('with_slip')
+    scan_topic = LaunchConfiguration('scan_topic')
+    localization_gate = LaunchConfiguration('localization_gate')
     http_port = LaunchConfiguration('http_port')
     host = LaunchConfiguration('host')
 
@@ -49,13 +55,35 @@ def generate_launch_description():
 
     # 导航段：navigation.launch.py 内部已经串好 TF -> EKF -> 定位 -> Nav2 -> 巡检，
     # 所以这里只把 map / 巡检开关透传下去，不重复起 nav2 的节点。
-    navigation = _launch_of(
-        'mybot_navigation', 'navigation.launch.py',
-        {'map_yaml_file': map_yaml_file,
-         'enable_patrol': patrol,
-         'localization': localization,
-         'rviz': rviz},
-        condition=IfCondition(nav),
+    # with_slip:=true 时 Nav2 的 /cmd_vel 改成 /cmd_vel_nav，由 slip 的仲裁转发，
+    # 否则恢复动作和导航会互相覆盖（两边都在发 /cmd_vel）。
+    #
+    # 这里必须用 OpaqueFunction 在运行时取参数值，不能在 Python 层拼两个 include：
+    # 一旦 include 外面套了 GroupAction，被包含文件里的 TimerAction 会在新的作用域里
+    # 找不到自己的 launch configuration，报
+    # SubstitutionFailure("launch configuration 'localization_start_delay' does not exist")，
+    # 结果是 Nav2 节点起来了但永远没人去 configure/activate。
+    def _navigation(context):
+        want_slip = LaunchConfiguration('with_slip').perform(context).strip().lower()
+        args = {'map_yaml_file': LaunchConfiguration('map_yaml_file').perform(context),
+                'enable_patrol': LaunchConfiguration('patrol').perform(context),
+                'localization': LaunchConfiguration('localization').perform(context),
+                'rviz': LaunchConfiguration('rviz').perform(context),
+                'enable_localization_gate':
+                    LaunchConfiguration('localization_gate').perform(context)}
+        if want_slip in ('1', 'true', 'yes', 'on'):
+            args['cmd_vel_topic'] = '/cmd_vel_nav'
+        return [_launch_of('mybot_navigation', 'navigation.launch.py', args,
+                           condition=IfCondition(nav))]
+
+    navigation = OpaqueFunction(function=_navigation)
+
+    # 打滑检测 + 恢复（含速度仲裁）。默认不开，开了才接管 /cmd_vel。
+    slip = _launch_of(
+        'mybot_slip', 'slip.launch.py',
+        {'recovery': 'true', 'with_mux': 'true',
+         'scan_topic': scan_topic, 'nav_topic': '/cmd_vel_nav'},
+        condition=IfCondition(with_slip),
     )
 
     # nav:=false 但仍要巡检时，单独起巡检栈。
@@ -94,11 +122,18 @@ def generate_launch_description():
                               description='amcl = 用事先建好的地图；slam = slam_toolbox 实时建图'),
         DeclareLaunchArgument('slam_params_file', default_value='',
                               description='slam 模式的参数文件，留空用包内默认'),
+        DeclareLaunchArgument('with_slip', default_value='false',
+                              description='是否开打滑检测+恢复（会接管 /cmd_vel 做仲裁）'),
+        DeclareLaunchArgument('scan_topic', default_value='/scan',
+                              description='打滑检测用的激光话题'),
+        DeclareLaunchArgument('localization_gate', default_value='true',
+                              description='是否等 AMCL 稳定后再激活 Nav2（无真机 mock 时传 false）'),
         DeclareLaunchArgument('http_port', default_value='8080',
                               description='控制台端口'),
         DeclareLaunchArgument('host', default_value='0.0.0.0',
                               description='监听地址，0.0.0.0 = 局域网可访问'),
         navigation,
+        slip,
         patrol_only,
         console,
     ])

@@ -26,6 +26,8 @@ from rclpy.node import Node
 from rclpy.qos import QoSProfile, ReliabilityPolicy
 from geometry_msgs.msg import Twist
 from nav_msgs.msg import Odometry
+from rcl_interfaces.msg import Parameter, ParameterType, ParameterValue
+from rcl_interfaces.srv import GetParameters, SetParameters
 from sensor_msgs.msg import Imu, LaserScan
 from std_msgs.msg import String
 
@@ -63,6 +65,11 @@ class SlipExecutor(Node):
         gp('foreign_tol', 0.03)         # /cmd_vel 上别人发的值与我们的差多少算"有人在抢"
         gp('stuck_after_s', 2.0)        # 动作开始这么久还没动静就提前放弃
         gp('dry_run', False)            # True：只打日志不发 cmd_vel
+        gp('inflate_radius', 0.55)      # inflate 动作把膨胀半径临时改成多少
+        gp('inflate_hold_s', 8.0)       # 保持多久后还原
+        gp('inflate_costmaps', 'local_costmap,global_costmap')   # 要动的代价地图（逗号分隔）
+        gp('inflate_param', 'inflation_layer.inflation_radius')
+        gp('costmap_prefix', '')        # 多机加命名空间时填 /robot1 之类
 
         get = lambda n: self.get_parameter(n).value  # noqa: E731
         self.dry_run = bool(get('dry_run'))
@@ -73,6 +80,12 @@ class SlipExecutor(Node):
         self.back_speed = float(get('back_speed'))
         self.escape_speed = float(get('escape_speed'))
         self.settle_s = float(get('settle_s'))
+        self.inflate_radius = float(get('inflate_radius'))
+        self.inflate_hold_s = float(get('inflate_hold_s'))
+        self.inflate_param = str(get('inflate_param'))
+        self.costmap_prefix = str(get('costmap_prefix')).rstrip('/')
+        self.inflate_costmaps = [s.strip() for s in
+                                 str(get('inflate_costmaps')).split(',') if s.strip()]
         rate = float(get('rate_hz'))
 
         qos = QoSProfile(depth=10, reliability=ReliabilityPolicy.BEST_EFFORT)
@@ -100,6 +113,9 @@ class SlipExecutor(Node):
         self._imu_last = None
         self._expected_lin = None
         self._foreign = None
+        self._inflate_saved = {}
+        self._inflate_queue = []
+        self._param_clients = {}
         self.get_logger().info(
             '执行器就绪：动作来自 %s，结果发 %s（位移量用 %s，%s）'
             % (get('action_topic'), get('report_topic'), self.measure,
@@ -194,6 +210,8 @@ class SlipExecutor(Node):
             return
         if kind == 'abort':
             self.get_logger().warn('上层要求放弃：%s' % act.get('why'))
+            if self._inflate_saved:
+                self._restore_inflate()      # 别把膨胀半径留在改过的值上
             self._report(act, ok=True, moved=0.0, why='abort 已收到')
             return
         self._start(act)
@@ -201,6 +219,9 @@ class SlipExecutor(Node):
     # ------------------------------------------------------------------
     def _start(self, act):
         kind = act.get('kind')
+        if kind == 'inflate':
+            self._start_inflate(act)
+            return
         if kind == 'back':
             target = float(act.get('distance') or 0.0)
             monitor = TravelMonitor('back', target)
@@ -238,6 +259,16 @@ class SlipExecutor(Node):
         if self.status != RUNNING:
             if self.stop_until and time.monotonic() >= self.stop_until:
                 self.stop_until = 0.0
+            return
+        if (self.action or {}).get('kind') == 'inflate':
+            now = time.monotonic()
+            if now >= self.deadline:
+                self._restore_inflate()
+                self._finish(ok=True, why='保持时间到，膨胀半径已还原')
+            elif now > self.started_at + self.inflate_hold_s + 10.0:
+                # 兜底：正常路径没走到（比如回调丢了），别一直挂着改过的值
+                self._restore_inflate()
+                self._finish(ok=False, why='inflate 超时未收尾，已强制还原')
             return
         now = time.monotonic()
         if self.measure == 'odom' and self.pose is not None:
@@ -294,6 +325,145 @@ class SlipExecutor(Node):
         x0, y0, yaw0 = self._odom_start
         dx, dy = self.pose[0] - x0, self.pose[1] - y0
         return dx * math.cos(yaw0) + dy * math.sin(yaw0)
+
+    # ------------------------------------------------------------------
+    # inflate：临时调代价地图的膨胀半径
+    # ------------------------------------------------------------------
+    def _costmap_node(self, name):
+        # nav2 里的节点全名就是 /local_costmap/local_costmap 这种
+        return '%s/%s/%s' % (self.costmap_prefix, name, name)
+
+    def _param_client(self, kind, costmap):
+        """按需建、永久留着：每调一次就建一次会把发现过程重走一遍。"""
+        key = (kind, costmap)
+        cli = self._param_clients.get(key)
+        if cli is None:
+            srv = GetParameters if kind == 'get' else SetParameters
+            cli = self.create_client(srv, '%s/%s_parameters'
+                                     % (self._costmap_node(costmap), kind))
+            self._param_clients[key] = cli
+        return cli
+
+    def _call_param_service(self, kind, costmap, values):
+        """异步调一次 get/set_parameters。
+
+        不能在这里 spin_until_future_complete：调用发生在定时器回调里，
+        同一个 executor 正忙着跑这个回调，回应永远等不到（曾因此一直报
+        "调用没回"）。所以一律 call_async + 回调推进。
+        """
+        cli = self._param_client(kind, costmap)
+        if not cli.service_is_ready():
+            self.get_logger().warn('%s 的 %s_parameters 还没就绪（导航没起？）'
+                                   % (self._costmap_node(costmap), kind))
+            return None
+        if kind == 'get':
+            req = GetParameters.Request()
+            req.names = [self.inflate_param]
+        else:
+            pv = ParameterValue(type=ParameterType.PARAMETER_DOUBLE,
+                                double_value=float(values))
+            req = SetParameters.Request()
+            req.parameters = [Parameter(name=self.inflate_param, value=pv)]
+        return cli.call_async(req)
+
+    def _inflate_step(self):
+        """按队列逐个把代价地图改成新值。"""
+        if not self._inflate_queue:
+            if not self._inflate_saved:
+                act = self.action or {}
+                self._report(act, ok=False, moved=0.0,
+                             why='代价地图参数不可用（%s），inflate 没生效'
+                                 % ','.join(self.inflate_costmaps))
+                self.status = IDLE
+                self.action = None
+                return
+            now = time.monotonic()
+            self.status = RUNNING
+            self.started_at = now
+            self.deadline = now + self.inflate_hold_s
+            self.get_logger().warn('执行动作 inflate：膨胀半径改为 %.2f，保持 %.1fs'
+                                   % (self.inflate_radius, self.inflate_hold_s))
+            return
+        name = self._inflate_queue.pop(0)
+        fut = self._call_param_service('get', name, None)
+        if fut is None:
+            self._inflate_step()
+            return
+        fut.add_done_callback(
+            lambda f, n=name: self._on_got_inflation(n, f))
+
+    def _on_got_inflation(self, name, future):
+        try:
+            old = float(future.result().values[0].double_value)
+        except (AttributeError, IndexError, TypeError):
+            self.get_logger().warn('%s 读不到膨胀半径，跳过' % name)
+            self._inflate_step()
+            return
+        fut = self._call_param_service('set', name, self.inflate_radius)
+        if fut is None:
+            self._inflate_step()
+            return
+        fut.add_done_callback(
+            lambda f, n=name, o=old: self._on_set_inflation(n, o, f))
+
+    def _on_set_inflation(self, name, old, future):
+        try:
+            res = future.result()
+            ok = bool(res.results) and res.results[0].successful
+        except (AttributeError, TypeError):
+            ok = False
+        if ok:
+            self._inflate_saved[name] = old
+            self.get_logger().warn('%s 膨胀半径 %.2f → %.2f'
+                                   % (name, old, self.inflate_radius))
+        else:
+            self.get_logger().warn('%s 拒绝改膨胀半径，跳过' % name)
+        self._inflate_step()
+
+    def _start_inflate(self, act):
+        """把膨胀半径临时改成 inflate_radius，hold 到期再还原。
+
+        为什么要动它：贴墙卡住时车往往比 inflation_radius 还近，
+        局部代价全 lethal，控制器判"前面全是障碍"直接放弃；
+        调大则是为了让它下一次规划离障碍更远。两个方向都可能有用，
+        所以数值由参数给，不写死。
+        """
+        self.action = dict(act)
+        self.monitor = None
+        self.status = RUNNING
+        self.started_at = time.monotonic()
+        self.deadline = self.started_at + 30.0      # 参数调用本身的上限
+        self._inflate_saved = {}
+        self._inflate_queue = list(self.inflate_costmaps)
+        self._odom_travel = 0.0
+        self._odom_start = self.pose
+        self._scan_prev = None
+        self._scan_used = 0
+        self._scan_drop = 0
+        self._q_sum = 0.0
+        self._inflate_step()
+
+    def _restore_inflate(self):
+        for name, old in (self._inflate_saved or {}).items():
+            fut = self._call_param_service('set', name, old)
+            if fut is None:
+                self.get_logger().error('%s 的膨胀半径没还原成 %.2f，请手动检查'
+                                        % (name, old))
+                continue
+            fut.add_done_callback(
+                lambda f, n=name, o=old: self._on_restored(n, o, f))
+        self._inflate_saved = {}
+
+    def _on_restored(self, name, old, future):
+        try:
+            res = future.result()
+            ok = bool(res.results) and res.results[0].successful
+        except (AttributeError, TypeError):
+            ok = False
+        if ok:
+            self.get_logger().warn('%s 膨胀半径还原为 %.2f' % (name, old))
+        else:
+            self.get_logger().error('%s 没还原成 %.2f，请手动检查' % (name, old))
 
     def _finish(self, ok, why):
         act = self.action or {}
@@ -364,6 +534,20 @@ def main(args=None):
     finally:
         try:
             node._stop()
+        except Exception:      # noqa: BLE001
+            pass
+        # 崩了/被 Ctrl+C 也不能把膨胀半径留在改过的值上
+        try:
+            if node._inflate_saved:
+                for name, old in list(node._inflate_saved.items()):
+                    fut = node._call_param_service('set', name, old)
+                    if fut is not None:
+                        t_end = time.monotonic() + 2.0
+                        while not fut.done() and time.monotonic() < t_end:
+                            rclpy.spin_once(node, timeout_sec=0.05)
+                        node.get_logger().warn('%s 退出前还原膨胀半径为 %.2f'
+                                               % (name, old))
+                node._inflate_saved = {}
         except Exception:      # noqa: BLE001
             pass
         node.destroy_node()

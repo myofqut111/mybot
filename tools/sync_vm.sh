@@ -85,6 +85,12 @@ ssh -i "$KEY" -o IdentitiesOnly=yes -o StrictHostKeyChecking=no \
     "$USER_NAME@$HOST" "set +u
       cd $WS
       source /opt/ros/humble/setup.bash
+      # 先清掉 build/install：这个工作区混用过 --symlink-install，
+      # 残留的符号链接会让 CMake 报 "failed to create symbolic link ... Is a directory"，
+      # ament_python 包则可能只剩 egg-link 导致 ModuleNotFoundError。
+      for pkg in $PKG_LIST; do
+        rm -rf build/\$pkg install/\$pkg
+      done
       colcon build --packages-select $PKG_LIST 2>&1 | tail -6
       # 升版本后 site-packages 里可能还留着旧的 egg-info，importlib.metadata
       # 会报上一版的号（先删再拷，和 deploy_console.sh 一个道理）
