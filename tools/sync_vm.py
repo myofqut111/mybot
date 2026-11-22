@@ -43,6 +43,7 @@ PACKAGES = [
     'mybot_description',
     'mybot_patrol_executor',
     'mybot_explore',
+    'mybot_slip',
 ]
 
 TEXT_EXT = {

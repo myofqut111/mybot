@@ -1,0 +1,57 @@
+# mybot_slip 参数（v1.1 方案 §7）
+# 分组：窗口 / 判据 / 状态机 / 激光匹配
+slip_node:
+  ros__parameters:
+    enabled: true
+    slip_debug: false
+
+    # ---------- 窗口（windows.py） ----------
+    window_s: 0.30              # 非重叠窗口长度
+    warmup_s: 0.30              # 指令切换后多久内不判
+    min_cmd_coverage: 0.70      # 指令覆盖门槛
+    min_samples: 2
+    max_gap_s: 0.25             # 断流判定
+
+    # ---------- 判据（criteria.py） ----------
+    v_floor: 0.10               # 滑移率分母下限 m/s
+    omega_min: 0.30             # 旋转判据使能死区 rad/s
+    r_high: 0.60                # 确认阈值
+    r_low: 0.36                 # 解除阈值（滞回）
+    r_omega: 0.60
+    r_wheel: 0.50
+    thresh_abs_m: 0.05          # 绝对下限的上限
+    thresh_scale: 0.5           # 自适应：min(abs, scale*denc)
+    thresh_lat_m: 0.03
+    stall_eps_m: 0.005
+    stall_eps_omega: 0.05
+    stall_cmd_linear: 0.05
+    stall_cmd_angular: 0.15
+    wheel_base_m: 0.175         # 轮距（量一下再改）
+    scan_valid_ratio: 0.60
+    turn_limit_rad: 0.30
+
+    # ---------- 激光匹配（ranges.py） ----------
+    min_points: 40
+    max_corr_dist: 0.50
+    cell_m: 0.10
+    iterations: 3
+    outlier_sigma: 2.5
+    min_inlier_ratio: 0.55
+    residual_scale_m: 0.03
+    max_shift_m: 0.60
+    max_rot_rad: 0.35
+
+    # ---------- 状态机（state.py） ----------
+    confirm_windows: 2
+    confirm_window_s: 1.0
+    release_windows: 2
+    back_min_m: 0.10
+    back_max_m: 0.30
+    back_ratio: 0.5
+    back_verify_ratio: 0.6
+    escape_yaw_rad: 0.9
+    escape_speed: 1.2
+    inflate_try: 3
+    max_recovery: 4
+    recovery_cooldown_s: 60.0
+    settle_s: 0.8

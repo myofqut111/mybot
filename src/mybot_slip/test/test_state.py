@@ -1,0 +1,141 @@
+# -*- coding: utf-8 -*-
+"""状态机：确认、分流、后退校验、放大膨胀、放弃。"""
+import os
+import sys
+import unittest
+
+HERE = os.path.dirname(os.path.abspath(__file__))
+sys.path.insert(0, os.path.dirname(HERE))
+
+from mybot_slip import state as st
+
+
+def verdict(t=None, denc=0.05):
+    return {'slip': t is not None, 'type': t, 'ratios': {'primary': 1.0}, '_denc': denc}
+
+
+class NormalTest(unittest.TestCase):
+    def test_clean_stays_normal(self):
+        m = st.SlipStateMachine()
+        for i in range(5):
+            out = m.step(i * 0.3, verdict())
+            self.assertIsNone(out['action'])
+        self.assertEqual(m.state, st.NORMAL)
+
+    def test_single_window_does_not_trigger(self):
+        m = st.SlipStateMachine({'confirm_window_s': 0.0})
+        out = m.step(0.0, verdict('LINEAR_SLIP'))
+        self.assertIsNone(out['action'])
+        self.assertEqual(m.state, st.SLIP)
+
+
+class ConfirmTest(unittest.TestCase):
+    def test_two_windows_confirm_back(self):
+        m = st.SlipStateMachine({'confirm_window_s': 0.0})
+        m.step(0.0, verdict('LINEAR_SLIP', denc=0.06))
+        out = m.step(0.3, verdict('LINEAR_SLIP', denc=0.06))
+        self.assertEqual(out['action'], 'back')
+        # 0.5*0.06=0.03，但受 back_min_m=0.10 托底
+        self.assertAlmostEqual(out['distance'], 0.10)
+        self.assertGreaterEqual(out['distance'], m.p['back_min_m'])
+
+    def test_confirmation_needs_time(self):
+        m = st.SlipStateMachine({'confirm_windows': 2, 'confirm_window_s': 1.0})
+        m.step(0.0, verdict('LINEAR_SLIP'))
+        out = m.step(0.3, verdict('LINEAR_SLIP'))     # 只有 0.3 s
+        self.assertIsNone(out['action'])
+        out = m.step(1.2, verdict('LINEAR_SLIP'))
+        self.assertEqual(out['action'], 'back')
+
+    def test_back_distance_clamped(self):
+        m = st.SlipStateMachine({'confirm_window_s': 0.0})
+        m.step(0.0, verdict('LINEAR_SLIP', denc=2.0))
+        out = m.step(0.3, verdict('LINEAR_SLIP', denc=2.0))
+        self.assertLessEqual(out['distance'], m.p['back_max_m'])
+
+    def test_drop_back_to_normal(self):
+        m = st.SlipStateMachine({'confirm_window_s': 0.0})
+        m.step(0.0, verdict('LINEAR_SLIP'))
+        m.step(0.3, verdict())
+        self.assertEqual(m.state, st.NORMAL)
+
+
+class StallTest(unittest.TestCase):
+    def test_stall_escapes_without_backing(self):
+        m = st.SlipStateMachine({'confirm_window_s': 0.0})
+        m.step(0.0, verdict('STALL'))
+        out = m.step(0.3, verdict('STALL'))
+        self.assertEqual(out['action'], 'escape')
+        self.assertNotIn('distance', out)
+        self.assertEqual(m.stats['backs'], 0)
+
+
+class RecoveryTest(unittest.TestCase):
+    def _to_recovery(self):
+        m = st.SlipStateMachine({'confirm_window_s': 0.0})
+        m.step(0.0, verdict('LINEAR_SLIP', denc=0.06))
+        out = m.step(0.3, verdict('LINEAR_SLIP', denc=0.06))
+        self.assertEqual(out['action'], 'back')
+        return m
+
+    def test_action_done_enters_check(self):
+        m = self._to_recovery()
+        out = m.on_action_done(0.6, ok=True, moved=0.10)
+        self.assertEqual(m.state, st.CHECK)
+        self.assertIsNone(out['action'])
+
+    def test_short_back_escalates(self):
+        m = self._to_recovery()
+        out = m.on_action_done(0.6, ok=True, moved=0.01)   # 只退到期望的 20%
+        self.assertEqual(out['action'], 'back')
+        self.assertEqual(m.state, st.RECOVERY)
+
+    def test_repeat_failures_request_inflate(self):
+        m = self._to_recovery()
+        actions = []
+        t = 0.6
+        for _ in range(4):
+            out = m.on_action_done(t, ok=False, moved=0.0)
+            actions.append(out['action'])
+            t += 0.6
+        self.assertIn('inflate', actions)
+        self.assertIn('abort', actions)
+
+    def test_clean_windows_recover(self):
+        m = self._to_recovery()
+        m.on_action_done(0.6, ok=True, moved=0.10)
+        actions = []
+        for i in range(3):
+            out = m.step(2.0 + i * 0.3, verdict())
+            actions.append(out['action'])
+        self.assertIn('recovered', actions)
+        self.assertEqual(m.state, st.NORMAL)
+        self.assertEqual(m.recoveries, 0)
+
+    def test_slip_during_check_goes_back_to_recovery(self):
+        m = self._to_recovery()
+        m.on_action_done(0.6, ok=True, moved=0.10)
+        m.step(2.0, verdict())
+        out = m.step(2.3, verdict('LINEAR_SLIP'))
+        self.assertEqual(m.state, st.SLIP)
+
+    def test_max_recovery_aborts(self):
+        m = st.SlipStateMachine({'confirm_window_s': 0.0, 'max_recovery': 2})
+        m.step(0.0, verdict('LINEAR_SLIP'))
+        m.step(0.3, verdict('LINEAR_SLIP'))
+        actions = []
+        for i in range(3):
+            out = m.on_action_done(1.0 + i, ok=False)
+            actions.append(out['action'])
+        self.assertIn('abort', actions)
+        self.assertEqual(m.state, st.FAILED)
+
+    def test_snapshot_fields(self):
+        m = st.SlipStateMachine()
+        snap = m.snapshot()
+        for k in ('state', 'type', 'recoveries', 'stats'):
+            self.assertIn(k, snap)
+
+
+if __name__ == '__main__':
+    unittest.main()

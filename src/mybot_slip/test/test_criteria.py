@@ -1,0 +1,118 @@
+# -*- coding: utf-8 -*-
+"""判据层：每类滑移都能被点名，正常情况不误报。"""
+import os
+import sys
+import unittest
+
+HERE = os.path.dirname(os.path.abspath(__file__))
+sys.path.insert(0, os.path.dirname(HERE))
+
+from mybot_slip import criteria
+
+
+def fit(dx=0.0, dy=0.0, ok=True, quality=1.0, coverage=1.0, dtheta=0.0):
+    return {'dx': dx, 'dy': dy, 'dtheta': dtheta, 'ok': ok, 'quality': quality,
+            'coverage': coverage, 'beams': int(300 * coverage), 'residual': 0.01,
+            'reason': '' if ok else 'low'}
+
+
+def win(denc=0.05, dtheta_enc=0.0, dtheta_imu=0.0, d_left=None, d_right=None,
+        cmd=(0.18, 0.0), dt=0.3, valid=True, warmup=False, odom_ok=True,
+        wheel_ok=True, imu_ok=True, scan_ok=True):
+    return {
+        't0': 0.0, 't1': dt, 'dt': dt, 'valid': valid, 'warmup': warmup,
+        'reason': '' if valid else '指令覆盖 10%',
+        'cmd_linear': cmd[0], 'cmd_angular': cmd[1], 'cmd_coverage': 1.0,
+        'denc': denc, 'dtheta_enc': dtheta_enc, 'odom_ok': odom_ok,
+        'd_left': denc if d_left is None else d_left,
+        'd_right': denc if d_right is None else d_right, 'wheel_ok': wheel_ok,
+        'dtheta_imu': dtheta_imu, 'imu_ok': imu_ok,
+        'scan_ok': scan_ok, 'scan_prev': None, 'scan_cur': None, 'scan_dt': 0.1,
+    }
+
+
+class CriteriaTest(unittest.TestCase):
+    def test_normal_straight_is_clean(self):
+        r = criteria.evaluate(win(denc=0.054, dtheta_imu=0.0), fit=fit(dx=0.052))
+        self.assertFalse(r['slip'])
+        self.assertIsNone(r['type'])
+
+    def test_linear_slip_detected(self):
+        r = criteria.evaluate(win(denc=0.060, dtheta_imu=0.0), fit=fit(dx=0.000))
+        self.assertTrue(r['slip'])
+        self.assertEqual(r['type'], 'LINEAR_SLIP')
+        self.assertGreaterEqual(r['ratios']['linear'], 0.9)
+
+    def test_low_speed_slip_not_missed(self):
+        # 0.1 m/s × 0.3 s = 0.03 m，固定 0.05 m 门槛会漏；自适应后应判出
+        r = criteria.evaluate(win(denc=0.030, cmd=(0.10, 0.0), dtheta_imu=0.0),
+                              fit=fit(dx=0.000))
+        self.assertTrue(r['slip'])
+        self.assertEqual(r['type'], 'LINEAR_SLIP')
+
+    def test_angular_slip_detected(self):
+        # 原地转：左右轮反向、与编码器转角 0.15rad 自洽，但陀螺只有 0.03
+        b = 0.175
+        dl = -0.5 * b * 0.15
+        dr = 0.5 * b * 0.15
+        r = criteria.evaluate(win(denc=0.0, dtheta_enc=0.15, dtheta_imu=0.03,
+                                  cmd=(0.0, 0.5), d_left=dl, d_right=dr),
+                              fit=fit(dx=0.0))
+        self.assertTrue(r['slip'])
+        self.assertEqual(r['type'], 'ANGULAR_SLIP')
+
+    def test_stall_detected(self):
+        r = criteria.evaluate(win(denc=0.0005, dtheta_enc=0.0, cmd=(0.18, 0.0),
+                                  d_left=0.0, d_right=0.0), fit=fit(dx=0.0))
+        self.assertTrue(r['slip'])
+        self.assertEqual(r['type'], 'STALL')
+
+    def test_no_command_no_stall(self):
+        r = criteria.evaluate(win(denc=0.0, cmd=(0.0, 0.0)), fit=fit(dx=0.0))
+        self.assertFalse(r['slip'])
+
+    def test_wheel_left_slip(self):
+        r = criteria.evaluate(win(denc=0.09, d_left=0.02, d_right=0.09, dtheta_imu=0.0),
+                              fit=fit(dx=0.09))
+        self.assertTrue(r['slip'])
+        self.assertIn(r['type'], ('WHEEL_L', 'LINEAR_SLIP'))
+
+    def test_lateral_slip(self):
+        r = criteria.evaluate(win(denc=0.05, cmd=(0.18, 0.0)),
+                              fit=fit(dx=0.05, dy=0.06))
+        self.assertTrue(r['slip'])
+        self.assertEqual(r['type'], 'LATERAL_SLIP')
+
+    def test_overrun(self):
+        r = criteria.evaluate(win(denc=0.02, dtheta_imu=0.0), fit=fit(dx=0.10))
+        self.assertTrue(r['slip'])
+        self.assertEqual(r['type'], 'OVERRUN')
+
+    def test_untrusted_scan_cannot_claim_linear_slip(self):
+        r = criteria.evaluate(win(denc=0.06, dtheta_imu=0.0),
+                              fit=fit(dx=0.0, ok=False, quality=0.1, coverage=0.2))
+        self.assertFalse(r['slip'])
+
+    def test_warmup_window_skipped(self):
+        r = criteria.evaluate(win(warmup=True), fit=fit())
+        self.assertFalse(r['usable'])
+        self.assertFalse(r['slip'])
+
+    def test_invalid_window_skipped(self):
+        r = criteria.evaluate(win(valid=False), fit=fit())
+        self.assertFalse(r['usable'])
+
+    def test_release_hysteresis(self):
+        # 滑移率 0.5：在 r_high(0.6) 以下、但在 r_low(0.36) 以上 -> 不解除
+        w = win(denc=0.06, dtheta_imu=0.0)
+        released, _ = criteria.is_released(w, fit=fit(dx=0.03))
+        self.assertFalse(released)
+
+    def test_release_when_clean(self):
+        w = win(denc=0.06, dtheta_imu=0.0)
+        released, _ = criteria.is_released(w, fit=fit(dx=0.058))
+        self.assertTrue(released)
+
+
+if __name__ == '__main__':
+    unittest.main()

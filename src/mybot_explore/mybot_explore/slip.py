@@ -126,6 +126,7 @@ class SlipDetector(object):
         self.near_m = 0.0
         self.odom_moved = 0.0
         self.map_odom_moved = 0.0
+        self.drift_confirmed = False
         self.hold_for = 0.0
         self.slip_at = None
         self.suspect_at = None
@@ -255,11 +256,14 @@ class SlipDetector(object):
             self.reason = blocked
             return self.snapshot(action=None)
 
-        # 6) 判据 A + B
+        # 6) 判据：以 B 为主（扫描没变 + odom 在涨），A 只记录不参与判定。
+        #    slam 正常时会把打滑立刻补偿回来，map→odom 漂移很小；若还要求 A，
+        #    就会漏掉真打滑（2026-11-19 实测三段 0.8 m 的假位移全漏）。
         cond_a = self.map_odom_moved >= params['slip_map_odom_min_m']
         cond_b = (self.ratio < params['slip_scan_change_ratio']
                   and self.odom_moved >= params['slip_odom_min_m'])
-        if not (cond_a and cond_b):
+        self.drift_confirmed = bool(cond_a)
+        if not cond_b:
             if self.state == SUSPECT:
                 self.state = IDLE
                 self.suspect_at = None

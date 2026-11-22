@@ -127,16 +127,18 @@ class SlipDetectorCase(unittest.TestCase):
         self.assertIsNone(result['action'])
         self.assertEqual(result['reason'], 'not_slipping')
 
-    def test_scan_static_but_no_drift_is_not_slip(self):
-        """判据 B 成立但 map→odom 没长 → 不是**打滑**。
+    def test_scan_static_without_drift_still_confirms(self):
+        """扫描不动 + odom 在涨 → 确认打滑，即使 map→odom 一点没漂。
 
-        这种形态（扫描不动、odom 在涨、slam 不漂）其实是"推台阶/顶矮墙"，
-        0.2.12 起由 `_check_blocked` 判成 `blocked`（取消目标 + 标短墙），
-        但绝不能走打滑那条路（关建图）—— 因为这时扫描是可信的。
+        理由：slam 正常工作时会把打滑立刻补偿回来，map→odom 的漂移很小甚至为 0；
+        若还要求"漂了 0.08 m"才确认，真打滑会被系统性漏掉（2026-11-19 实测漏了三段）。
+        这时 A 只作为日志字段 `drift_confirmed` 记录下来，用来区分
+        "slam 没跟上"与"slam 跟上了但轮子在空转"。
         """
-        result = self.drive(6, drift_step=0.0)
-        self.assertNotIn(result['action'], ('confirmed',))
-        self.assertNotEqual(result['state'], slip_mod.HOLD)
+        result = self.drive(5, drift_step=0.0)
+        self.assertEqual(result['action'], 'confirmed')
+        self.assertEqual(result['state'], slip_mod.HOLD)
+        self.assertFalse(self.detector.drift_confirmed)
 
     def test_confirms_after_confirm_window(self):
         result = self.drive(5)
