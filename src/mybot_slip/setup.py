@@ -24,6 +24,7 @@ setup(
         'console_scripts': [
             'slip_node = mybot_slip.slip_node:main',
             'slip_executor = mybot_slip.slip_executor:main',
+            'cmd_mux = mybot_slip.cmd_mux:main',
         ],
     },
 )
