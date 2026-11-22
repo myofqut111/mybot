@@ -74,7 +74,11 @@ class SlipNode(Node):
         self._warned_low_rate = 0.0
         self._last_verdict = {}
         self._last_action = None
+        self._last_reason = ''
         self._alive = {'odom': 0, 'wheel': 0, 'imu': 0, 'scan': 0, 'cmd': 0}
+        self._alive_prev = {}
+        self._rate_ts = 0.0
+        self._rate_cache = {}
         self._last_stamps = {}
 
         # ---------------- 接口 ----------------
@@ -178,6 +182,8 @@ class SlipNode(Node):
         for win in wins:
             verdict = self._evaluate(win)
             self._last_verdict = verdict
+            if not win.get('valid'):
+                self._last_reason = win.get('reason') or ''
             action = self.machine.step(now, verdict)
             if action.get('action'):
                 self._last_action = action
@@ -239,16 +245,20 @@ class SlipNode(Node):
             'inputs': {
                 'wheel_hz': round(self._wheel_hz, 1),
                 'have_wheel': self._have_wheel,
+                'rates': self._rates(),
             },
+            'last_reason': self._last_reason,
         }
         msg = String()
         msg.data = json.dumps(payload, ensure_ascii=False)
         self.pub.publish(msg)
 
     def _heartbeat(self):
-        """每秒一条：让上层（控制台/日志）知道节点活着、看得见采样率。"""
-        if not self._last_verdict:
-            return
+        """每秒一条：让上层（控制台/日志）知道节点活着、看得见采样率。
+
+        即使还没有任何窗口（一路数据都没来），也要发——否则上层看到的是
+        一片沉默，分不清"没滑"和"没数据"。
+        """
         now = self._now()
         if self._have_wheel and self._wheel_hz < self.min_wheel_hz:
             if now - self._warned_low_rate > WHEEL_WARN_PERIOD:
@@ -256,7 +266,30 @@ class SlipNode(Node):
                 self.get_logger().warn(
                     '/wheel_joints 只有 %.1f Hz（要求 >= %.1f），'
                     '单轮判据 P3 可能误判' % (self._wheel_hz, self.min_wheel_hz))
-        self._publish({'t1': now}, self._last_verdict, None)
+        verdict = self._last_verdict or {
+            'slip': False, 'type': None, 'ratios': {}, 'reasons': [],
+            'detail': {}, 'usable': False,
+        }
+        self._publish({'t1': now}, verdict, None)
+
+    def _rates(self):
+        """最近一秒各路输入的实际频率（一路没来就是 0.0）。"""
+        now = self._now()
+        if not self._rate_ts:
+            self._rate_ts = now
+            self._alive_prev = dict(self._alive)
+            self._rate_cache = {k: 0.0 for k in self._alive}
+            return self._rate_cache
+        span = now - self._rate_ts
+        if span < 0.2:
+            return self._rate_cache
+        self._rate_cache = {
+            k: round((self._alive[k] - self._alive_prev.get(k, 0)) / span, 1)
+            for k in self._alive
+        }
+        self._alive_prev = dict(self._alive)
+        self._rate_ts = now
+        return self._rate_cache
 
 
 def _round(v):
