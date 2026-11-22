@@ -141,7 +141,10 @@ class SlipExecutor(Node):
             self.get_logger().warn('位移测量失败：%s' % exc)
             return
         if not fit.get('ok') or (fit.get('quality') or 0.0) < 0.35:
+            self._scan_drop += 1
             return
+        self._scan_used += 1
+        self._q_sum += float(fit.get('quality') or 0.0)
         self.monitor.add_distance(math.hypot(fit.get('dx') or 0.0,
                                              fit.get('dy') or 0.0))
 
@@ -207,7 +210,11 @@ class SlipExecutor(Node):
         self.deadline = now + float(act.get('timeout_s') or 6.0)
         self._odom_travel = 0.0
         self._odom_last = None
+        self._odom_start = self.pose     # 动作开始时的 (x, y, yaw)
         self._scan_prev = None          # 丢掉动作前的旧帧，第一对差分才算数
+        self._scan_used = 0
+        self._scan_drop = 0
+        self._q_sum = 0.0
         self._expected_lin = None
         self._foreign = None
         if self.measure == 'odom' and self.pose is not None:
@@ -253,24 +260,46 @@ class SlipExecutor(Node):
         if not self.dry_run:
             self.cmd_pub.publish(twist)
 
+    def _signed_odom(self):
+        """里程计位移在「动作开始时车头方向」上的投影，带符号。
+
+        后退应该是负数。如果指令是后退、这个数却是正的大数，
+        说明底盘把线速度方向搞反了（或者根本不是我们这一路在动）。
+        """
+        if self._odom_start is None or self.pose is None:
+            return None
+        x0, y0, yaw0 = self._odom_start
+        dx, dy = self.pose[0] - x0, self.pose[1] - y0
+        return dx * math.cos(yaw0) + dy * math.sin(yaw0)
+
     def _finish(self, ok, why):
         act = self.action or {}
         moved = self.monitor.progress() if self.monitor else 0.0
         odom_moved = self._odom_travel
+        signed = self._signed_odom()
+        q = (self._q_sum / self._scan_used) if self._scan_used else 0.0
         self._stop()
         self.status = IDLE
         self.action = None
         self.monitor = None
         self.get_logger().warn(
-            '动作结束：%s（激光 %.3f m，里程计 %.3f m，%s）'
-            % ('成功' if ok else '失败', moved, odom_moved, why))
+            '动作结束：%s（激光 %.3f m，里程计 %.3f m 带符号 %+.3f m，%s）'
+            % ('成功' if ok else '失败', moved, odom_moved,
+               signed if signed is not None else 0.0, why))
+        if signed is not None and (act.get('kind') == 'back') \
+                and signed > 0.05 and odom_moved > 0.05:
+            self.get_logger().error(
+                '指令是后退，里程计却往前走了 %.2f m：底盘线速度符号可能是反的'
+                % signed)
         if ok and self.measure == 'scan' and odom_moved > 0.05 \
                 and moved < 0.5 * odom_moved:
             # 轮子转了、车没走：动作"成功"是假的，不能说恢复成功
             ok = False
             why = '里程计说走了 %.2f m，激光只有 %.2f m（轮子空转）' % (odom_moved, moved)
             self.get_logger().warn(why)
-        self._report(act, ok=ok, moved=moved, why=why, odom_moved=odom_moved)
+        self._report(act, ok=ok, moved=moved, why=why, odom_moved=odom_moved,
+                     signed=signed, scan_used=self._scan_used,
+                     scan_drop=self._scan_drop, quality=q)
 
     def _stop(self):
         if self.dry_run:
@@ -279,7 +308,8 @@ class SlipExecutor(Node):
         self.cmd_pub.publish(twist)
         self.stop_until = time.monotonic() + self.settle_s
 
-    def _report(self, act, ok, moved, why, odom_moved=None):
+    def _report(self, act, ok, moved, why, odom_moved=None, signed=None,
+                scan_used=0, scan_drop=0, quality=0.0):
         payload = {
             'id': act.get('id'),
             'kind': act.get('kind'),
@@ -290,6 +320,11 @@ class SlipExecutor(Node):
         }
         if odom_moved is not None:
             payload['odom_moved'] = round(float(odom_moved), 4)
+        if signed is not None:
+            payload['odom_signed'] = round(float(signed), 4)
+        payload['scan_frames'] = int(scan_used)
+        payload['scan_dropped'] = int(scan_drop)
+        payload['scan_quality'] = round(float(quality), 3)
         msg = String()
         msg.data = json.dumps(payload, ensure_ascii=False)
         self.report_pub.publish(msg)
