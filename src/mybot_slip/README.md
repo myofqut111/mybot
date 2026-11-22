@@ -68,12 +68,28 @@ ros2 launch fishbot_slip slip.launch.py scan_topic:=/scan recovery:=true executo
 ros2 launch fishbot_slip slip.launch.py scan_topic:=/scan recovery:=true
 ```
 
+### 和导航一起跑（速度仲裁）
+
+导航在跑的时候会一直往 `/cmd_vel` 发速度，恢复动作会被它盖掉。所以有三步：
+
+```bash
+# 1) 导航的速度输出去 /cmd_vel_nav，别直接写 /cmd_vel
+ros2 launch fishbot_navigation navigation.launch.py \
+    map_yaml_file:=~/maps/maps.yaml cmd_vel_topic:=/cmd_vel_nav
+# 2) slip 带仲裁起来：/cmd_vel_slip（恢复）> /cmd_vel_nav（导航）→ /cmd_vel
+ros2 launch fishbot_slip slip.launch.py scan_topic:=/scan recovery:=true with_mux:=true
+```
+
+仲裁规则：恢复动作最后一条速度 0.5 秒内只听恢复的，之后交还导航；
+两路都没在发就发零速。切换时日志会打「速度指令让给恢复动作 / 回到导航」。
+
 ## 还没做（下一步）
 
 - [x] `slip_node.py`：订阅 `/odom` `/wheel_joints` `/imu` `/scan` `/cmd_vel`，发布 `/slip/state`（std_msgs/String JSON）
 - [x] 动作执行：`back`（`/cmd_vel` + 里程计闭环）、`escape`（原地转）
 - [ ] Nav2 协作：`/slip/inflate` 时临时把局部 `inflation_radius` 调大（`costmap` 参数服务）
-- [ ] 与 Nav2 抢 `/cmd_vel` 的仲裁（执行器动作期间让 Nav2 暂停，做完恢复）
+- [x] 与 Nav2 抢 `/cmd_vel` 的仲裁（`cmd_mux`：恢复优先 0.5 s，之后交还导航）
 - [x] 用 `~/bags/2026` 离线回放验证「不误动作」（0 确认）
 - [ ] 真机复现一次真打滑（垫子/斜坡），确认能报出来
 - [x] 固件烧完后接上真实 `/wheel_joints`（`sensor_msgs/JointState`，左右累计米）
+
