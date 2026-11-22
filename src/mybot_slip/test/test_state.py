@@ -87,7 +87,8 @@ class RecoveryTest(unittest.TestCase):
     def test_short_back_escalates(self):
         m = self._to_recovery()
         out = m.on_action_done(0.6, ok=True, moved=0.01)   # 只退到期望的 20%
-        self.assertEqual(out['action'], 'back')
+        # 退回去了但没退够：不再重复同一种方式，改原地转向
+        self.assertEqual(out['action'], 'escape')
         self.assertEqual(m.state, st.RECOVERY)
 
     def test_repeat_failures_request_inflate(self):
@@ -166,6 +167,34 @@ class NoExecutorTest(unittest.TestCase):
         out = m.step(1.4, verdict('LINEAR_SLIP'))
         self.assertIsNone(out['action'])
         self.assertEqual(m.state, st.RECOVERY)
+
+    def test_failed_back_switches_to_escape(self):
+        """后退顶不动时应该换姿势（转向），而不是反复用同一种方式撞同一个东西。"""
+        m = st.SlipStateMachine({'confirm_window_s': 0.0, 'inflate_try': 9})
+        m.step(0.0, verdict('LINEAR_SLIP'))
+        out = m.step(0.3, verdict('LINEAR_SLIP'))
+        self.assertEqual(out['action'], 'back')
+        out = m.on_action_done(1.0, ok=False, moved=0.0)
+        self.assertEqual(out['action'], 'escape')
+        self.assertIn('转向', out['reason'])
+
+    def test_failed_escape_goes_back_to_back(self):
+        m = st.SlipStateMachine({'confirm_window_s': 0.0, 'inflate_try': 9})
+        m.step(0.0, verdict('LINEAR_SLIP'))
+        m.step(0.3, verdict('LINEAR_SLIP'))
+        m.on_action_done(1.0, ok=False, moved=0.0)      # -> escape
+        self.assertEqual(m.pending_action['action'], 'escape')
+        out = m.on_action_done(2.0, ok=False, moved=0.0)
+        self.assertEqual(out['action'], 'back')
+
+    def test_stall_keeps_escaping(self):
+        """堵转本来就不该后退：失败后仍然转向。"""
+        m = st.SlipStateMachine({'confirm_window_s': 0.0, 'inflate_try': 9})
+        m.step(0.0, verdict('STALL'))
+        out = m.step(0.3, verdict('STALL'))
+        self.assertEqual(out['action'], 'escape')
+        out = m.on_action_done(1.0, ok=False, moved=0.0)
+        self.assertEqual(out['action'], 'escape')
 
     def test_failed_state_resets_after_cooldown(self):
         m = st.SlipStateMachine({'confirm_window_s': 0.0, 'max_recovery': 2,

@@ -60,11 +60,15 @@ class SlipExecutor(Node):
         gp('escape_speed', 1.2)
         gp('settle_s', 0.3)
         gp('measure', 'scan')           # scan=用激光量退了多少；odom=用里程计
+        gp('foreign_tol', 0.03)         # /cmd_vel 上别人发的值与我们的差多少算"有人在抢"
+        gp('stuck_after_s', 2.0)        # 动作开始这么久还没动静就提前放弃
         gp('dry_run', False)            # True：只打日志不发 cmd_vel
 
         get = lambda n: self.get_parameter(n).value  # noqa: E731
         self.dry_run = bool(get('dry_run'))
         self.measure = str(get('measure')).lower()
+        self.foreign_tol = float(get('foreign_tol'))
+        self.stuck_after_s = float(get('stuck_after_s'))
         self.back_speed = float(get('back_speed'))
         self.escape_speed = float(get('escape_speed'))
         self.settle_s = float(get('settle_s'))
@@ -75,6 +79,7 @@ class SlipExecutor(Node):
         self.create_subscription(Odometry, get('odom_topic'), self._on_odom, qos)
         self.create_subscription(Imu, get('imu_topic'), self._on_imu, 20)
         self.create_subscription(LaserScan, get('scan_topic'), self._on_scan, 5)
+        self.create_subscription(Twist, get('cmd_topic'), self._on_cmd, 20)
         self.cmd_pub = self.create_publisher(Twist, get('cmd_topic'), 10)
         self.report_pub = self.create_publisher(String, get('report_topic'), 10)
 
@@ -92,6 +97,8 @@ class SlipExecutor(Node):
         self._odom_last = None
         self._imu_yaw = None
         self._imu_last = None
+        self._expected_lin = None
+        self._foreign = None
         self.get_logger().info(
             '执行器就绪：动作来自 %s，结果发 %s（位移量用 %s，%s）'
             % (get('action_topic'), get('report_topic'), self.measure,
@@ -141,6 +148,23 @@ class SlipExecutor(Node):
     def _now(self):
         return self.get_clock().now().nanoseconds * 1e-9
 
+    def _on_cmd(self, msg):
+        """盯 /cmd_vel 上有没有「别人」在发。
+
+        ROS 2 没有优先级：只要还有一个节点在发前进指令，我们发的后退就会被
+        它抵掉（实测表现为车一边被要求后退、一边被推着往前撞东西）。
+        自己的回声和期望值一致，差得多的就是外人。
+        """
+        if self.dry_run or self.status != RUNNING:
+            return
+        expect = self._expected_lin
+        if expect is None:
+            return
+        diff = abs(float(msg.linear.x) - expect)
+        if diff <= self.foreign_tol:
+            return
+        self._foreign = (self._now(), float(msg.linear.x))
+
     def _on_action(self, msg):
         try:
             act = json.loads(msg.data)
@@ -184,6 +208,8 @@ class SlipExecutor(Node):
         self._odom_travel = 0.0
         self._odom_last = None
         self._scan_prev = None          # 丢掉动作前的旧帧，第一对差分才算数
+        self._expected_lin = None
+        self._foreign = None
         if self.measure == 'odom' and self.pose is not None:
             self.monitor.update(*self.pose)
         self.get_logger().warn('执行动作 %s：目标 %.2f（量法 %s，%s）'
@@ -205,6 +231,14 @@ class SlipExecutor(Node):
         if now > self.deadline:
             self._finish(ok=False, why='动作超时')
             return
+        if self._foreign is not None and now - self._foreign[0] < 0.5:
+            self._finish(ok=False,
+                         why='别人也在发 /cmd_vel（%.2f m/s），先停掉再恢复'
+                             % self._foreign[1])
+            return
+        if now - self.started_at > self.stuck_after_s and self.monitor.progress() < 0.01:
+            self._finish(ok=False, why='动作 %.1fs 一点没动' % (now - self.started_at))
+            return
 
         act = self.action
         twist = Twist()
@@ -215,6 +249,7 @@ class SlipExecutor(Node):
             # 优先往反方向转：卡住时贴着障碍转身更容易脱困
             twist.angular.z = -sign * abs(self.escape_speed)
             # 里程计不可信时也能靠时间兜底：不额外处理，超时即结束
+        self._expected_lin = twist.linear.x
         if not self.dry_run:
             self.cmd_pub.publish(twist)
 

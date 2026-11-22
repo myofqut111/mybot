@@ -150,8 +150,10 @@ class SlipStateMachine(object):
             if self.recoveries >= self.p['inflate_try']:
                 self.state = RECOVERY
                 self.pending_action = {'action': 'inflate', 'reason': '连续恢复失败'}
+                self.last_action = self.pending_action
                 return self.pending_action
-            self.pending_action = self._make_action(kind.get('type'))
+            self.pending_action = self._alternate(kind)
+            self.last_action = self.pending_action
             return self.pending_action
 
         if kind.get('action') == 'back':
@@ -167,8 +169,10 @@ class SlipStateMachine(object):
                         return {'action': 'abort', 'reason': '后退距离不足且次数用尽'}
                     if self.recoveries >= self.p['inflate_try']:
                         self.pending_action = {'action': 'inflate', 'reason': '连续恢复失败'}
+                        self.last_action = self.pending_action
                         return self.pending_action
-                    self.pending_action = self._make_action(kind.get('type'))
+                    self.pending_action = self._alternate(kind)
+                    self.last_action = self.pending_action
                     return self.pending_action
 
         self.state = CHECK
@@ -247,6 +251,29 @@ class SlipStateMachine(object):
                                          self.p['action_timeout_s'])
         self.last_action = act
         return dict(act)
+
+    def _alternate(self, last):
+        """上一次动作没成：换个姿势再来。
+
+        后退顶不动（台阶/被抵住）就改成原地转向——先脱离这个方向，
+        而不是反复用同一种方式撞同一个东西；转向还不行就退回去再试。
+        """
+        slip_type = (last or {}).get('type') or self.type
+        if slip_type == 'STALL':
+            return self._make_action('STALL')      # 堵转永远不后退
+        if (last or {}).get('action') == 'back':
+            self.stats['escapes'] += 1
+            return {
+                'action': 'escape',
+                'yaw': self.p['escape_yaw_rad'],
+                'speed': self.p['escape_speed'],
+                'timeout_s': 4.0,
+                'type': slip_type,
+                'reason': '后退没解决问题：改原地转向，换个方向再试',
+            }
+        act = self._make_action(slip_type)
+        act['reason'] = '转向没解决问题：再退一次看看'
+        return act
 
     def _make_action(self, slip_type, verdict=None):
         p = self.p
