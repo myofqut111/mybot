@@ -166,7 +166,12 @@ class SlipExecutor(Node):
         diff = abs(float(msg.linear.x) - expect)
         if diff <= self.foreign_tol:
             return
-        self._foreign = (self._now(), float(msg.linear.x))
+        first = self._foreign is None
+        self._foreign = (time.monotonic(), float(msg.linear.x))
+        if first:
+            self.get_logger().warn(
+                '/cmd_vel 上还有别人在发：他要 %.2f m/s，我要 %.2f m/s'
+                % (float(msg.linear.x), expect))
 
     def _on_action(self, msg):
         try:
