@@ -88,6 +88,11 @@ def generate_launch_description():
         DeclareLaunchArgument(
             'scan_gate_max_s', default_value='5.0',
             description='门控单次关闭上限（秒）；到点强制放行，绝不把建图掐死'),
+        DeclareLaunchArgument(
+            'cmd_vel_topic', default_value='cmd_vel',
+            description='Nav2 速度输出去哪个话题。默认 cmd_vel（直连底盘）；'
+                        '要接 mybot_slip 的速度仲裁时传 /cmd_vel_nav，'
+                        '由 cmd_mux 决定转发导航还是恢复动作'),
         # 下面 6 个是定位门控 wait_for_localization.py 的参数
         DeclareLaunchArgument(
             'gate_stable_duration', default_value='2.0',
@@ -148,6 +153,7 @@ def generate_launch_description():
     enable_patrol = LaunchConfiguration('enable_patrol')
     rviz = LaunchConfiguration('rviz')
     rviz_config = LaunchConfiguration('rviz_config')
+    cmd_vel_topic = LaunchConfiguration('cmd_vel_topic')
 
     # 两种定位模式：amcl = 静态地图 + AMCL；slam = 边跑边建图（探索用）
     scan_gate_enabled = LaunchConfiguration('scan_gate_enabled')
@@ -284,10 +290,12 @@ def generate_launch_description():
         name='planner_server', **lifecycle_kwargs)
     controller_server = LifecycleNode(
         package='nav2_controller', executable='controller_server',
-        name='controller_server', **lifecycle_kwargs)
+        name='controller_server', **lifecycle_kwargs,
+        remappings=[('cmd_vel', cmd_vel_topic)])
     behavior_server = LifecycleNode(
         package='nav2_behaviors', executable='behavior_server',
-        name='behavior_server', **lifecycle_kwargs)
+        name='behavior_server', **lifecycle_kwargs,
+        remappings=[('cmd_vel', cmd_vel_topic)])
 
     # 导航生命周期管理器：注意它【不直接启动】，
     # 而是等定位门控进程退出后由 OnProcessExit 拉起（此时 autostart 激活四件套）。
