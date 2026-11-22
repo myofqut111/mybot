@@ -44,14 +44,36 @@ python3 tools/replay_slip.py ~/bags/2020
 ```bash
 cd src/mybot_slip
 python3 -m unittest discover -s test -v
-# 42 例：窗口 7 / 激光 7 / 判据 14 / 状态机 14
+# 55 例：窗口 7 / 激光 7 / 判据 15 / 状态机 18 / 动作达成 8
+```
+
+## 动作执行（0.3.0）
+
+```
+slip_node ──/slip/action (JSON)──> slip_executor ──/slip/report (JSON)──> slip_node
+```
+
+- `back`：直发 `/cmd_vel` 倒车，`TravelMonitor` 按里程计累计路程闭环，到位即停；
+- `escape`：原地反向转，累计净转角闭环（来回摆不算进度）；
+- 动作结束**一定发一帧 0 速度**；`timeout_s` 到点报失败并停；
+- 执行器忙时收到新动作：不排队，直接回 `ok=false`（上层据此升级/放弃）。
+
+为什么不直接用 Nav2 的 `BackUp`/`Spin`：那要走 `navigate_to_pose` 的 BT 和生命周期，
+而打滑时车通常正在一次导航任务里，借 Nav2 的动作会和当前任务抢执行权。
+
+```bash
+# 只看动作序列，不发速度
+ros2 launch fishbot_slip slip.launch.py scan_topic:=/scan recovery:=true executor_dry_run:=true
+# 真动（确认周围安全后）
+ros2 launch fishbot_slip slip.launch.py scan_topic:=/scan recovery:=true
 ```
 
 ## 还没做（下一步）
 
 - [x] `slip_node.py`：订阅 `/odom` `/wheel_joints` `/imu` `/scan` `/cmd_vel`，发布 `/slip/state`（std_msgs/String JSON）
-- [ ] 动作执行：后退走 `nav2_msgs/BackUp` 或直接发 `cmd_vel` + 激光闭环；脱困走 `nav2_msgs/Spin`
+- [x] 动作执行：`back`（`/cmd_vel` + 里程计闭环）、`escape`（原地转）
 - [ ] Nav2 协作：`/slip/inflate` 时临时把局部 `inflation_radius` 调大（`costmap` 参数服务）
+- [ ] 与 Nav2 抢 `/cmd_vel` 的仲裁（执行器动作期间让 Nav2 暂停，做完恢复）
 - [x] 用 `~/bags/2026` 离线回放验证「不误动作」（0 确认）
 - [ ] 真机复现一次真打滑（垫子/斜坡），确认能报出来
-- [ ] 固件烧完后接上真实 `/wheel_joints`（`sensor_msgs/JointState`，左右累计米）
+- [x] 固件烧完后接上真实 `/wheel_joints`（`sensor_msgs/JointState`，左右累计米）

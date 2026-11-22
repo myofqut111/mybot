@@ -44,6 +44,8 @@ class SlipNode(Node):
         self.declare_parameter('scan_topic', '/scan_filtered')
         self.declare_parameter('cmd_topic', '/cmd_vel')
         self.declare_parameter('state_topic', '/slip/state')
+        self.declare_parameter('action_topic', '/slip/action')
+        self.declare_parameter('report_topic', '/slip/report')
         self.declare_parameter('window_s', 0.3)
         self.declare_parameter('min_samples', 2)
         self.declare_parameter('warmup_s', 2.0)
@@ -82,9 +84,13 @@ class SlipNode(Node):
         self._rate_ts = 0.0
         self._rate_cache = {}
         self._last_stamps = {}
+        self._action_id = 0
 
         # ---------------- 接口 ----------------
         self.pub = self.create_publisher(String, gp('state_topic').value, 10)
+        self.act_pub = self.create_publisher(String, gp('action_topic').value, 10)
+        self.create_subscription(String, gp('report_topic').value,
+                                 self._on_report, 10)
         self.create_subscription(Odometry, gp('odom_topic').value,
                                  self._on_odom, qos_profile_sensor_data)
         self.create_subscription(JointState, gp('wheel_topic').value,
@@ -189,12 +195,45 @@ class SlipNode(Node):
             action = self.machine.step(now, verdict)
             if action.get('action'):
                 self._last_action = action
+                self._dispatch(action)
                 self._publish(win, verdict, action)
                 self.get_logger().warn(
                     '打滑恢复动作：%s（%s）'
                     % (action.get('action'), action.get('reason', '')))
             elif verdict.get('slip'):
                 self._publish(win, verdict, None)
+
+    def _dispatch(self, action):
+        """把动作发给执行器；执行器做完会往 report_topic 回一条。"""
+        self._action_id += 1
+        payload = {
+            'id': self._action_id,
+            'kind': action.get('action'),
+            'distance': action.get('distance'),
+            'yaw': action.get('yaw'),
+            'speed': action.get('speed'),
+            'timeout_s': action.get('timeout_s'),
+            'type': action.get('type'),
+            'why': action.get('reason'),
+        }
+        msg = String()
+        msg.data = json.dumps(payload, ensure_ascii=False, default=float)
+        self.act_pub.publish(msg)
+
+    def _on_report(self, msg):
+        try:
+            rep = json.loads(msg.data)
+        except ValueError:
+            return
+        if rep.get('id') != self._action_id:
+            return                      # 过期回执（上一轮的动作）
+        now = self._now()
+        ok = bool(rep.get('ok'))
+        moved = rep.get('moved')
+        self.get_logger().warn(
+            '动作回执：%s ok=%s moved=%.3f（%s）'
+            % (rep.get('kind'), ok, float(moved or 0.0), rep.get('why') or ''))
+        self.machine.on_action_done(now, ok, moved=moved)
 
     def _evaluate(self, win):
         fit = None

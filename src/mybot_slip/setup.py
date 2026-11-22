@@ -23,6 +23,7 @@ setup(
     entry_points={
         'console_scripts': [
             'slip_node = mybot_slip.slip_node:main',
+            'slip_executor = mybot_slip.slip_executor:main',
         ],
     },
 )
