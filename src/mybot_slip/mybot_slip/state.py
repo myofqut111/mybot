@@ -36,6 +36,7 @@ DEFAULTS = {
     'escape_speed': 1.2,
     'inflate_try': 3,          # 第几次恢复时请求调大膨胀
     'max_recovery': 4,         # 一个恢复周期内最多试几次
+    'alternate_after_fail': True,   # 失败后换姿势（后退<->转向）；关掉就重复同一种
     'recovery_cooldown_s': 60.0,
     'settle_s': 0.8,           # 动作后静置（等滤波器/里程计稳定）
     'stall_no_back': True,
@@ -261,6 +262,8 @@ class SlipStateMachine(object):
         slip_type = (last or {}).get('type') or self.type
         if slip_type == 'STALL':
             return self._make_action('STALL')      # 堵转永远不后退
+        if not self.p.get('alternate_after_fail', True):
+            return self._make_action(slip_type)    # 调试用：关掉换姿势
         if (last or {}).get('action') == 'back':
             self.stats['escapes'] += 1
             return {
