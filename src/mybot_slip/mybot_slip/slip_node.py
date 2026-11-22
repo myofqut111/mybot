@@ -46,6 +46,7 @@ class SlipNode(Node):
         self.declare_parameter('state_topic', '/slip/state')
         self.declare_parameter('action_topic', '/slip/action')
         self.declare_parameter('report_topic', '/slip/report')
+        self.declare_parameter('debug_period_s', 5.0)   # 0 = 不打采样日志
         self.declare_parameter('window_s', 0.3)
         self.declare_parameter('min_samples', 2)
         self.declare_parameter('warmup_s', 2.0)
@@ -85,6 +86,8 @@ class SlipNode(Node):
         self._rate_cache = {}
         self._last_stamps = {}
         self._action_id = 0
+        self._last_debug = 0.0
+        self._debug_period = float(self.get_parameter('debug_period_s').value)
 
         # ---------------- 接口 ----------------
         self.pub = self.create_publisher(String, gp('state_topic').value, 10)
@@ -333,6 +336,20 @@ class SlipNode(Node):
             'detail': {}, 'usable': False,
         }
         self._publish({'t1': now}, verdict, None)
+
+        # 每 debug_period_s 往日志里打一行：分不清"没滑"和"没数据"时，
+        # 这行是唯一能让人一眼看出来的证据
+        period = self._debug_period
+        if period > 0 and now - self._last_debug >= period:
+            self._last_debug = now
+            r = self._rates()
+            self.get_logger().info(
+                '采样 odom %.1f wheel %.1f imu %.1f scan %.1f cmd %.1f Hz｜'
+                '状态 %s｜最近原因 %s'
+                % (r.get('odom', 0.0), r.get('wheel', 0.0), r.get('imu', 0.0),
+                   r.get('scan', 0.0), r.get('cmd', 0.0),
+                   (self._last_verdict or {}).get('type') or '无',
+                   self._last_reason or '无'))
 
     def _rates(self):
         """最近一秒各路输入的实际频率（一路没来就是 0.0）。"""
