@@ -193,13 +193,21 @@ class SlipNode(Node):
             if not win.get('valid'):
                 self._last_reason = win.get('reason') or ''
             action = self.machine.step(now, verdict)
-            if action.get('action'):
+            kind = action.get('action')
+            if kind in ('back', 'escape', 'inflate'):
+                # 只有真的要让车动（或改参数）才发给执行器
                 self._last_action = action
-                self._dispatch(action)
+                if kind != 'inflate':
+                    self._dispatch(action)
                 self._publish(win, verdict, action)
                 self.get_logger().warn(
                     '打滑恢复动作：%s（%s）'
-                    % (action.get('action'), action.get('reason', '')))
+                    % (kind, action.get('reason', '')))
+            elif kind in ('abort', 'reset'):
+                # 这些是状态机内部事件，不是给执行器的活
+                self._publish(win, verdict, action)
+                self.get_logger().warn('状态机：%s（%s）'
+                                       % (kind, action.get('reason', '')))
             elif verdict.get('slip'):
                 self._publish(win, verdict, None)
 

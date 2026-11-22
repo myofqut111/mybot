@@ -46,6 +46,15 @@ class TravelMonitor(object):
         self.last = (x, y, yaw)
         return self.progress()
 
+    def add_distance(self, d):
+        """直接给一段位移增量（激光 ICP 用的接口，不依赖位姿）。"""
+        self.travel += abs(float(d or 0.0))
+        return self.progress()
+
+    def add_yaw(self, dyaw):
+        self.yaw_acc += float(dyaw or 0.0)
+        return self.progress()
+
     def progress(self):
         if self.kind == 'escape':
             return abs(self.yaw_acc)
