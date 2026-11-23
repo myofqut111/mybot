@@ -74,6 +74,8 @@ def generate_launch_description():
                     LaunchConfiguration('localization_gate').perform(context)}
         if want_slip in ('1', 'true', 'yes', 'on'):
             args['cmd_vel_topic'] = '/cmd_vel_nav'
+            # 方案 §4：EKF 改吃协方差守门后的那一路（同一数据，打滑时降权）
+            args['ekf_odom_topic'] = '/odom_guarded'
         return [_launch_of('mybot_navigation', 'navigation.launch.py', args,
                            condition=IfCondition(nav))]
 

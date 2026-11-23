@@ -125,6 +125,9 @@ def generate_launch_description():
             'enable_ekf', default_value='true',
             description='Launch robot_localization ekf_node in this file'),
         DeclareLaunchArgument(
+            'ekf_odom_topic', default_value='/odom',
+            description='EKF 的 odom0 输入；接打滑检测时传 /odom_guarded（同一路数据，打滑期间协方差被放大）'),
+        DeclareLaunchArgument(
             'enable_patrol', default_value='true',
             description='Launch the mybot patrol stack (route/task manager + executor)'),
         DeclareLaunchArgument(
@@ -151,6 +154,7 @@ def generate_launch_description():
     odom_shim_enabled = LaunchConfiguration('odom_shim_enabled')
     controller = LaunchConfiguration('controller')
     ekf_publish_tf = LaunchConfiguration('ekf_publish_tf')
+    ekf_odom_topic = LaunchConfiguration('ekf_odom_topic')
     enable_ekf = LaunchConfiguration('enable_ekf')
     localization = LaunchConfiguration('localization')
     slam_params_file = LaunchConfiguration('slam_params_file')
@@ -224,6 +228,9 @@ def generate_launch_description():
         parameters=[ekf_params_file, {
             'use_sim_time': use_sim_time,
             'publish_tf': ParameterValue(ekf_publish_tf, value_type=bool),
+            # 打滑检测开着时，EKF 吃的是协方差被放大的那一路（方案 §4），
+            # 它仍然是 /odom 的同一条数据流，只是权重被压低。
+            'odom0': ekf_odom_topic,
         }],
         condition=IfCondition(enable_ekf),
     )

@@ -1,6 +1,6 @@
 # mybot_slip · 差速轮打滑检测与恢复
 
-按 `差速轮机器人打滑检测与恢复方案_v1.1.docx` 落地。**当前进度：判据/状态机 + ROS 节点 + 动作执行 + 速度仲裁 + 膨胀动作 + 打滑期间暂停建图（0.4.2），离线回放 0 误动作，mock 全链 PASS；真机只差一次真打滑复现。**
+按 `差速轮机器人打滑检测与恢复方案_v1.1.docx` 落地。**当前进度：判据/状态机 + ROS 节点 + 动作执行 + 速度仲裁 + 膨胀动作 + 打滑期间暂停建图 + 协方差降权(0.5.1) + 脱困后位姿校验(0.5.1)，离线回放 0 误动作，86 个单测通过；真机只差一次真打滑复现。**
 
 ## 这一版有什么
 
@@ -135,6 +135,36 @@ ros2 launch fishbot_slip slip.launch.py scan_topic:=/scan recovery:=true with_mu
 实测（slam_toolbox Humble 1.1.x）：调用后 6~10 s 内 `/map` 占用格数一个都不变，
 再调一次又开始长；`slam_toolbox` 日志分别打出
 `Toggled to pause taking new measurements.` / `Toggled to actively taking new measurements.`。
+
+## 协方差降权（0.5.1，方案 §4）
+
+方案要的是"放大里程计协方差、降低融合权重，同时 SLAM/TF 不中断"。做法是原样转发
+`/odom`，但在异常窗口里把 pose/twist 的协方差乘 100（标准差约 ×10）：
+
+```bash
+ros2 launch fishbot_slip slip.launch.py scan_topic:=/scan recovery:=true with_mux:=true
+ros2 launch fishbot_navigation navigation.launch.py ... ekf_odom_topic:=/odom_guarded
+```
+
+- 节点把 `/odom` 转到 `/odom_guarded`，正常时一字不改；打滑时只改协方差。
+- EKF 的 `odom0` 指向 `/odom_guarded` 即可——**数据还是那条，权重变了**，TF 照常输出，
+  所以 SLAM 不会因为"没有里程计"而断掉。
+- 底盘协方差常发全 0，乘多少还是 0，所以有下限（`min_position_var/min_yaw_var=1e-4`）。
+- 整机走 `robot.launch.py with_slip:=true` 时这几个参数会自动接好（`cmd_vel_topic` 与
+  `ekf_odom_topic` 一起改），不用手传。
+
+## 脱困后的位姿校验（0.5.1，方案 §6）
+
+恢复完成时比较"进恢复前"和"恢复后"的位姿（取 `/odometry/filtered`，不取轮子里程——
+轮子自己算不出自己滑了多少）：
+
+- 平移 ≤ `pose_jump_m`（0.15 m）且转角 ≤ `pose_jump_rad`（0.20 rad）→ 记一行 info，继续。
+- 超了 → 打 ERROR、清局部/全局代价地图；有 `/reinitialize_global_localization`
+  （AMCL 模式）就再撒一次粒子，slam 模式没有这个服务会自动跳过。
+
+```bash
+ros2 launch fishbot_slip slip.launch.py ... pose_jump_m:=0.15 pose_jump_rad:=0.20
+```
 
 ## 还没做（下一步）
 

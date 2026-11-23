@@ -67,6 +67,16 @@ class SlipNode(Node):
         self.declare_parameter('fault_topic', '/slip/fault')
         self.declare_parameter('cancel_nav_on_fail', True)
         self.declare_parameter('nav_action', 'navigate_to_pose')
+        # 方案 §4：打滑期间放大编码器里程协方差（SLAM/TF 不中断）
+        self.declare_parameter('covariance_guard', True)
+        self.declare_parameter('odom_guard_out', '/odom_guarded')
+        self.declare_parameter('covariance_position_factor', 100.0)
+        self.declare_parameter('covariance_yaw_factor', 100.0)
+        # 方案 §6：位姿校验与重定位（用 EKF 输出，两种定位模式下都有）
+        self.declare_parameter('pose_topic', '/odometry/filtered')
+        self.declare_parameter('pose_jump_m', 0.15)
+        self.declare_parameter('pose_jump_rad', 0.20)
+        self.declare_parameter('relocate_on_jump', True)
 
         gp = self.get_parameter
         self.win_params = {
@@ -122,7 +132,7 @@ class SlipNode(Node):
         self._last_hold = 0.0
         self._failed_reported = False
         self._nav_cancelled = False
-        self._nav_client = None
+        self._cancel_client = None
         self._nav_action = str(gp('nav_action').value)
         self._cancel_nav = bool(gp('cancel_nav_on_fail').value)
         self.create_subscription(String, gp('report_topic').value,
@@ -137,6 +147,24 @@ class SlipNode(Node):
                                  self._on_scan, qos_profile_sensor_data)
         self.create_subscription(Twist, gp('cmd_topic').value,
                                  self._on_cmd, QoSProfile(depth=10))
+        self.create_subscription(Odometry, gp('pose_topic').value,
+                                 self._on_pose, QoSProfile(depth=20))
+
+        # 方案 §4：协方差守门（默认开；amcl 环境下同样有效）
+        self.odom_guard = None
+        if bool(gp('covariance_guard').value):
+            try:
+                from .odom_guard import OdomCovarianceGuard
+                self.odom_guard = OdomCovarianceGuard(
+                    self,
+                    {'out_topic': gp('odom_guard_out').value,
+                     'position_factor': float(gp('covariance_position_factor').value),
+                     'yaw_factor': float(gp('covariance_yaw_factor').value)})
+            except Exception as exc:                  # noqa: BLE001
+                self.get_logger().warn('协方差守门没起来：%s' % exc)
+        self._pose = None
+        self._recovery_pose = None
+        self._jump_reported = False
 
         # 20 Hz 轮询：窗口是 0.3 s，20 Hz 足够不丢边界
         self.create_timer(0.05, self._tick)
@@ -166,6 +194,14 @@ class SlipNode(Node):
         self._alive['odom'] += 1
         self._last_stamps['odom'] = t
         self.agg.add_odom(t, msg.twist.twist.linear.x, msg.twist.twist.angular.z)
+
+    def _on_pose(self, msg):
+        px = msg.pose.pose.position.x
+        py = msg.pose.pose.position.y
+        q = msg.pose.pose.orientation
+        yaw = math.atan2(2.0 * (q.w * q.z + q.x * q.y),
+                         1.0 - 2.0 * (q.y * q.y + q.z * q.z))
+        self._pose = (px, py, yaw)
 
     def _on_wheel(self, msg):
         t = self._stamp(msg, self._now())
@@ -242,6 +278,10 @@ class SlipNode(Node):
                 # §3 过位移：把目标交回 Nav2，让它重新规划
                 self._cancel_nav_goal()
                 self._publish(win, verdict, action)
+            elif kind == 'recovered':
+                # 方案 §6：脱困后校验位姿跳变，跳得太多就清图/重定位
+                self._publish(win, verdict, action)
+                self._check_pose_jump(now)
             elif kind in ('abort', 'reset'):
                 # 这些是状态机内部事件，不是给执行器的活
                 self._publish(win, verdict, action)
@@ -259,6 +299,7 @@ class SlipNode(Node):
         # 方案 §2：一进恢复就取消 Nav2 目标，别让它一边判"无进展"一边调恢复行为
         if self.machine.state in ('slip', 'recovery') and not self._nav_cancelled:
             self._nav_cancelled = True
+            self._recovery_pose = self._pose
             self._cancel_nav_goal()
         elif self.machine.state == 'normal':
             self._nav_cancelled = False
@@ -273,6 +314,84 @@ class SlipNode(Node):
                 '打滑状态已持续 %.0f s，先恢复建图（一直停着更糟）'
                 % self.pause_policy.max_hold_s)
         self.slam_guard.sync(want)
+
+        # 方案 §4：打滑期间放大编码器里程协方差（SLAM/TF 不中断）
+        if self.odom_guard is not None:
+            self.odom_guard.set_inflated(self.machine.state != 'normal')
+
+    def p(self, name):
+        return self.get_parameter(name).value
+
+    def _check_pose_jump(self, now):
+        """方案 §6：恢复前后位姿差过大 → 清局部代价地图 + 触发重定位。
+
+        为什么用 EKF 输出而不是轮子里程：轮子在打滑时正好是错的，
+        自己算不出自己错了多少。
+        """
+        before = self._recovery_pose
+        after = self._pose
+        self._recovery_pose = None
+        if before is None or after is None:
+            return
+        dist = math.hypot(after[0] - before[0], after[1] - before[1])
+        dyaw = abs(self._wrap(after[2] - before[2]))
+        lim_m = float(self.p('pose_jump_m'))
+        lim_rad = float(self.p('pose_jump_rad'))
+        if dist <= lim_m and dyaw <= lim_rad:
+            self.get_logger().info(
+                '脱困后位姿校验通过：平移 %.3f m、转角 %.3f rad'
+                % (dist, dyaw))
+            return
+        self.get_logger().error(
+            '脱困后位姿跳变 %.3f m / %.3f rad（阈值 %.2f m / %.2f rad）：'
+            '地图与代价地图可能已经错位' % (dist, dyaw, lim_m, lim_rad))
+        self._clear_costmaps()
+        if bool(self.p('relocate_on_jump')):
+            self._relocalize()
+
+    @staticmethod
+    def _wrap(angle):
+        while angle > math.pi:
+            angle -= 2.0 * math.pi
+        while angle < -math.pi:
+            angle += 2.0 * math.pi
+        return angle
+
+    def _clear_costmaps(self):
+        """清掉局部/全局代价地图，避免旧障碍把车困在错误位置。"""
+        try:
+            from nav2_msgs.srv import ClearEntireCostmap
+        except Exception as exc:                      # noqa: BLE001
+            self.get_logger().warn('清代价地图不可用：%s' % exc)
+            return
+        for name in ('local_costmap', 'global_costmap'):
+            srv = '/%s/clear_entirely_%s' % (name, name)
+            try:
+                client = self.create_client(ClearEntireCostmap, srv)
+                if not client.service_is_ready():
+                    self.get_logger().warn('%s 不在（跳过清理）' % srv)
+                    continue
+                client.call_async(ClearEntireCostmap.Request())
+                self.get_logger().warn('已请求清理 %s' % name)
+            except Exception as exc:                  # noqa: BLE001
+                self.get_logger().warn('清理 %s 失败：%s' % (name, exc))
+
+    def _relocalize(self):
+        """AMCL 模式下让定位重新撒粒子；slam 模式没有这个服务，跳过。"""
+        try:
+            from std_srvs.srv import Empty
+        except Exception:                             # noqa: BLE001
+            return
+        try:
+            client = self.create_client(Empty, '/reinitialize_global_localization')
+            if not client.service_is_ready():
+                self.get_logger().warn(
+                    '全局重定位服务不在（slam 模式正常），只清了代价地图')
+                return
+            client.call_async(Empty.Request())
+            self.get_logger().warn('已请求全局重定位（AMCL 重新撒粒子）')
+        except Exception as exc:                      # noqa: BLE001
+            self.get_logger().warn('请求重定位失败：%s' % exc)
 
     def _hold_still(self, now):
         """异常状态且手上没动作时，持续发零速占住速度通道。
@@ -309,19 +428,28 @@ class SlipNode(Node):
             % action.get('reason'))
 
     def _cancel_nav_goal(self):
-        """把 Nav2 手上的目标取消掉，免得它一直判"无进展"再调恢复行为。"""
+        """把 Nav2 手上的目标取消掉，免得它一直判"无进展"再调恢复行为。
+
+        `rclpy.action.ActionClient` 没有 `cancel_goal_async()`——取消是**目标句柄**
+        的活，而目标不是我们发的（是 BT 发的），拿不到句柄。所以走 action 自带的
+        `/_action/cancel_goal` 服务，用全零 UUID 表示"这个 action 上的所有目标"。
+        """
         if not self._cancel_nav:
             return
         try:
-            from nav2_msgs.action import NavigateToPose
-            from rclpy.action import ActionClient
-            if self._nav_client is None:
-                self._nav_client = ActionClient(
-                    self, NavigateToPose, self._nav_action)
-            if not self._nav_client.server_is_ready():
-                self._nav_client.wait_for_server(timeout_sec=0.5)
-            self._nav_client.cancel_goal_async()
-            self.get_logger().warn('已取消 Nav2 当前目标，避免它继续判无进展')
+            from action_msgs.srv import CancelGoal
+            from unique_identifier_msgs.msg import UUID
+            name = '%s/_action/cancel_goal' % self._nav_action
+            if self._cancel_client is None:
+                self._cancel_client = self.create_client(CancelGoal, name)
+            if not self._cancel_client.service_is_ready():
+                self._cancel_client.wait_for_service(timeout_sec=0.5)
+            req = CancelGoal.Request()
+            req.goal_info.goal_id = UUID(uuid=[0] * 16)
+            req.goal_info.stamp.sec = 0
+            req.goal_info.stamp.nanosec = 0
+            self._cancel_client.call_async(req)
+            self.get_logger().warn('已请求取消 Nav2 当前目标，避免它继续判无进展')
         except Exception as exc:                      # noqa: BLE001
             self.get_logger().warn('取消 Nav2 目标失败：%s' % exc)
 
