@@ -48,6 +48,9 @@ class SlipNode(Node):
         self.declare_parameter('action_topic', '/slip/action')
         self.declare_parameter('report_topic', '/slip/report')
         self.declare_parameter('debug_period_s', 5.0)   # 0 = 不打采样日志
+        self.declare_parameter('max_stamp_offset', 2.0)   # 时间戳与本机差超过它就当不可信
+        self.declare_parameter('pause_on_suspect', True)  # 一见到疑似就打住建图
+        self.declare_parameter('suspect_hold_s', 1.5)
         self.declare_parameter('alternate_after_fail', True)  # 失败后换姿势
         self.declare_parameter('window_s', 0.3)
         self.declare_parameter('min_samples', 2)
@@ -118,6 +121,9 @@ class SlipNode(Node):
         self._rate_ts = 0.0
         self._rate_cache = {}
         self._last_stamps = {}
+        self._stamp_warned = False
+        self._suspect_until = 0.0
+        self._stamp_offset = 0.0
         self._action_id = 0
         self._last_debug = 0.0
         self._debug_period = float(self.get_parameter('debug_period_s').value)
@@ -181,13 +187,33 @@ class SlipNode(Node):
     def _now(self):
         return self.get_clock().now().nanoseconds * 1e-9
 
-    @staticmethod
-    def _stamp(msg, fallback):
+    @property
+    def max_stamp_offset(self):
+        return float(self.get_parameter('max_stamp_offset').value)
+
+    def _stamp(self, msg, fallback):
+        """取消息时间戳；但时间戳明显不可信时退回本机时间。
+
+        板子没做过时钟同步时，`header.stamp` 可能是开机后的小时数（几十秒、
+        甚至 0），拿它去切 0.3 s 窗口，窗口永远对不上"现在"，表现就是
+        `last_reason: odom 样本不足` 一直刷、检测永远不确认。
+        """
         st = getattr(getattr(msg, 'header', None), 'stamp', None)
         if st is None:
             return fallback
         v = st.sec + st.nanosec * 1e-9
-        return v if (st.sec or st.nanosec) else fallback
+        if not (st.sec or st.nanosec):
+            return fallback
+        off = v - fallback
+        if abs(off) > self.max_stamp_offset:
+            if not self._stamp_warned:
+                self._stamp_warned = True
+                self.get_logger().warn(
+                    '输入时间戳与本机差 %.1f s（板子时钟没同步？），'
+                    '改用接收时间切窗口' % off)
+            self._stamp_offset = off
+            return fallback
+        return v
 
     def _on_odom(self, msg):
         t = self._stamp(msg, self._now())
@@ -261,6 +287,8 @@ class SlipNode(Node):
 
         for win in wins:
             verdict = self._evaluate(win)
+            if verdict.get('slip'):
+                self._suspect_until = now + float(self.p('suspect_hold_s'))
             self._last_verdict = verdict
             if not win.get('valid'):
                 self._last_reason = win.get('reason') or ''
@@ -306,9 +334,12 @@ class SlipNode(Node):
             self._failed_reported = False
 
         # 非 NORMAL 就摁住建图：打滑时 odom 还在涨，扫描会按错位姿进图。
-        # PausePolicy 带最长时长兜底，免得状态机卡住时地图永远不动。
-        want = self.pause_policy.want_pause(
-            self.machine.state != 'normal', now)
+        # 只在"确认后"才暂停的话，确认本身要 1 s 左右，那 1 s 的错误扫描
+        # 已经写进图了，所以第一个"疑似"窗口就先摁住。
+        abnormal = self.machine.state != 'normal'
+        if bool(self.p('pause_on_suspect')) and now < self._suspect_until:
+            abnormal = True
+        want = self.pause_policy.want_pause(abnormal, now)
         if self.pause_policy.take_capped_event():
             self.get_logger().warn(
                 '打滑状态已持续 %.0f s，先恢复建图（一直停着更糟）'
@@ -317,7 +348,7 @@ class SlipNode(Node):
 
         # 方案 §4：打滑期间放大编码器里程协方差（SLAM/TF 不中断）
         if self.odom_guard is not None:
-            self.odom_guard.set_inflated(self.machine.state != 'normal')
+            self.odom_guard.set_inflated(abnormal)
 
     def p(self, name):
         return self.get_parameter(name).value
@@ -550,6 +581,7 @@ class SlipNode(Node):
                 'wheel_hz': round(self._wheel_hz, 1),
                 'have_wheel': self._have_wheel,
                 'rates': self._rates(),
+                'stamp_offset': round(self._stamp_offset, 2),
             },
             'last_reason': self._last_reason,
             'map_paused': self.slam_guard.paused,
