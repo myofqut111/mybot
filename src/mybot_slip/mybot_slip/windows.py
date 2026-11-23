@@ -13,9 +13,9 @@ import math
 
 
 DEFAULTS = {
-    'window_s': 0.30,          # 窗口长度
+    'window_s': 0.50,          # 窗口长度（拉长能提高灵敏度，代价是慢 0.2 s）
     'max_window_s': 1.50,      # 里程计太稀疏时窗口最多拉长到这里
-    'min_odom_samples': 3,     # 窗口里至少这么多条 odom 才算够用
+    'min_odom_samples': 2,     # 窗口里至少这么多条 odom 才算够用（8 Hz 时 0.5 s 有 4 条）
     'warmup_s': 0.30,          # 指令切换后多久内的窗口不算
     'min_cmd_coverage': 0.70,  # 指令覆盖低于此值判窗无效
     'min_samples': 2,          # odom/wheel/imu 每个窗口至少几个样本
@@ -176,12 +176,11 @@ class WindowAggregator(object):
         need = int(self.p.get('min_odom_samples', self.p['min_samples']))
         while now - self.t0 >= tw - 1e-9:
             t1 = self.t0 + tw
-            od = self.odom.between(self.t0, t1)
-            if len(od) < need:
-                # 还没到上限就再等等；到上限了就按上限切，让 _build 报真实原因
-                if now - self.t0 < tw_max - 1e-9:
-                    break
+            if len(self.odom.between(self.t0, t1)) < need:
+                # 0.3 s 里 odom 不够：把窗口往长里拉，能等到几条算几条
                 t1 = min(now, self.t0 + tw_max)
+                if len(self.odom.between(self.t0, t1)) < need and t1 < self.t0 + tw_max - 1e-9:
+                    break          # 还没到上限，接着攒
             win = self._build(self.t0, t1)
             if win is not None:
                 out.append(win)

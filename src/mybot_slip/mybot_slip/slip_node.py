@@ -52,9 +52,9 @@ class SlipNode(Node):
         self.declare_parameter('pause_on_suspect', True)  # 一见到疑似就打住建图
         self.declare_parameter('suspect_hold_s', 1.5)
         self.declare_parameter('max_window_s', 1.5)     # 里程计稀疏时窗口最多拉这么长
-        self.declare_parameter('min_odom_samples', 3)   # 窗口里至少要几条 odom
+        self.declare_parameter('min_odom_samples', 2)   # 窗口里至少要几条 odom
         self.declare_parameter('alternate_after_fail', True)  # 失败后换姿势
-        self.declare_parameter('window_s', 0.3)
+        self.declare_parameter('window_s', 0.5)          # 0.3 s 装不下 8 Hz 的 odom
         self.declare_parameter('min_samples', 2)
         self.declare_parameter('warmup_s', 2.0)
         self.declare_parameter('min_cmd_coverage', 0.70)

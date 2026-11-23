@@ -6,7 +6,7 @@ slip_node:
     slip_debug: false
 
     # ---------- 窗口（windows.py） ----------
-    window_s: 0.30              # 非重叠窗口长度
+    window_s: 0.50              # 非重叠窗口长度（0.18 m/s 下 9 cm 位移，ICP 噪声 1.5 cm）
     warmup_s: 0.30              # 指令切换后多久内不判
     min_cmd_coverage: 0.70      # 指令覆盖门槛
     min_samples: 2
