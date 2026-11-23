@@ -34,6 +34,7 @@ DEFAULTS = {
     'wheel_base_m': 0.175,    # 轮距，用于左右轮反解
     'scan_valid_ratio': 0.60, # 激光置信度门槛（内点比例）
     'turn_limit_rad': 0.30,   # 窗内转角超过它时 P1 只作参考
+    'angular_require_same_sign': True,  # P4 要求编码器与陀螺同向，反向视为传感器问题
 }
 
 TYPES = (
@@ -103,7 +104,8 @@ def evaluate(win, params=None, fit=None):
         else:
             fit = {'ok': False, 'reason': '无扫描', 'quality': 0.0, 'dx': None, 'dy': None,
                    'beams': 0, 'coverage': 0.0, 'residual': None}
-    out['detail']['fit'] = fit
+    detail = out['detail']
+    detail['fit'] = fit
     scan_ok = bool(fit.get('ok')) and fit.get('coverage', 0.0) >= 0.0
     scan_trusted = scan_ok and (fit.get('quality', 0.0) >= 0.55) and \
         (fit.get('coverage', 1.0) >= p['scan_valid_ratio'])
@@ -127,10 +129,17 @@ def evaluate(win, params=None, fit=None):
     if dtheta_imu is not None and abs(dtheta_enc) >= p['omega_min'] * dt:
         s_w = _slip_ratio(dtheta_enc, dtheta_imu, floor=p['omega_min'] * dt)
         ratios['omega'] = s_w
-        if s_w >= p['r_omega']:
+        # 真滑移是「转得比说的少」，两者方向一致；方向相反多半是左右轮接线
+        # 或者陀螺符号反了，那不是滑移，报出来会把人带偏（真机上见过 0.69 vs -0.30）。
+        same_sign = (dtheta_enc * dtheta_imu) >= 0.0
+        detail['angular_same_sign'] = same_sign
+        if s_w >= p['r_omega'] and (same_sign or not p.get('angular_require_same_sign', True)):
             cands.append(('ANGULAR_SLIP', s_w,
                           '编码器转速 %.2frad/s，陀螺只有 %.2frad/s（滑移率 %.2f）'
                           % (dtheta_enc / dt, dtheta_imu / dt, s_w)))
+        elif s_w >= p['r_omega'] and not same_sign:
+            detail['angular_sign_mismatch'] = (round(dtheta_enc / dt, 2),
+                                               round(dtheta_imu / dt, 2))
 
     # ---------- P3 左右轮独立滑移 ----------
     # 前置条件：车体确实往前走了，「单轮期望位移」才有意义。

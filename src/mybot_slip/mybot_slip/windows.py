@@ -19,7 +19,7 @@ DEFAULTS = {
     'warmup_s': 0.30,          # 指令切换后多久内的窗口不算
     'min_cmd_coverage': 0.70,  # 指令覆盖低于此值判窗无效
     'min_samples': 2,          # odom/wheel/imu 每个窗口至少几个样本
-    'max_gap_s': 0.25,         # 相邻样本间隔超过此值认为断流，本窗作废
+    'max_gap_s': 0.60,         # 相邻样本间隔超过此值认为断流，本窗作废（WiFi 抖一下不该废窗）
     'imu_yaw_cov': 0.02,       # 陀螺角速度方差，用作降级判断
 }
 

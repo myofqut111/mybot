@@ -61,6 +61,30 @@ class CriteriaTest(unittest.TestCase):
         self.assertTrue(r['slip'])
         self.assertEqual(r['type'], 'ANGULAR_SLIP')
 
+    def test_angular_sign_mismatch_is_not_slip(self):
+        # 真机上见过：编码器说 +0.69 rad/s，陀螺说 -0.30。方向相反不是滑移，
+        # 是左右轮接线/陀螺符号的问题，报成 ANGULAR_SLIP 会把人带偏。
+        b = 0.175
+        dl = -0.5 * b * 0.15
+        dr = 0.5 * b * 0.15
+        r = criteria.evaluate(win(denc=0.0, dtheta_enc=0.15, dtheta_imu=-0.06,
+                                  cmd=(0.0, 0.5), d_left=dl, d_right=dr),
+                              fit=fit(dx=0.0))
+        self.assertFalse(r['slip'])
+        self.assertFalse(r['detail'].get('angular_same_sign', True))
+        self.assertIn('angular_sign_mismatch', r['detail'])
+
+    def test_angular_sign_check_can_be_disabled(self):
+        b = 0.175
+        dl = -0.5 * b * 0.15
+        dr = 0.5 * b * 0.15
+        r = criteria.evaluate(win(denc=0.0, dtheta_enc=0.15, dtheta_imu=-0.06,
+                                  cmd=(0.0, 0.5), d_left=dl, d_right=dr),
+                              params={'angular_require_same_sign': False},
+                              fit=fit(dx=0.0))
+        self.assertTrue(r['slip'])
+        self.assertEqual(r['type'], 'ANGULAR_SLIP')
+
     def test_stall_detected(self):
         r = criteria.evaluate(win(denc=0.0005, dtheta_enc=0.0, cmd=(0.18, 0.0),
                                   d_left=0.0, d_right=0.0), fit=fit(dx=0.0))
