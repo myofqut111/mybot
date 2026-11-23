@@ -26,7 +26,7 @@ import math
 
 DEFAULTS = {
     'confirm_windows': 2,      # 连续几个窗有滑移才算确认（再叠加 confirm_window_s 防抖）
-    'confirm_window_s': 1.0,   # 且跨时不小于此值（防抖）
+    'confirm_window_s': 0.45,  # 且跨时不小于此值（防抖）；0.5 s 窗下两窗即确认
     'release_windows': 2,      # 连续几个窗干净才回 NORMAL
     'back_min_m': 0.10,
     'back_max_m': 0.30,

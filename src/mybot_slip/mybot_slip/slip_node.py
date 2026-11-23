@@ -556,9 +556,16 @@ class SlipNode(Node):
                 if act.get(k) is not None:
                     act_out[k] = _round(act.get(k))
         elif self.machine.state == 'slip' and verdict.get('slip'):
+            # 别把原因写死成 recovery_enabled=false：真机上恢复是开着的，
+            # 只是还没凑够确认条件（2 窗且跨度够），那句话误导了半天。
+            span = 0.0
+            if self.machine.first_slip_at is not None and win.get('t1') is not None:
+                span = win['t1'] - self.machine.first_slip_at
             act_out = {'kind': None,
-                       'why': '已确认滑移，但恢复动作被禁用'
-                              '（recovery_enabled=false，只报不动）'}
+                       'why': '确认中（%d/%d 窗，跨度 %.2f/%.2f s）'
+                              % (self.machine.slip_count,
+                                 int(self.machine.p['confirm_windows']),
+                                 span, self.machine.p['confirm_window_s'])}
         else:
             act_out = {'kind': None, 'why': '无动作'}
 

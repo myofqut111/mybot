@@ -43,7 +43,7 @@ slip_node:
 
     # ---------- 状态机（state.py） ----------
     confirm_windows: 2
-    confirm_window_s: 1.0
+    confirm_window_s: 0.45         # 0.5 s 窗下两窗即可确认（约 1.0 s 出结果）
     release_windows: 2
     back_min_m: 0.10
     back_max_m: 0.30
