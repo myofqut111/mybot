@@ -48,6 +48,7 @@ class SlipNode(Node):
         self.declare_parameter('action_topic', '/slip/action')
         self.declare_parameter('report_topic', '/slip/report')
         self.declare_parameter('debug_period_s', 5.0)   # 0 = 不打采样日志
+        self.declare_parameter('use_header_stamp', False)  # 默认按接收时间切窗（各话题时钟可能不一致）
         self.declare_parameter('max_stamp_offset', 2.0)   # 时间戳与本机差超过它就当不可信
         self.declare_parameter('pause_on_suspect', True)  # 一见到疑似就打住建图
         self.declare_parameter('suspect_hold_s', 1.5)
@@ -119,6 +120,9 @@ class SlipNode(Node):
         self._warned_low_rate = 0.0
         self._last_verdict = {}
         self._last_action = None
+        self._last_state = 'normal'
+        self.wheel_seen = False
+        self.scan_name = self.p('scan_topic')
         self._last_reason = ''
         self._alive = {'odom': 0, 'wheel': 0, 'imu': 0, 'scan': 0, 'cmd': 0}
         self._alive_prev = {}
@@ -181,11 +185,14 @@ class SlipNode(Node):
         self.create_timer(gp('publish_period_s').value, self._heartbeat)
 
         self.get_logger().info(
-            '打滑检测已启动：窗 %.2fs，%s，判据 P1~P5'
-            % (self.win_params['window_s'],
-               '含左右轮' if True else '无左右轮'))
-
-    # ------------------------------------------------------------------
+            '打滑检测已启动：窗 %.2fs（最长 %.2fs，至少 %d 条 odom），%s，判据 P1~P5，'
+            '恢复=%s，建图暂停=%s，激光=%s'
+            % (self.win_params['window_s'], self.win_params['max_window_s'],
+               self.win_params['min_odom_samples'],
+               '含左右轮' if self.wheel_seen else '无左右轮',
+               '开' if self.recovery_enabled else '关（只报不动）',
+               '开' if bool(self.p('pause_slam_on_slip')) else '关',
+               self.scan_name))
     # 订阅
     # ------------------------------------------------------------------
     def _now(self):
@@ -196,12 +203,16 @@ class SlipNode(Node):
         return float(self.get_parameter('max_stamp_offset').value)
 
     def _stamp(self, msg, fallback):
-        """取消息时间戳；但时间戳明显不可信时退回本机时间。
+        """取消息时间戳。
 
-        板子没做过时钟同步时，`header.stamp` 可能是开机后的小时数（几十秒、
-        甚至 0），拿它去切 0.3 s 窗口，窗口永远对不上"现在"，表现就是
-        `last_reason: odom 样本不足` 一直刷、检测永远不确认。
+        默认**不用** header.stamp，一律用接收时间切窗。原因是各话题的时钟并不
+        一致：`/odom` 来自 ESP32（板子时钟）、`/scan` 来自 VM，两者差几百毫秒
+        甚至 1.9 s 时，2.0 s 的容差判不出"不可信"，窗口却按其中一路的时间轴切，
+        另一路在窗里一条样本都没有——现象就是 `odom 18 Hz` 但 `odom 样本不足（本窗 0 条）`。
+        接收时间的抖动是毫秒级，对 0.5 s 的窗无所谓。
         """
+        if not bool(self.get_parameter("use_header_stamp").value):
+            return fallback
         st = getattr(getattr(msg, 'header', None), 'stamp', None)
         if st is None:
             return fallback
@@ -237,6 +248,7 @@ class SlipNode(Node):
         t = self._stamp(msg, self._now())
         self._alive['wheel'] += 1
         self._last_stamps['wheel'] = t
+        self.wheel_seen = True
         left = right = None
         names = list(msg.name)
         pos = list(msg.position)
@@ -294,9 +306,19 @@ class SlipNode(Node):
             if verdict.get('slip'):
                 self._suspect_until = now + float(self.p('suspect_hold_s'))
             self._last_verdict = verdict
-            if not win.get('valid'):
-                self._last_reason = win.get('reason') or ''
+            # 每个窗都刷新：窗口正常就清空。否则那句话会从启动一直挂到进程退出，
+            # 看上去像"一直在报 0 条 odom"，其实早就不报了。
+            self._last_reason = win.get('reason') or ''
             action = self.machine.step(now, verdict)
+            state_before = self._last_state
+            self._last_state = self.machine.state
+            if state_before != self.machine.state:
+                self.get_logger().info(
+                    '状态 %s → %s（%s）｜窗 %.2f s，滑移率 %s'
+                    % (state_before or 'normal', self.machine.state,
+                       action.get('reason', ''),
+                       win.get('t1', 0.0) - win.get('t0', 0.0),
+                       {k: round(v, 2) for k, v in (verdict.get('ratios') or {}).items()}))
             kind = action.get('action')
             if kind in ('back', 'escape', 'inflate', 'stop', 'probe', 'go'):
                 # 只有真的要让车动（或改参数）才发给执行器
@@ -628,11 +650,15 @@ class SlipNode(Node):
             r = self._rates()
             self.get_logger().info(
                 '采样 odom %.1f wheel %.1f imu %.1f scan %.1f cmd %.1f Hz｜'
-                '状态 %s｜最近原因 %s'
+                '状态 %s｜最近原因 %s｜窗 t0=%.2f now=%.2f 样本 odom=%d cmd=%d 首 %.2f 末 %.2f'
                 % (r.get('odom', 0.0), r.get('wheel', 0.0), r.get('imu', 0.0),
                    r.get('scan', 0.0), r.get('cmd', 0.0),
                    (self._last_verdict or {}).get('type') or '无',
-                   self._last_reason or '无'))
+                   self._last_reason or '无',
+                   self.agg.t0 if self.agg.t0 is not None else -1.0, now,
+                   len(self.agg.odom.items), len(self.agg.cmd.items),
+                   (self.agg.odom.items[0][0] if self.agg.odom.items else -1.0),
+                   (self.agg.odom.items[-1][0] if self.agg.odom.items else -1.0)))
 
     def _rates(self):
         """最近一秒各路输入的实际频率（一路没来就是 0.0）。"""
