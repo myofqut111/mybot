@@ -113,6 +113,9 @@ def generate_launch_description():
             'gate_max_yaw_jitter', default_value='0.05',
             description='Gate: max TF yaw jitter over the stable window (rad)'),
         DeclareLaunchArgument(
+            'controller', default_value='rpp',
+            description='局部控制器：rpp（默认，nav2_params.yaml）或 mppi（nav2_params_mppi.yaml）'),
+        DeclareLaunchArgument(
             'odom_shim_enabled', default_value='false',
             description='[实验性] 用 odom_shim 接管 odom->base_link；默认关，开了必须同时传 ekf_publish_tf:=false'),
         DeclareLaunchArgument(
@@ -146,6 +149,7 @@ def generate_launch_description():
     gate_max_position_jitter = LaunchConfiguration('gate_max_position_jitter')
     gate_max_yaw_jitter = LaunchConfiguration('gate_max_yaw_jitter')
     odom_shim_enabled = LaunchConfiguration('odom_shim_enabled')
+    controller = LaunchConfiguration('controller')
     ekf_publish_tf = LaunchConfiguration('ekf_publish_tf')
     enable_ekf = LaunchConfiguration('enable_ekf')
     localization = LaunchConfiguration('localization')
@@ -172,8 +176,11 @@ def generate_launch_description():
 
     # ------------------------- 参数文件 -------------------------
     pkg_share = FindPackageShare(package='mybot_navigation')
+    # 控制器参数档：controller:=rpp 用 nav2_params.yaml，controller:=mppi 用 nav2_params_mppi.yaml
+    # （两份文件除 FollowPath 段外完全一致，改其它参数时两边都要改）
     nav2_params_file = PythonExpression([
-        "'", pkg_share, "' + '/config/nav2_params.yaml'"])
+        "'", pkg_share, "' + ('/config/nav2_params_mppi.yaml' if '",
+        controller, "' == 'mppi' else '/config/nav2_params.yaml')"])
     ekf_params_file = PythonExpression([
         "'", pkg_share, "' + '/config/ekf.yaml'"])
     # Humble 系统自带行为树（Foxy 那份自定义树是为补 10ms 超时 bug，Humble 已修复）
