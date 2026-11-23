@@ -62,12 +62,18 @@ class ConfirmTest(unittest.TestCase):
 
 class StallTest(unittest.TestCase):
     def test_stall_escapes_without_backing(self):
+        """方案 §3：堵转不后退、不加力，停车上报等人工。"""
         m = st.SlipStateMachine({'confirm_window_s': 0.0})
         m.step(0.0, verdict('STALL'))
         out = m.step(0.3, verdict('STALL'))
-        self.assertEqual(out['action'], 'escape')
+        self.assertEqual(out['action'], 'stop')
+        self.assertTrue(out.get('terminal'))
         self.assertNotIn('distance', out)
         self.assertEqual(m.stats['backs'], 0)
+        # 停车做完就收工等人工，不再重试
+        done = m.on_action_done(2.0, ok=True, moved=0.0)
+        self.assertEqual(done['action'], 'abort')
+        self.assertEqual(m.state, st.FAILED)
 
 
 class RecoveryTest(unittest.TestCase):
@@ -81,14 +87,16 @@ class RecoveryTest(unittest.TestCase):
     def test_action_done_enters_check(self):
         m = self._to_recovery()
         out = m.on_action_done(0.6, ok=True, moved=0.10)
-        self.assertEqual(m.state, st.CHECK)
-        self.assertIsNone(out['action'])
+        # 方案 §3：后退完成后接一次低速重试，而不是直接宣布恢复
+        self.assertEqual(out['action'], 'go')
+        self.assertEqual(m.state, st.RECOVERY)
 
     def test_short_back_escalates(self):
         m = self._to_recovery()
         out = m.on_action_done(0.6, ok=True, moved=0.01)   # 只退到期望的 20%
-        # 退回去了但没退够：不再重复同一种方式，改原地转向
-        self.assertEqual(out['action'], 'escape')
+        # 方案 §7：最多两次，第二次仍是同类型动作（不发明新姿势）
+        self.assertEqual(out['action'], 'back')
+        self.assertIn('第 2 次', out['reason'])
         self.assertEqual(m.state, st.RECOVERY)
 
     def test_repeat_failures_request_inflate(self):
@@ -99,15 +107,22 @@ class RecoveryTest(unittest.TestCase):
             out = m.on_action_done(t, ok=False, moved=0.0)
             actions.append(out['action'])
             t += 0.6
-        self.assertIn('inflate', actions)
+        # 方案 §7：两次恢复都失败 → FAILED 上报
         self.assertIn('abort', actions)
+        self.assertEqual(m.state, st.FAILED)
 
     def test_clean_windows_recover(self):
         m = self._to_recovery()
-        m.on_action_done(0.6, ok=True, moved=0.10)
+        m.on_action_done(0.6, ok=True, moved=0.10)      # 后退完成 → 低速重试
+        m.on_action_done(1.2, ok=True, moved=0.10)      # 重试完成 → CHECK
+        # 方案 §5：CHECK 里先做一次 0.05 m 试探前进
+        probe = m.step(2.0, verdict())
+        self.assertEqual(probe['action'], 'probe')
+        self.assertAlmostEqual(probe['distance'], 0.05)
+        m.on_action_done(2.4, ok=True, moved=0.05)
         actions = []
         for i in range(3):
-            out = m.step(2.0 + i * 0.3, verdict())
+            out = m.step(3.0 + i * 0.3, verdict())
             actions.append(out['action'])
         self.assertIn('recovered', actions)
         self.assertEqual(m.state, st.NORMAL)
@@ -116,8 +131,10 @@ class RecoveryTest(unittest.TestCase):
     def test_slip_during_check_goes_back_to_recovery(self):
         m = self._to_recovery()
         m.on_action_done(0.6, ok=True, moved=0.10)
-        m.step(2.0, verdict())
-        out = m.step(2.3, verdict('LINEAR_SLIP'))
+        m.on_action_done(1.2, ok=True, moved=0.10)
+        m.step(2.0, verdict())          # 发出 probe
+        m.on_action_done(2.4, ok=True, moved=0.05)
+        m.step(3.5, verdict('LINEAR_SLIP'))
         self.assertEqual(m.state, st.SLIP)
 
     def test_max_recovery_aborts(self):
@@ -169,32 +186,36 @@ class NoExecutorTest(unittest.TestCase):
         self.assertEqual(m.state, st.RECOVERY)
 
     def test_failed_back_switches_to_escape(self):
-        """后退顶不动时应该换姿势（转向），而不是反复用同一种方式撞同一个东西。"""
-        m = st.SlipStateMachine({'confirm_window_s': 0.0, 'inflate_try': 9})
+        """方案 §7：第一次失败后用同类型动作再试一次，第二次失败就收工。"""
+        m = st.SlipStateMachine({'confirm_window_s': 0.0})
         m.step(0.0, verdict('LINEAR_SLIP'))
         out = m.step(0.3, verdict('LINEAR_SLIP'))
         self.assertEqual(out['action'], 'back')
         out = m.on_action_done(1.0, ok=False, moved=0.0)
-        self.assertEqual(out['action'], 'escape')
-        self.assertIn('转向', out['reason'])
+        self.assertEqual(out['action'], 'back')
+        self.assertIn('第 2 次', out['reason'])
+        out = m.on_action_done(2.0, ok=False, moved=0.0)
+        self.assertEqual(out['action'], 'abort')
+        self.assertEqual(m.state, st.FAILED)
 
     def test_failed_escape_goes_back_to_back(self):
-        m = st.SlipStateMachine({'confirm_window_s': 0.0, 'inflate_try': 9})
-        m.step(0.0, verdict('LINEAR_SLIP'))
-        m.step(0.3, verdict('LINEAR_SLIP'))
-        m.on_action_done(1.0, ok=False, moved=0.0)      # -> escape
+        """旋转卡死：第二次仍是反向微转，不换成后退。"""
+        m = st.SlipStateMachine({'confirm_window_s': 0.0})
+        m.step(0.0, verdict('ANGULAR_SLIP'))
+        m.step(0.3, verdict('ANGULAR_SLIP'))
         self.assertEqual(m.pending_action['action'], 'escape')
-        out = m.on_action_done(2.0, ok=False, moved=0.0)
-        self.assertEqual(out['action'], 'back')
-
-    def test_stall_keeps_escaping(self):
-        """堵转本来就不该后退：失败后仍然转向。"""
-        m = st.SlipStateMachine({'confirm_window_s': 0.0, 'inflate_try': 9})
-        m.step(0.0, verdict('STALL'))
-        out = m.step(0.3, verdict('STALL'))
-        self.assertEqual(out['action'], 'escape')
         out = m.on_action_done(1.0, ok=False, moved=0.0)
         self.assertEqual(out['action'], 'escape')
+        self.assertLess(out['yaw'], 0)      # 反向微转
+
+    def test_stall_keeps_escaping(self):
+        """堵转：任何情况下都不发后退，只停车上报。"""
+        m = st.SlipStateMachine({'confirm_window_s': 0.0})
+        m.step(0.0, verdict('STALL'))
+        out = m.step(0.3, verdict('STALL'))
+        self.assertEqual(out['action'], 'stop')
+        self.assertEqual(m.stats['backs'], 0)
+        self.assertEqual(m.stats['escapes'], 0)
 
     def test_failed_state_resets_after_cooldown(self):
         m = st.SlipStateMachine({'confirm_window_s': 0.0, 'max_recovery': 2,

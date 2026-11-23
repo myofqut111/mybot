@@ -35,11 +35,17 @@ DEFAULTS = {
     'escape_yaw_rad': 0.9,     # STALL 脱困转多少
     'escape_speed': 1.2,
     'inflate_try': 3,          # 第几次恢复时请求调大膨胀
-    'max_recovery': 4,         # 一个恢复周期内最多试几次
+    'max_recovery': 2,         # 方案 §7：一个恢复周期最多试两次
     'alternate_after_fail': True,   # 失败后换姿势（后退<->转向）；关掉就重复同一种
     'recovery_cooldown_s': 60.0,
     'settle_s': 0.8,           # 动作后静置（等滤波器/里程计稳定）
     'stall_no_back': True,
+    'retry_m': 0.10,           # 单轮打滑：低速重试走多远
+    'retry_speed': 0.08,
+    'micro_yaw_rad': 0.30,     # 旋转卡死：反向微转多少
+    'reverse_adjust_yaw_rate': 0.15,   # 后退时的小幅反向调整（rad/s）
+    'probe_m': 0.05,           # 方案 §5：恢复后试探前进的距离
+    'probe_speed': 0.06,
     'action_timeout_s': 8.0,   # 动作发出去但没人执行/没回调时的超时（防止卡死在 recovery）
 }
 
@@ -73,6 +79,8 @@ class SlipStateMachine(object):
         self.last_action = None
         self.allow_recovery = True       # 执行器不在时由节点置 False：只报不动
         self.failed_at = None
+        self.probed = False              # 本次 CHECK 是否已经做过试探前进
+        self.stall_stops = 0             # 本轮堵转已经"停车上报"过几次
         self.history = []                # [(t, state, type)]，限量
         self.stats = {'recoveries': 0, 'failures': 0, 'escapes': 0, 'backs': 0,
                       'timeouts': 0}
@@ -134,16 +142,36 @@ class SlipStateMachine(object):
 
     def on_action_done(self, now, ok, moved=None):
         """动作结束回调：ok 表示动作本身成功（后退走够了 / 转向完成）。"""
+        if self.state == CHECK:
+            # 试探前进的回执：不管走没走够，接下来都靠"连续干净窗"判定
+            kind = self.last_action or {}
+            self.pending_action = None
+            self.action_deadline = None
+            self.last_action = None
+            self.clean_count = 0
+            self.settle_until = now + self.p['settle_s']
+            if kind.get('action') == 'probe':
+                return {'action': None, 'state': self.state,
+                        'reason': '试探前进完成（实测 %.3f m）' % (moved or 0.0)}
+            return {'action': None, 'state': self.state}
         if self.state != RECOVERY:
             return {'action': None}
         self.pending_action = None
         self.action_deadline = None
 
         kind = self.last_action or {}
+        if kind.get('terminal'):
+            # 方案 §3：堵转这类"只能人工处理"的类型，执行完停车就收工
+            self.recoveries += 1
+            self.state = FAILED
+            self.failed_at = now
+            self.stats['failures'] += 1
+            return {'action': 'abort', 'reason': '%s，等人工复位'
+                    % (kind.get('reason') or '需要人工处理')}
         if not ok:
             # 动作失败：先用「调大膨胀」再试，次数用尽才放弃
             self.recoveries += 1
-            if self.recoveries >= self.p['max_recovery']:
+            if self.recoveries > self.p['max_recovery']:
                 self.state = FAILED
                 self.failed_at = now
                 self.stats['failures'] += 1
@@ -163,7 +191,7 @@ class SlipStateMachine(object):
                 if moved < expect * self.p['back_verify_ratio']:
                     # 退了但没退够：说明还在打滑，升级
                     self.recoveries += 1
-                    if self.recoveries >= self.p['max_recovery']:
+                    if self.recoveries > self.p['max_recovery']:
                         self.state = FAILED
                         self.failed_at = now
                         self.stats['failures'] += 1
@@ -178,7 +206,29 @@ class SlipStateMachine(object):
 
         self.state = CHECK
         self.clean_count = 0
+        self.probed = False
         self.settle_until = now + self.p['settle_s']
+        nxt = kind.get('then')
+        if nxt == 'slow_go':
+            # §3：停车/微转之后总是接一次低速重试（而不是直接宣布好了）
+            act = {
+                'action': 'go',
+                'distance': self.p['retry_m'],
+                'speed': self.p['retry_speed'],
+                'timeout_s': 6.0,
+                'type': self.type,
+                'reason': '低速试探 %.2fm，确认能正常走' % self.p['retry_m'],
+            }
+            self.state = RECOVERY
+            self.pending_action = act
+            self.last_action = act
+            self.action_deadline = now + max(act['timeout_s'], self.p['action_timeout_s'])
+            return dict(act)
+        if nxt == 'replan':
+            # §3：过位移交回 Nav2 重新规划（节点负责取消当前目标）
+            self.state = CHECK
+            return {'action': 'replan', 'state': self.state,
+                    'reason': '交回 Nav2 重新规划'}
         return {'action': None, 'state': self.state}
 
     # ------------------------------------------------------------------
@@ -218,11 +268,28 @@ class SlipStateMachine(object):
         if verdict.get('slip'):
             # 还没好：回到恢复
             self.clean_count = 0
+            self.probed = False
             self.state = SLIP
             self.slip_count = 1
             self.first_slip_at = now
             self.type = verdict.get('type')
             return self._idle('still slipping')
+        if not self.probed:
+            # 方案 §5：先记住当前位姿，再试探前进一小步，看三个源还对不对得上
+            act = {
+                'action': 'probe',
+                'distance': self.p['probe_m'],
+                'speed': self.p['probe_speed'],
+                'timeout_s': 4.0,
+                'type': self.type,
+                'reason': '恢复后试探前进 %.2fm，确认编码器/IMU/激光重新一致'
+                          % self.p['probe_m'],
+            }
+            self.probed = True
+            self.pending_action = act
+            self.last_action = act
+            self.action_deadline = now + max(act['timeout_s'], self.p['action_timeout_s'])
+            return dict(act)
         self.clean_count += 1
         if self.clean_count >= self.p['release_windows']:
             self.state = NORMAL
@@ -230,6 +297,8 @@ class SlipStateMachine(object):
             self.slip_count = 0
             self.recoveries = 0
             self.recovery_started_at = None
+            self.stall_stops = 0
+            self.probed = False
             self.cooldown_until = now + 0.5
             return {'action': 'recovered', 'state': self.state}
         return self._idle('releasing')
@@ -254,46 +323,78 @@ class SlipStateMachine(object):
         return dict(act)
 
     def _alternate(self, last):
-        """上一次动作没成：换个姿势再来。
-
-        后退顶不动（台阶/被抵住）就改成原地转向——先脱离这个方向，
-        而不是反复用同一种方式撞同一个东西；转向还不行就退回去再试。
-        """
+        """方案 §7：最多两次恢复。第二次还是同类型动作——不发明新姿势。"""
         slip_type = (last or {}).get('type') or self.type
-        if slip_type == 'STALL':
-            return self._make_action('STALL')      # 堵转永远不后退
-        if not self.p.get('alternate_after_fail', True):
-            return self._make_action(slip_type)    # 调试用：关掉换姿势
-        if (last or {}).get('action') == 'back':
-            self.stats['escapes'] += 1
-            return {
-                'action': 'escape',
-                'yaw': self.p['escape_yaw_rad'],
-                'speed': self.p['escape_speed'],
-                'timeout_s': 4.0,
-                'type': slip_type,
-                'reason': '后退没解决问题：改原地转向，换个方向再试',
-            }
         act = self._make_action(slip_type)
-        act['reason'] = '转向没解决问题：再退一次看看'
+        act['reason'] = '%s（第 %d 次）' % (act.get('reason') or '',
+                                           self.recoveries)
         return act
 
     def _make_action(self, slip_type, verdict=None):
+        """方案 §3：恢复动作必须按异常类型分流，不能一律后退。"""
         p = self.p
         if slip_type == 'STALL':
-            # 轮子转不动，后退也没用：直接反向脱困
-            self.stats['escapes'] += 1
+            # 堵转：不后退、不加力，停车上报，等待人工处理（终局，不再重试）
+            return {
+                'action': 'stop',
+                'hold_s': 3.0,
+                'timeout_s': 3.5,
+                'terminal': True,
+                'type': slip_type,
+                'reason': '堵转：不后退不加力，停车上报，等人工处理',
+            }
+
+        if slip_type in ('WHEEL_L', 'WHEEL_R'):
+            # 单轮打滑：降速、清除错误里程积分、低速重试
+            return {
+                'action': 'go',
+                'distance': p['retry_m'],
+                'speed': p['retry_speed'],
+                'reset_odom': True,
+                'timeout_s': 6.0,
+                'type': slip_type,
+                'reason': '单轮打滑：降速到 %.2f m/s、清里程积分后低速重试'
+                          % p['retry_speed'],
+            }
+
+        if slip_type == 'LATERAL_SLIP':
+            # 横向侧滑：先停车，降低速度与加速度限制，再重新起步
+            return {
+                'action': 'stop',
+                'hold_s': 1.0,
+                'timeout_s': 1.5,
+                'then': 'slow_go',
+                'type': slip_type,
+                'reason': '横向侧滑：先停车，再按降速限加速重新起步',
+            }
+
+        if slip_type == 'OVERRUN':
+            # 下坡过位移：降速、增强制动并重新规划
+            return {
+                'action': 'stop',
+                'hold_s': 1.0,
+                'timeout_s': 1.5,
+                'then': 'replan',
+                'type': slip_type,
+                'reason': '过位移（下坡/被推）：停车制动后交回 Nav2 重新规划',
+            }
+
+        if slip_type == 'ANGULAR_SLIP':
+            # 旋转卡死：小幅反向微转，再低速试探
             return {
                 'action': 'escape',
-                'yaw': p['escape_yaw_rad'],
+                'yaw': -p['micro_yaw_rad'],
                 'speed': p['escape_speed'],
                 'timeout_s': 4.0,
+                'then': 'slow_go',
                 'type': slip_type,
-                'reason': '轮子被卡住：直接转向脱困，不后退',
+                'reason': '旋转卡死：反向微转 %.2f rad 后低速试探'
+                          % p['micro_yaw_rad'],
             }
-        # 其余类型：按本窗位移决定退多远
+
+        # 直行空转 / 顶住障碍物：确认后方安全后短距离后退，并小幅反向调整
         denc = 0.0
-        if verdict and verdict.get('ratios') is not None:
+        if verdict:
             denc = abs(verdict.get('_denc') or 0.0)
         dist = min(max(p['back_ratio'] * denc, p['back_min_m']), p['back_max_m'])
         self.stats['backs'] += 1
@@ -301,10 +402,12 @@ class SlipStateMachine(object):
             'action': 'back',
             'distance': dist,
             'speed': 0.08,
+            'yaw_rate': p['reverse_adjust_yaw_rate'],
             'timeout_s': 6.0,
+            'then': 'slow_go',
             'type': slip_type,
             'verify': True,
-            'reason': '%s：后退 %.2fm 再判' % (slip_type, dist),
+            'reason': '直行空转：后退 %.2fm 并小幅反向调整' % dist,
         }
 
     def _idle(self, reason):

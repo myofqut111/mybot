@@ -225,9 +225,30 @@ class SlipExecutor(Node):
         if kind == 'back':
             target = float(act.get('distance') or 0.0)
             monitor = TravelMonitor('back', target)
+        elif kind == 'probe':
+            # 方案 §5：恢复后试探前进一小步（默认 0.05 m），走够就算完成
+            target = float(act.get('distance') or 0.05)
+            monitor = TravelMonitor('probe', target)
+        elif kind == 'go':
+            # 方案 §3：单轮打滑/横向侧滑后的"低速重试"
+            target = float(act.get('distance') or 0.10)
+            monitor = TravelMonitor('go', target)
         elif kind == 'escape':
             target = float(act.get('yaw') or 0.9)
             monitor = TravelMonitor('escape', target)
+        elif kind == 'stop':
+            # 方案 §1/§3：不再驱动，保持零速一段时间，然后回执
+            self.action = dict(act)
+            self.monitor = None
+            self.status = RUNNING
+            now = time.monotonic()
+            self.started_at = now
+            self.deadline = now + float(act.get('timeout_s') or 1.0)
+            self._expected_lin = 0.0
+            self._foreign = None
+            self.get_logger().warn('执行动作 stop：停车 %.1f s（%s）'
+                                   % (self.deadline - now, act.get('why') or ''))
+            return
         else:
             self.get_logger().warn('不认识的动作品类：%s' % kind)
             self._report(act, ok=False, moved=0.0, why='不认识的动作品类')
@@ -271,6 +292,15 @@ class SlipExecutor(Node):
                 self._finish(ok=False, why='inflate 超时未收尾，已强制还原')
             return
         now = time.monotonic()
+        if (self.action or {}).get('kind') == 'stop':
+            # 停车就是"持续发零速"：发一帧不够，底盘可能还在按上一条指令走
+            if now >= self.deadline:
+                self._stop()
+                self._finish(ok=True, why='已停车 %.1f s' % (now - self.started_at))
+            elif not self.dry_run:
+                self._stop()
+            return
+
         if self.measure == 'odom' and self.pose is not None:
             self.monitor.update(*self.pose)
 
@@ -305,6 +335,16 @@ class SlipExecutor(Node):
         twist = Twist()
         if act['kind'] == 'back':
             twist.linear.x = -abs(self.back_speed)
+            # 方案 §3：后退的同时小幅反向调整，别退回原路再撞同一个角
+            rate = act.get('yaw_rate')
+            if rate:
+                twist.angular.z = float(rate)
+        elif act['kind'] == 'probe':
+            # 试探前进：慢速小步，走够就用激光验收（恢复到"能正常走"的证据）
+            twist.linear.x = abs(float(act.get('speed') or 0.06))
+        elif act['kind'] == 'go':
+            # 低速重试：按动作给定的速度（默认 retry_speed）
+            twist.linear.x = abs(float(act.get('speed') or 0.08))
         else:
             sign = 1.0 if (act.get('yaw') or 0.0) >= 0 else -1.0
             # 优先往反方向转：卡住时贴着障碍转身更容易脱困

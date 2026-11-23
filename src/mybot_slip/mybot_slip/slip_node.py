@@ -57,10 +57,16 @@ class SlipNode(Node):
         self.declare_parameter('publish_period_s', 1.0)
         self.declare_parameter('recovery_enabled', False)
         # 打滑期间是否暂停建图（slam 模式才有意义；amcl 模式自动忽略）
-        self.declare_parameter('pause_slam_on_slip', True)
+        # 方案 §4：SLAM 和 TF 不能中断，打滑期间只降权不中断 → 默认关
+        self.declare_parameter('pause_slam_on_slip', False)
         self.declare_parameter('slam_pause_service',
                                '/slam_toolbox/pause_new_measurements')
         self.declare_parameter('slam_pause_max_s', 15.0)
+        # 方案 §1/§2：异常时占住速度通道、并取消 Nav2 当前目标
+        self.declare_parameter('slip_cmd_topic', '/cmd_vel_slip')
+        self.declare_parameter('fault_topic', '/slip/fault')
+        self.declare_parameter('cancel_nav_on_fail', True)
+        self.declare_parameter('nav_action', 'navigate_to_pose')
 
         gp = self.get_parameter
         self.win_params = {
@@ -109,6 +115,16 @@ class SlipNode(Node):
         # ---------------- 接口 ----------------
         self.pub = self.create_publisher(String, gp('state_topic').value, 10)
         self.act_pub = self.create_publisher(String, gp('action_topic').value, 10)
+        self.fault_pub = self.create_publisher(String, gp('fault_topic').value, 10)
+        # 异常期间占住速度通道用（走仲裁的 slip 侧，不是直接抢 /cmd_vel）
+        self.slip_cmd_pub = self.create_publisher(
+            Twist, gp('slip_cmd_topic').value, 10)
+        self._last_hold = 0.0
+        self._failed_reported = False
+        self._nav_cancelled = False
+        self._nav_client = None
+        self._nav_action = str(gp('nav_action').value)
+        self._cancel_nav = bool(gp('cancel_nav_on_fail').value)
         self.create_subscription(String, gp('report_topic').value,
                                  self._on_report, 10)
         self.create_subscription(Odometry, gp('odom_topic').value,
@@ -214,22 +230,39 @@ class SlipNode(Node):
                 self._last_reason = win.get('reason') or ''
             action = self.machine.step(now, verdict)
             kind = action.get('action')
-            if kind in ('back', 'escape', 'inflate'):
+            if kind in ('back', 'escape', 'inflate', 'stop', 'probe', 'go'):
                 # 只有真的要让车动（或改参数）才发给执行器
                 self._last_action = action
-                if kind != 'inflate':
-                    self._dispatch(action)
+                self._dispatch(action)
                 self._publish(win, verdict, action)
                 self.get_logger().warn(
                     '打滑恢复动作：%s（%s）'
                     % (kind, action.get('reason', '')))
+            elif kind == 'replan':
+                # §3 过位移：把目标交回 Nav2，让它重新规划
+                self._cancel_nav_goal()
+                self._publish(win, verdict, action)
             elif kind in ('abort', 'reset'):
                 # 这些是状态机内部事件，不是给执行器的活
                 self._publish(win, verdict, action)
                 self.get_logger().warn('状态机：%s（%s）'
                                        % (kind, action.get('reason', '')))
+                if kind == 'abort':
+                    self._on_failed(now, action)
             elif verdict.get('slip'):
                 self._publish(win, verdict, None)
+
+        # 确认前也要先把车摁住：状态机一进 SLIP 就持续发零速，
+        # 让 cmd_mux 一直把控制权留在恢复这一侧（否则 Nav2 还在往前开）。
+        self._hold_still(now)
+
+        # 方案 §2：一进恢复就取消 Nav2 目标，别让它一边判"无进展"一边调恢复行为
+        if self.machine.state in ('slip', 'recovery') and not self._nav_cancelled:
+            self._nav_cancelled = True
+            self._cancel_nav_goal()
+        elif self.machine.state == 'normal':
+            self._nav_cancelled = False
+            self._failed_reported = False
 
         # 非 NORMAL 就摁住建图：打滑时 odom 还在涨，扫描会按错位姿进图。
         # PausePolicy 带最长时长兜底，免得状态机卡住时地图永远不动。
@@ -240,6 +273,57 @@ class SlipNode(Node):
                 '打滑状态已持续 %.0f s，先恢复建图（一直停着更糟）'
                 % self.pause_policy.max_hold_s)
         self.slam_guard.sync(want)
+
+    def _hold_still(self, now):
+        """异常状态且手上没动作时，持续发零速占住速度通道。
+
+        `cmd_mux` 只在"恢复这一侧最近 0.5 s 还有指令"时才让路，所以这里要
+        一直续；真机上手抖发一条零速是不够的。
+        """
+        if self.machine.state == 'normal' or self.machine.pending_action:
+            return
+        if now - self._last_hold < 0.1:
+            return
+        self._last_hold = now
+        tw = Twist()
+        self.slip_cmd_pub.publish(tw)
+
+    def _on_failed(self, now, action):
+        """方案 §7：两次恢复都不行就彻底停车，并把故障发出去等人工。"""
+        if getattr(self, '_failed_reported', False):
+            return
+        self._failed_reported = True
+        self._cancel_nav_goal()
+        payload = {
+            'event': 'recovery_failed',
+            'time': now,
+            'type': self.machine.type,
+            'reason': action.get('reason'),
+            'stats': self.machine.snapshot().get('stats'),
+        }
+        msg = String()
+        msg.data = json.dumps(payload, ensure_ascii=False, default=float)
+        self.fault_pub.publish(msg)
+        self.get_logger().error(
+            '打滑恢复失败，已停车并上报（%s），等人工处理'
+            % action.get('reason'))
+
+    def _cancel_nav_goal(self):
+        """把 Nav2 手上的目标取消掉，免得它一直判"无进展"再调恢复行为。"""
+        if not self._cancel_nav:
+            return
+        try:
+            from nav2_msgs.action import NavigateToPose
+            from rclpy.action import ActionClient
+            if self._nav_client is None:
+                self._nav_client = ActionClient(
+                    self, NavigateToPose, self._nav_action)
+            if not self._nav_client.server_is_ready():
+                self._nav_client.wait_for_server(timeout_sec=0.5)
+            self._nav_client.cancel_goal_async()
+            self.get_logger().warn('已取消 Nav2 当前目标，避免它继续判无进展')
+        except Exception as exc:                      # noqa: BLE001
+            self.get_logger().warn('取消 Nav2 目标失败：%s' % exc)
 
     def _dispatch(self, action):
         """把动作发给执行器；执行器做完会往 report_topic 回一条。"""
