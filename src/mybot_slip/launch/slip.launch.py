@@ -28,6 +28,7 @@ def _nodes(context):
     scan = LaunchConfiguration('scan_topic').perform(context)
     cmd = LaunchConfiguration('cmd_topic').perform(context)
     nav_in = LaunchConfiguration('nav_topic').perform(context)
+    pause_map = _bool(LaunchConfiguration('pause_slam_on_slip').perform(context))
 
     # 开了仲裁：执行器不能直接发 /cmd_vel，改发 /cmd_vel_slip 交给仲裁节点
     executor_cmd = '/cmd_vel_slip' if mux else cmd
@@ -42,6 +43,7 @@ def _nodes(context):
                 'scan_topic': scan,
                 'recovery_enabled': recovery,
                 'alternate_after_fail': alternate,
+                'pause_slam_on_slip': pause_map,
             }],
         ),
         Node(
@@ -93,5 +95,9 @@ def generate_launch_description():
         DeclareLaunchArgument(
             'alternate_after_fail', default_value='true',
             description='恢复失败后是否换姿势（后退↔转向）'),
+        DeclareLaunchArgument(
+            'pause_slam_on_slip', default_value='true',
+            description='打滑期间暂停 slam_toolbox（免得错位姿写进地图）；'
+                        'amcl 模式下自动忽略'),
     ]
     return LaunchDescription(args + [OpaqueFunction(function=_nodes)])

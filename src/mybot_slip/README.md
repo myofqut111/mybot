@@ -1,6 +1,6 @@
 # mybot_slip · 差速轮打滑检测与恢复
 
-按 `差速轮机器人打滑检测与恢复方案_v1.1.docx` 落地。**当前进度：判据/状态机 + ROS 节点 + 动作执行 + 速度仲裁 + 膨胀动作（0.4.1），离线回放 0 误动作，mock 全链 PASS；真机只差一次真打滑复现。**
+按 `差速轮机器人打滑检测与恢复方案_v1.1.docx` 落地。**当前进度：判据/状态机 + ROS 节点 + 动作执行 + 速度仲裁 + 膨胀动作 + 打滑期间暂停建图（0.4.2），离线回放 0 误动作，mock 全链 PASS；真机只差一次真打滑复现。**
 
 ## 这一版有什么
 
@@ -111,6 +111,30 @@ ros2 param get /local_costmap/local_costmap inflation_layer.inflation_radius   #
 1. 节点名是 `/local_costmap/local_costmap`（中间有下划线），按 `%s%scostmap` 拼会拼错；
 2. 别在定时器回调里 `spin_until_future_complete` 等参数回应——executor 正忙着跑这个
    回调，回应永远等不到。要 `call_async` + `add_done_callback`。
+
+## 打滑期间暂停建图（0.4.2）
+
+打滑时轮子在转、车没动，`/odom` 照样在涨。`slam_toolbox` 会把这几秒的扫描按
+"车走了"的位姿塞进地图；等它事后靠扫描匹配把位姿拉回来，那几帧按错误位姿画上去
+的墙已经留在图上了——用户看到的就是**"两张图拼在一起"**。
+
+所以判据成立时先把建图摁住，状态回 `NORMAL` 再放开：
+
+```bash
+# 默认就开（pause_slam_on_slip:=true）；amcl 模式没有这个服务，会自动忽略
+ros2 launch fishbot_slip slip.launch.py scan_topic:=/scan recovery:=true with_mux:=true
+```
+
+- 服务：`/slam_toolbox/pause_new_measurements`（`slam_toolbox/srv/Pause`）。
+- **它是 toggle**：调一次暂停、再调一次恢复；返回里的 `bool status` **恒为 true**，
+  没有信息量。所以节点自己记账（只在对不上时才调一次），不能"看返回状态补一次"。
+- 兜底：打滑状态持续超过 `slam_pause_max_s`（默认 15 s）就强制恢复建图——状态机
+  万一卡在滑移里，地图不该一直不动。
+- `/slip/state` 里多了 `map_paused` 字段，方便确认这一刻到底有没有在暂停建图。
+
+实测（slam_toolbox Humble 1.1.x）：调用后 6~10 s 内 `/map` 占用格数一个都不变，
+再调一次又开始长；`slam_toolbox` 日志分别打出
+`Toggled to pause taking new measurements.` / `Toggled to actively taking new measurements.`。
 
 ## 还没做（下一步）
 

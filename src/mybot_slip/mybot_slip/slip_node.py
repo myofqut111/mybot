@@ -27,6 +27,7 @@ from std_msgs.msg import String
 
 from . import criteria as criteria_mod
 from . import ranges as ranges_mod
+from . import slam_guard as slam_guard_mod
 from . import state as state_mod
 from . import windows as windows_mod
 
@@ -55,6 +56,11 @@ class SlipNode(Node):
         self.declare_parameter('min_wheel_hz', 8.0)
         self.declare_parameter('publish_period_s', 1.0)
         self.declare_parameter('recovery_enabled', False)
+        # 打滑期间是否暂停建图（slam 模式才有意义；amcl 模式自动忽略）
+        self.declare_parameter('pause_slam_on_slip', True)
+        self.declare_parameter('slam_pause_service',
+                               '/slam_toolbox/pause_new_measurements')
+        self.declare_parameter('slam_pause_max_s', 15.0)
 
         gp = self.get_parameter
         self.win_params = {
@@ -73,6 +79,14 @@ class SlipNode(Node):
         # 没有执行器时不要进 RECOVERY：否则动作没人接，状态卡在那儿
         self.machine.allow_recovery = self.recovery_enabled
         self.ranges_params = dict(ranges_mod.DEFAULTS)
+
+        # 打滑期间摁住建图：打滑时 odom 在涨，扫描会按错位姿进图，事后拉不回来
+        self.slam_guard = slam_guard_mod.SlamPauseGuard(
+            self,
+            service_name=self.get_parameter('slam_pause_service').value,
+            enabled=bool(self.get_parameter('pause_slam_on_slip').value))
+        self.pause_policy = slam_guard_mod.PausePolicy(
+            max_hold_s=float(self.get_parameter('slam_pause_max_s').value))
 
         # ---------------- 状态 ----------------
         self._have_wheel = False
@@ -217,6 +231,16 @@ class SlipNode(Node):
             elif verdict.get('slip'):
                 self._publish(win, verdict, None)
 
+        # 非 NORMAL 就摁住建图：打滑时 odom 还在涨，扫描会按错位姿进图。
+        # PausePolicy 带最长时长兜底，免得状态机卡住时地图永远不动。
+        want = self.pause_policy.want_pause(
+            self.machine.state != 'normal', now)
+        if self.pause_policy.take_capped_event():
+            self.get_logger().warn(
+                '打滑状态已持续 %.0f s，先恢复建图（一直停着更糟）'
+                % self.pause_policy.max_hold_s)
+        self.slam_guard.sync(want)
+
     def _dispatch(self, action):
         """把动作发给执行器；执行器做完会往 report_topic 回一条。"""
         self._action_id += 1
@@ -316,6 +340,7 @@ class SlipNode(Node):
                 'rates': self._rates(),
             },
             'last_reason': self._last_reason,
+            'map_paused': self.slam_guard.paused,
         }
         msg = String()
         msg.data = json.dumps(payload, ensure_ascii=False)
