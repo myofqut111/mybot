@@ -87,6 +87,35 @@ def _nearest(grid, inv, cell, px, py, max_d):
     return best, math.sqrt(best_d2) if best else None
 
 
+def scan_motion(prev, cur, params=None):
+    """两帧激光之间「世界到底动没动」——不做配准，直接量最近点距离中位数。
+
+    这是给 ICP 打的补丁。ICP 在长走廊/重复结构里会陷进局部极小：
+    车明明走了 6.6 cm，它却算出 `dx≈0`，看着跟打滑一模一样。两者的区别是：
+
+    * 真打滑：车没动，两帧扫描来自同一视角 → `scan_motion` ≈ 0
+    * ICP 失败：车真动了 6.6 cm → `scan_motion` ≈ 6.6 cm
+
+    所以判据层再加一条：`dx≈0` 但 `scan_motion` 明显不为 0 时，不许判滑移。
+    """
+    p = dict(DEFAULTS)
+    if params:
+        p.update(params)
+    src = _points(cur)
+    dst = _points(prev)
+    if len(src) < p['min_points'] or len(dst) < p['min_points']:
+        return None
+    grid, inv = _build_grid(dst, p['cell_m'])
+    ds = []
+    for px, py in src:
+        _q, d = _nearest(grid, inv, p['cell_m'], px, py, p['max_corr_dist'])
+        ds.append(d if d is not None else p['max_corr_dist'])
+    if not ds:
+        return None
+    ds.sort()
+    return ds[len(ds) // 2]
+
+
 def fit_translation(prev, cur, params=None):
     """估计 prev -> cur 的刚体变换（cur 相对 prev，单位米/弧度）。
 
@@ -154,7 +183,7 @@ def fit_translation(prev, cur, params=None):
     return {
         'dx': dx, 'dy': dy, 'dtheta': dth, 'beams': inliers,
         'coverage': coverage, 'residual': residual, 'quality': quality,
-        'ok': ok, 'reason': reason,
+        'ok': ok, 'reason': reason, 'motion': scan_motion(prev, cur, p),
     }
 
 

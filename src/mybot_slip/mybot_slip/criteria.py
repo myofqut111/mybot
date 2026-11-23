@@ -28,6 +28,7 @@ DEFAULTS = {
     'thresh_over_m': 0.03,    # 过位移（下坡滑行）
     'min_shortfall_m': 0.03,  # P1/P2 的绝对差下限（ICP 噪声 ~1.5 cm，取 2σ）
     'stall_eps_m': 0.005,     # 堵转：几乎没有位移
+    'max_scan_motion_m': 0.045,  # 两帧扫描「没动」的上限（真打滑应 ≈0；ICP 失败会≈真实位移）
     'stall_eps_omega': 0.05,  # 堵转：几乎没有转角 rad/s
     'stall_cmd_linear': 0.05,
     'stall_cmd_angular': 0.15,
@@ -162,17 +163,23 @@ def evaluate(win, params=None, fit=None):
             cands.append(('WHEEL_R', s_r, '右轮走了 %.3fm，车体只走了 %.3fm' % (win['d_right'], exp_r)))
 
     # ---------- P1 直行滑移：轮子说走了，激光说没走 ----------
+    # 但 ICP 在长走廊会陷局部极小（车走了 6.6 cm 却算出 dx≈0），单看 dx 会把
+    # 正常行驶判成打滑。区分办法：真打滑时两帧扫描来自同一视角（motion≈0），
+    # ICP 失败时扫描其实变了（motion≈真实位移）。motion 明显不为 0 就不判。
+    motion = fit.get('motion')
+    scan_static = (motion is None) or (motion <= p['max_scan_motion_m'])
     if scan_trusted and not turning and abs(denc) > effective_threshold(denc, p):
         s = _slip_ratio(denc, fit['dx'], floor=v_floor)
         ratios['linear'] = s
         shortfall = denc - (fit['dx'] or 0.0)
         # 低速度下 ICP 的绝对误差和位移同量级，差得不够多就不判
-        if s >= p['r_high'] and shortfall >= p['min_shortfall_m']:
+        if s >= p['r_high'] and shortfall >= p['min_shortfall_m'] and scan_static:
             cands.append(('LINEAR_SLIP', s,
                           '编码器 %.3fm，激光只有 %.3fm（滑移率 %.2f，激光可信度 %.2f）'
                           % (denc, fit['dx'], s, fit['quality'])))
         # ---------- P2 过位移 / 侧滑 ----------
-        if s <= -p['r_high'] and -shortfall >= max(p['min_shortfall_m'], p['thresh_over_m']):
+        if (s <= -p['r_high'] and -shortfall >= max(p['min_shortfall_m'], p['thresh_over_m'])
+                and scan_static):
             cands.append(('OVERRUN', -s, '车体走了 %.3fm，轮子只记了 %.3fm（下坡/被推）'
                           % (fit['dx'], denc)))
         if abs(cmd_w) < 0.10 and abs(fit.get('dy') or 0.0) > p['thresh_lat_m']:

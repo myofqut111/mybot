@@ -142,6 +142,10 @@ def main():
                 if win.get('scan_ok'):
                     fit = ranges.fit_translation(win['scan_prev'], win['scan_cur'])
                 v = criteria.evaluate(win, None, fit)
+                if os.environ.get('SHOW_MOTION') and v.get('slip'):
+                    print('  t=%.1f motion=%s dx=%s denc=%s q=%s' % (
+                        win['t1'], (fit or {}).get('motion'), (fit or {}).get('dx'),
+                        win.get('denc'), (fit or {}).get('quality')))
                 act = machine.step(win['t1'], v)
                 if act.get('action'):
                     confirmed.append((win['t1'], v['type'], act['action']))
