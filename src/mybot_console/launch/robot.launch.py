@@ -69,6 +69,7 @@ def generate_launch_description():
                 'enable_patrol': LaunchConfiguration('patrol').perform(context),
                 'localization': LaunchConfiguration('localization').perform(context),
                 'rviz': LaunchConfiguration('rviz').perform(context),
+                'controller': LaunchConfiguration('controller').perform(context),
                 'enable_localization_gate':
                     LaunchConfiguration('localization_gate').perform(context)}
         if want_slip in ('1', 'true', 'yes', 'on'):
@@ -128,6 +129,8 @@ def generate_launch_description():
                               description='打滑检测用的激光话题'),
         DeclareLaunchArgument('localization_gate', default_value='true',
                               description='是否等 AMCL 稳定后再激活 Nav2（无真机 mock 时传 false）'),
+        DeclareLaunchArgument('controller', default_value='rpp',
+                              description='局部控制器：rpp（默认）或 mppi'),
         DeclareLaunchArgument('http_port', default_value='8080',
                               description='控制台端口'),
         DeclareLaunchArgument('host', default_value='0.0.0.0',
