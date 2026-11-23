@@ -61,8 +61,26 @@ class WindowTest(unittest.TestCase):
             agg.add_odom(t, 0.2, 0.0)
         for t in (0.0, 0.3, 0.6):
             agg.add_cmd(t, 0.2, 0.0)
+        # 0.60 s 时本窗只有 2 条 odom（少于 min_odom_samples），窗口先不切，
+        # 一直等到 max_window_s 再切，那次一定判无效
         wins = agg.poll(0.6)
+        self.assertEqual(wins, [])
+        wins = agg.poll(2.0)
         self.assertTrue(any(not w['valid'] for w in wins))
+
+    def test_window_extends_when_odom_is_sparse(self):
+        # 6 Hz 的里程计：0.3 s 里只落得下 2 条，窗口必须撑长才有得判
+        agg = windows.WindowAggregator({'warmup_s': 0.0})
+        t = 0.0
+        while t <= 1.6:
+            agg.add_odom(t, 0.2, 0.0)
+            agg.add_cmd(t, 0.2, 0.0)
+            t += 0.1667
+        wins = agg.poll(1.6)
+        self.assertTrue(wins, '里程计稀疏时窗口不该一直空着')
+        self.assertGreater(wins[0]['t1'] - wins[0]['t0'], 0.30)
+        self.assertTrue(wins[0]['valid'])
+        self.assertGreaterEqual(wins[0].get('odom_n', 0), 3)
 
     def test_warmup_suppresses_window(self):
         agg = windows.WindowAggregator({'warmup_s': 0.4})

@@ -14,6 +14,8 @@ import math
 
 DEFAULTS = {
     'window_s': 0.30,          # 窗口长度
+    'max_window_s': 1.50,      # 里程计太稀疏时窗口最多拉长到这里
+    'min_odom_samples': 3,     # 窗口里至少这么多条 odom 才算够用
     'warmup_s': 0.30,          # 指令切换后多久内的窗口不算
     'min_cmd_coverage': 0.70,  # 指令覆盖低于此值判窗无效
     'min_samples': 2,          # odom/wheel/imu 每个窗口至少几个样本
@@ -159,14 +161,28 @@ class WindowAggregator(object):
     # ---------- 输出 ----------
 
     def poll(self, now):
-        """把已经攒满的窗口吐出来（可能一次吐多个）。"""
+        """把已经攒满的窗口吐出来（可能一次吐多个）。
+
+        里程计只有 8~9 Hz 时，0.3 s 里只落得下 2 条样本（还常常只剩 1 条），
+        固定按 0.3 s 切就会一路「odom 样本不足」。所以窗口是**能长能短**的：
+        到了 0.3 s 但样本不够就继续攒，最多攒到 `max_window_s`。
+        窗口拉长对判据其实更好——同样 50% 滑移，位移更大、激光看得更清。
+        """
         if self.t0 is None:
             return []
         out = []
         tw = self.p['window_s']
+        tw_max = max(tw, float(self.p.get('max_window_s', tw)))
+        need = int(self.p.get('min_odom_samples', self.p['min_samples']))
         while now - self.t0 >= tw - 1e-9:
-            t0, t1 = self.t0, self.t0 + tw
-            win = self._build(t0, t1)
+            t1 = self.t0 + tw
+            od = self.odom.between(self.t0, t1)
+            if len(od) < need:
+                # 还没到上限就再等等；到上限了就按上限切，让 _build 报真实原因
+                if now - self.t0 < tw_max - 1e-9:
+                    break
+                t1 = min(now, self.t0 + tw_max)
+            win = self._build(self.t0, t1)
             if win is not None:
                 out.append(win)
             self.t0 = t1
@@ -193,7 +209,8 @@ class WindowAggregator(object):
 
         # --- 里程计（编码器） ---
         od = self.odom.between(t0, t1)
-        if len(od) >= self.p['min_samples']:
+        win['odom_n'] = len(od)
+        if len(od) >= int(self.p.get('min_odom_samples', self.p['min_samples'])):
             gaps = [b[0] - a[0] for a, b in zip(od, od[1:])]
             if gaps and max(gaps) > self.p['max_gap_s']:
                 win['valid'] = False
@@ -207,7 +224,7 @@ class WindowAggregator(object):
             win['odom_ok'] = False
             if win['valid']:
                 win['valid'] = False
-                win['reason'] = 'odom 样本不足'
+                win['reason'] = 'odom 样本不足（本窗 %d 条）' % len(od)
 
         # --- 左右轮（累计米，差分） ---
         wh = self.wheel.between(t0, t1)
