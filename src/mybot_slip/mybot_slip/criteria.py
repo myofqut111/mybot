@@ -26,7 +26,13 @@ DEFAULTS = {
     'thresh_scale': 0.5,      # 自适应系数：thresh_eff = min(abs, scale*denc)
     'thresh_lat_m': 0.03,     # 横向滑移
     'thresh_over_m': 0.05,    # 过位移（下坡滑行）
-    'min_shortfall_m': 0.03,  # P1/P2 的绝对差下限（ICP 噪声 ~1.5 cm，取 2σ）
+    # P1/P2 的绝对差下限。方案 §12 只有 thresh_dist + α 的自适应门槛
+    # （effective_threshold = min(0.05, 0.5*denc)），没有额外的固定下限。
+    # 原来写 0.03 是配合"点对点 ICP 噪声 1.5 cm"的经验值；换成点对线后
+    # dx 误差已到毫米级（真包 1031 窗 dx 中位 0.7 mm），再卡 3 cm 会让
+    # "限速到 0.10 m/s 时一个窗只有 4 cm"的候选窗永远不成立 → 候选长不到
+    # 两个窗 → S1 无限震荡。默认跟方案走，留参数供需要时收紧。
+    'min_shortfall_m': 0.0,
     'stall_eps_m': 0.005,     # 堵转：几乎没有位移
     'max_scan_motion_m': 0.045,  # 两帧扫描「没动」的上限（真打滑应 ≈0；ICP 失败会≈真实位移）
     'stall_eps_omega': 0.05,  # 堵转：几乎没有转角 rad/s
@@ -47,6 +53,15 @@ DEFAULTS = {
 TYPES = (
     'STALL', 'WHEEL_L', 'WHEEL_R', 'ANGULAR_SLIP',
     'LINEAR_SLIP', 'LATERAL_SLIP', 'OVERRUN', 'SENSOR_CONFLICT',
+)
+
+# 出现多个候选时的优先次序：越靠前越具体、越紧急。
+# SENSOR_CONFLICT 提到最前面——《补充说明》§3 里它是"两路观测量级冲突、
+# 定位不可判定"的证据，宁可进保守模式（S3/S4）也不能当成一次普通打滑去恢复；
+# 否则"让转不转 + 编码器还有 2 cm 位移"会被 P1 抢走，判成 LINEAR_SLIP。
+TYPES = (
+    'SENSOR_CONFLICT', 'STALL', 'WHEEL_L', 'WHEEL_R', 'ANGULAR_SLIP',
+    'LINEAR_SLIP', 'LATERAL_SLIP', 'OVERRUN',
 )
 
 # 出现多个候选时的优先次序：越靠前越具体、越紧急
@@ -170,7 +185,7 @@ def evaluate(win, params=None, fit=None):
     # dx≈0 时 exp_l = dx - half ≈ 0，而 d_left > 0，会算出 -1.0 这种假滑移率；
     # 那其实是「整体没动」，归 P1 管，这里不该参与（否则真机上满屏 -1.0）。
     dx = fit.get('dx') or 0.0
-    p3_allowed = dx >= p['min_shortfall_m']
+    p3_allowed = abs(dx) >= p['d_floor_m']
     if win.get('wheel_ok') and dtheta_imu is not None and scan_trusted \
             and not turning and p3_allowed:
         half = 0.5 * p['wheel_base_m'] * dtheta_imu

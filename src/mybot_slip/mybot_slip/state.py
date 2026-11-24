@@ -344,6 +344,15 @@ class SlipStateMachine(object):
         self.last_action = act
         return dict(act)
 
+    def deny(self, now, reason):
+        """《补充说明》§5.2：准入不通过 → 直接 FAILED，不再重试、不自动恢复。"""
+        self.state = FAILED
+        self.failed_at = now
+        self.pending_action = None
+        self.action_deadline = None
+        self.stats['failures'] += 1
+        return {'action': 'abort', 'reason': reason}
+
     def _alternate(self, last):
         """方案 §7：最多两次恢复。第二次还是同类型动作——不发明新姿势。"""
         slip_type = (last or {}).get('type') or self.type

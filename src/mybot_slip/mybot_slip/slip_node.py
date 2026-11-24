@@ -91,6 +91,13 @@ class SlipNode(Node):
         # 方案 §12：IMU 超时 100 ms / 车身倾斜 10°
         self.declare_parameter('imu_timeout_s', 0.10)
         self.declare_parameter('max_tilt_deg', 10.0)
+        # 《补充说明》§3/§4：可信运动状态 + 建图门控 + 指标
+        self.declare_parameter('trusted_state', True)
+        self.declare_parameter('map_gate', True)
+        self.declare_parameter('map_scan_topic', '/scan_safe')
+        self.declare_parameter('metrics_topic', '/slip/metrics')
+        self.declare_parameter('suspect_speed_cap', 0.10)
+        self.declare_parameter('suspect_yaw_cap', 0.50)
 
         gp = self.get_parameter
         self.win_params = {
@@ -111,6 +118,29 @@ class SlipNode(Node):
         # 没有执行器时不要进 RECOVERY：否则动作没人接，状态卡在那儿
         self.machine.allow_recovery = self.recovery_enabled
         self.ranges_params = dict(ranges_mod.DEFAULTS)
+
+        # 《补充说明》§3：可信运动状态与打滑状态机并行维护
+        from . import trusted as trusted_mod
+        self.trusted_mod = trusted_mod
+        self.trusted = trusted_mod.TrustedState({
+            'suspect_speed_cap': float(gp('suspect_speed_cap').value),
+            'suspect_yaw_cap': float(gp('suspect_yaw_cap').value),
+        })
+        self._map_allowed = True
+        # §9 六项指标（只记在节点里，不上页面）
+        self.metrics = {
+            'pose_pollution_m': 0.0,   # 确认前定位污染量（疑似窗里被当成位移的编码器距离）
+            'windows': 0,
+            'windows_blocked': 0,      # 被门控判为不可用的窗
+            'admission_try': 0,
+            'admission_reject': 0,
+            's4_safe_stops': 0,
+            'nav_blocked_s': 0.0,
+            'map_frames_dropped': 0,   # 因不可信而被挡在建图之外的帧
+        }
+        self._last_nav_blocked_at = None
+        self._last_trusted = 'S0'
+        self._s4_reported = False
 
         # 方案 §10.1 明确要求「而不是停止 SLAM 节点或切断激光输入」，
         # 所以不再构造 slam_guard / PausePolicy；保护地图靠 odom_guard 放协方差。
@@ -136,6 +166,7 @@ class SlipNode(Node):
         self._warned_low_rate = 0.0
         self._last_verdict = {}
         self._last_action = None
+        self._pending_dispatch = None
         self._last_state = 'normal'
         self.wheel_seen = False
         self.scan_name = self.p('scan_topic')
@@ -181,6 +212,15 @@ class SlipNode(Node):
                                  self._on_cmd, QoSProfile(depth=10))
         self.create_subscription(Odometry, gp('pose_topic').value,
                                  self._on_pose, QoSProfile(depth=20))
+
+        # 《补充说明》§3：地图门控——只有可信状态允许时才把激光转给 slam
+        self.map_scan_pub = None
+        self.map_gate = bool(gp('map_gate').value)
+        if self.map_gate:
+            self.map_scan_pub = self.create_publisher(
+                LaserScan, gp('map_scan_topic').value, qos_profile_sensor_data)
+        self.metrics_pub = self.create_publisher(
+            String, gp('metrics_topic').value, QoSProfile(depth=10))
 
         # 方案 §4：协方差守门（默认开；amcl 环境下同样有效）
         self.odom_guard = None
@@ -314,6 +354,12 @@ class SlipNode(Node):
         if not msg.ranges:
             return
         self.agg.add_scan(t, msg)
+        # §3：S1/S3/S4 暂停持久地图写入（原样给 slam 的那一路掐掉）
+        if self.map_scan_pub is not None:
+            if self._map_allowed:
+                self.map_scan_pub.publish(msg)
+            else:
+                self.metrics['map_frames_dropped'] += 1
 
     def _on_cmd(self, msg):
         t = self._now()
@@ -326,6 +372,16 @@ class SlipNode(Node):
     def _tick(self):
         now = self._now()
         verdict = None
+        # 上一轮动作的后续（第二次后退 / 换姿势 / inflate）在这里下发：
+        # 状态机在 recovery 里不会再返回动作，只能靠这个接。
+        if self._pending_dispatch is not None:
+            act = self._pending_dispatch
+            self._pending_dispatch = None
+            self._last_action = act
+            self._dispatch(act)
+            self.get_logger().warn(
+                '打滑恢复动作：%s（%s）'
+                % (act.get('action'), act.get('reason') or ''))
         try:
             wins = self.agg.poll(now)
         except Exception as exc:                      # noqa: BLE001
@@ -347,7 +403,49 @@ class SlipNode(Node):
             action = self.machine.step(now, verdict)
             state_before = self._last_state
             self._last_state = self.machine.state
-            if state_before != self.machine.state:
+
+            # 《补充说明》§3：每窗更新一次可信运动状态
+            self.metrics['windows'] += 1
+            if not win.get('valid'):
+                self.metrics['windows_blocked'] += 1
+            confirmed_now = self.machine.slip_count >= int(
+                self.machine.p.get('confirm_windows', 2))
+            tstate, treason = self.trusted.update(
+                verdict,
+                machine_state=self.machine.state,
+                confirmed=confirmed_now,
+                scan_ok=self._scan_fresh(now),
+                imu_ok=not win.get('imu_stale'),
+                known_reason=action.get('reason', ''))
+            if tstate in (self.trusted_mod.S1, self.trusted_mod.S3) and verdict.get('slip'):
+                # §9「确认前定位污染量」：疑似窗里被当成位移的编码器距离
+                self.metrics['pose_pollution_m'] += float(win.get('denc') or 0.0)
+            if tstate != getattr(self, '_last_trusted', None):
+                self.get_logger().info('可信状态 %s → %s（%s）'
+                                       % (getattr(self, '_last_trusted', 'S0') or 'S0',
+                                          tstate, treason))
+                self._last_trusted = tstate
+            self._map_allowed = tstate in self.trusted_mod.MAP_ALLOWED
+
+            # §5.2：要动之前先过准入；不过就停车上报，不再试第二次
+            kind = action.get('action')
+            if kind in ('back', 'escape', 'go', 'probe'):
+                self.metrics['admission_try'] += 1
+                ok, why = self.trusted_mod.check_admission(
+                    verdict, state=tstate,
+                    scan_ok=self._scan_fresh(now),
+                    imu_ok=not win.get('imu_stale'),
+                    tilt_deg=float(self._imu_tilt or 0.0),
+                    consecutive_fail=self.machine.recoveries - 1,
+                    max_fail=int(self.machine.p['max_recovery']),
+                    max_tilt_deg=float(self.p('max_tilt_deg')))
+                if not ok:
+                    self.metrics['admission_reject'] += 1
+                    self.get_logger().warn('恢复准入不通过：%s' % why)
+                    action = self.machine.deny(now, '恢复准入不通过：%s' % why)
+                    kind = 'abort'
+
+            if state_before != self.machine.state and kind != 'abort':
                 reasons = (verdict.get('reasons') or [])
                 self.get_logger().info(
                     '状态 %s → %s（%s）｜窗 %.2f s，滑移率 %s%s'
@@ -430,8 +528,46 @@ class SlipNode(Node):
         elif self.machine.state == 'normal':
             self._conservative_reported = False
 
+        # §3 S4：不可判定 —— 安全停车、取消任务、上报，且禁止自动恢复
+        if self.trusted.state == self.trusted_mod.S4:
+            self._hold_still(now, force=True)
+            if not self._s4_reported:
+                self._s4_reported = True
+                self.metrics['s4_safe_stops'] += 1
+                self._cancel_nav_goal()
+                self._on_failed(now, {'reason': 'S4 不可判定（%s）：安全停车、'
+                                                '取消当前任务并上报，禁止自动恢复'
+                                                % self.trusted.reason})
+        elif self.trusted.state in (self.trusted_mod.S0, self.trusted_mod.S1):
+            self._s4_reported = False
+
     def p(self, name):
         return self.get_parameter(name).value
+
+    def _scan_fresh(self, now):
+        """独立位移观测是否还在（《补充说明》§5.1）。"""
+        at = self._last_stamps.get('scan')
+        return at is not None and (now - at) <= 1.0
+
+    def _publish_metrics(self, now):
+        """§9：单独一档指标，方便验收脚本直接读，不用解析状态串。"""
+        state = self.trusted.state
+        if not self.trusted.nav_allowed:
+            if self._last_nav_blocked_at is None:
+                self._last_nav_blocked_at = now
+        else:
+            if self._last_nav_blocked_at is not None:
+                self.metrics['nav_blocked_s'] += now - self._last_nav_blocked_at
+                self._last_nav_blocked_at = None
+        msg = String()
+        msg.data = json.dumps({
+            'stamp': round(now, 3),
+            'trusted_state': state,
+            'trusted_reason': self.trusted.reason,
+            **{k: (round(v, 3) if isinstance(v, float) else v)
+               for k, v in self.metrics.items()},
+        }, ensure_ascii=False)
+        self.metrics_pub.publish(msg)
 
     def _check_pose_jump(self, now):
         """方案 §6：恢复前后位姿差过大 → 清局部代价地图 + 触发重定位。
@@ -669,6 +805,14 @@ class SlipNode(Node):
             self.machine.last_action = 'escape'
             return
         self.machine.on_action_done(now, ok, moved=moved)
+        # on_action_done 可能已经排了下一个动作（第二次后退 / 换姿势 / inflate），
+        # 但状态机在 recovery 里只会回 "waiting action"——这里接住它，
+        # 交给下一次 _tick 真正下发（否则会一直挂着，直到超时）。
+        nxt = self.machine.pending_action
+        if (isinstance(nxt, dict)
+                and nxt.get('action') in ('back', 'escape', 'inflate',
+                                          'stop', 'probe', 'go')):
+            self._pending_dispatch = dict(nxt)
 
     def _evaluate(self, win):
         fit = None
@@ -734,6 +878,11 @@ class SlipNode(Node):
         payload = {
             'stamp': round(win.get('t1', 0.0), 3),
             'state': snap['state'],
+            # 《补充说明》§3：可信运动状态（S0~S4）与打滑状态并行
+            'trusted_state': self.trusted.state,
+            'trusted_reason': self.trusted.reason,
+            'nav_allowed': self.trusted.nav_allowed,
+            'map_allowed': self.trusted.map_allowed,
             'slip': bool(verdict.get('slip')),
             'type': verdict.get('type'),
             'primary_type': snap['type'],
@@ -760,6 +909,17 @@ class SlipNode(Node):
             # 方案 §10.1：建图不再暂停，这里保留字段给旧页面兼容，恒为 False
             'map_paused': False,
             'progress_frozen': bool(self._pc_frozen),
+            # 《补充说明》§9：六项指标随状态一起发
+            'metrics': {
+                'pose_pollution_m': round(self.metrics['pose_pollution_m'], 3),
+                'windows': self.metrics['windows'],
+                'windows_blocked': self.metrics['windows_blocked'],
+                'admission_try': self.metrics['admission_try'],
+                'admission_reject': self.metrics['admission_reject'],
+                's4_safe_stops': self.metrics['s4_safe_stops'],
+                'nav_blocked_s': round(self.metrics['nav_blocked_s'], 1),
+                'map_frames_dropped': self.metrics['map_frames_dropped'],
+            },
         }
         msg = String()
         msg.data = json.dumps(payload, ensure_ascii=False)
@@ -783,6 +943,7 @@ class SlipNode(Node):
             'detail': {}, 'usable': False,
         }
         self._publish({'t1': now}, verdict, None)
+        self._publish_metrics(now)
 
         # 每 debug_period_s 往日志里打一行：分不清"没滑"和"没数据"时，
         # 这行是唯一能让人一眼看出来的证据
@@ -808,7 +969,7 @@ class SlipNode(Node):
                         '协方差放大和冻结都不会生效！'
                         '请用 robot.launch.py（with_slip:=true）启动，'
                         '或手动传 navigation 的 ekf_odom_topic:=%s'
-                        % (gp('odom_guard_out').value, gp('odom_guard_out').value))
+                        % (self.p('odom_guard_out'), self.p('odom_guard_out')))
                 elif subs > 0:
                     self._guard_warned = False
             self.get_logger().info(

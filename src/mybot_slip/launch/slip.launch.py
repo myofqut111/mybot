@@ -29,6 +29,8 @@ def _nodes(context):
     cmd = LaunchConfiguration('cmd_topic').perform(context)
     nav_in = LaunchConfiguration('nav_topic').perform(context)
     pause_map = _bool(LaunchConfiguration('pause_slam_on_slip').perform(context))
+    map_gate = _bool(LaunchConfiguration('map_gate').perform(context))
+    map_scan = LaunchConfiguration('map_scan_topic').perform(context)
 
     # 开了仲裁：执行器不能直接发 /cmd_vel，改发 /cmd_vel_slip 交给仲裁节点
     executor_cmd = '/cmd_vel_slip' if mux else cmd
@@ -44,6 +46,9 @@ def _nodes(context):
                 'recovery_enabled': recovery,
                 'alternate_after_fail': alternate,
                 'pause_slam_on_slip': pause_map,
+                # 《补充说明》§3：建图门控（/scan → /scan_safe）
+                'map_gate': map_gate,
+                'map_scan_topic': map_scan,
             }],
         ),
         Node(
@@ -99,5 +104,11 @@ def generate_launch_description():
             'pause_slam_on_slip', default_value='false',
             description='打滑期间暂停 slam_toolbox（免得错位姿写进地图）；'
                         'amcl 模式下自动忽略'),
+        DeclareLaunchArgument(
+            'map_gate', default_value='true',
+            description='《补充说明》§3：S1/S3/S4 期间停止把激光转发给建图'),
+        DeclareLaunchArgument(
+            'map_scan_topic', default_value='/scan_safe',
+            description='建图门控的输出话题；slam 侧用 slam_scan_topic 指过来'),
     ]
     return LaunchDescription(args + [OpaqueFunction(function=_nodes)])

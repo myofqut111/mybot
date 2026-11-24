@@ -76,6 +76,8 @@ def generate_launch_description():
             args['cmd_vel_topic'] = '/cmd_vel_nav'
             # 方案 §4：EKF 改吃协方差守门后的那一路（同一数据，打滑时降权）
             args['ekf_odom_topic'] = '/odom_guarded'
+            # 《补充说明》§3：建图只吃可信激光，S1/S3/S4 时由 slip 停止转发
+            args['slam_scan_topic'] = '/scan_safe'
         return [_launch_of('mybot_navigation', 'navigation.launch.py', args,
                            condition=IfCondition(nav))]
 

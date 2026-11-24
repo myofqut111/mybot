@@ -128,6 +128,9 @@ def generate_launch_description():
             'ekf_odom_topic', default_value='/odom',
             description='EKF 的 odom0 输入；接打滑检测时传 /odom_guarded（同一路数据，打滑期间协方差被放大）'),
         DeclareLaunchArgument(
+            'slam_scan_topic', default_value='/scan',
+            description='slam_toolbox 订阅的激光；接打滑守护时传 /scan_safe（不可信期间停止转发）'),
+        DeclareLaunchArgument(
             'enable_patrol', default_value='true',
             description='Launch the mybot patrol stack (route/task manager + executor)'),
         DeclareLaunchArgument(
@@ -155,6 +158,7 @@ def generate_launch_description():
     controller = LaunchConfiguration('controller')
     ekf_publish_tf = LaunchConfiguration('ekf_publish_tf')
     ekf_odom_topic = LaunchConfiguration('ekf_odom_topic')
+    slam_scan_topic = LaunchConfiguration('slam_scan_topic')
     enable_ekf = LaunchConfiguration('enable_ekf')
     localization = LaunchConfiguration('localization')
     slam_params_file = LaunchConfiguration('slam_params_file')
@@ -281,6 +285,10 @@ def generate_launch_description():
             'use_sim_time': 'false',
             'slam_params_file': effective_slam_cfg,
         }.items(),
+        # 《补充说明》§3：建图只吃"可信"的那一路激光。开了打滑守护时
+        # robot.launch.py 会把 slam_scan_topic 传成 /scan_safe，
+        # S1/S3/S4 期间 slip 节点停止转发，slam 就写不进错误位姿下的障碍。
+        remappings=[('scan', slam_scan_topic)],
         condition=IfCondition(use_slam))
 
     # 定位生命周期管理器：延时后才启动，启动即(autostart)激活 map_server+amcl
