@@ -185,7 +185,10 @@ def evaluate(win, params=None, fit=None):
                 and scan_static):
             cands.append(('OVERRUN', -s, '车体走了 %.3fm，轮子只记了 %.3fm（下坡/被推）'
                           % (fit['dx'], denc)))
-        if abs(cmd_w) < 0.10 and abs(fit.get('dy') or 0.0) > p['thresh_lat_m']:
+        # 纯横向滑移：纵向走得没毛病（|s| 小），但车体偏偏横着挪了。
+        # 不加 |s| 门的话，任何一次纵向突变（打滑开始那一帧）都会被它抢走。
+        if (scan_trusted and abs(cmd_w) < 0.10 and abs(s) <= p['r_low']
+                and abs(fit.get('dy') or 0.0) > p['thresh_lat_m']):
             cands.append(('LATERAL_SLIP', abs(fit['dy']), '横向漂了 %.3fm' % fit['dy']))
 
     # ---------- 传感器互相矛盾 ----------

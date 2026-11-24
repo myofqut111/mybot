@@ -116,7 +116,7 @@ def scan_motion(prev, cur, params=None):
     return ds[len(ds) // 2]
 
 
-def fit_translation(prev, cur, params=None):
+def fit_translation(prev, cur, params=None, init=None):
     """估计 prev -> cur 的刚体变换（cur 相对 prev，单位米/弧度）。
 
     返回 dict(dx, dy, dtheta, beams, coverage, residual, quality, ok, reason)
@@ -130,8 +130,13 @@ def fit_translation(prev, cur, params=None):
     if len(src) < p['min_points'] or len(dst) < p['min_points']:
         return _fail('点数不足 %d/%d' % (len(src), len(dst)))
 
-    grid, inv = _build_grid(dst, p['cell_m'])
-    dx = dy = dth = 0.0
+    grid, inv = _build_grid(dst, p["cell_m"])
+    # §4：扫描匹配以里程计预测为初值，否则长走廊/重复结构容易陷局部极小
+    if init is not None:
+        dx, dy, dth = (float(init[0]), float(init[1]),
+                       float(init[2]) if len(init) > 2 else 0.0)
+    else:
+        dx = dy = dth = 0.0
     inliers = 0
     residual = None
 

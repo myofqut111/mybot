@@ -107,8 +107,12 @@ class SlipExecutor(Node):
         self.pose = None
         self.stop_until = 0.0
         self._scan_prev = None
+        self._scan_used = 0          # 本动作累计用了多少帧扫描
+        self._scan_drop = 0          # 配准质量不够、被丢掉的帧
+        self._q_sum = 0.0            # 配准质量累加，用来算平均
         self._odom_travel = 0.0
         self._odom_last = None
+        self._odom_start = None      # 动作开始时位姿，_finish 里算带符号位移要用
         self._imu_yaw = None
         self._imu_last = None
         self._expected_lin = None
@@ -524,7 +528,8 @@ class SlipExecutor(Node):
             self.get_logger().error(
                 '指令是后退，里程计却往前走了 %.2f m：底盘线速度符号可能是反的'
                 % signed)
-        if ok and self.measure == 'scan' and odom_moved > 0.05 \
+        if ok and act.get('kind') in ('back', 'go', 'probe', 'escape') \
+                and self.measure == 'scan' and odom_moved > 0.05 \
                 and moved < 0.5 * odom_moved:
             # 轮子转了、车没走：动作"成功"是假的，不能说恢复成功
             ok = False

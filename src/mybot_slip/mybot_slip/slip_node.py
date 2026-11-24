@@ -199,12 +199,13 @@ class SlipNode(Node):
 
         self.get_logger().info(
             '打滑检测已启动：窗 %.2fs（最长 %.2fs，至少 %d 条 odom），%s，判据 P1~P5，'
-            '恢复=%s，建图暂停=%s，激光=%s'
+            '恢复=%s，协方差降权=%s，冻结progress=%s，激光=%s'
             % (self.win_params['window_s'], self.win_params['max_window_s'],
                self.win_params['min_odom_samples'],
                '含左右轮' if self.wheel_seen else '无左右轮',
                '开' if self.recovery_enabled else '关（只报不动）',
-               '开' if bool(self.p('pause_slam_on_slip')) else '关',
+               '开' if bool(self.p('covariance_guard')) else '关',
+               '开' if bool(self.p('freeze_progress_checker')) else '关',
                self.scan_name))
     # 订阅
     # ------------------------------------------------------------------
@@ -618,8 +619,20 @@ class SlipNode(Node):
         fit = None
         if win.get('scan_ok'):
             try:
+                # 两个初值各跑一次，取质量高的那个：
+                # - 零初值：打滑时扫描没动，残差最小，能如实报出"没动"；
+                # - 里程计初值：正常行驶时避开长走廊局部极小，横向估计更准。
                 fit = ranges_mod.fit_translation(
                     win['scan_prev'], win['scan_cur'], self.ranges_params)
+                if win.get('odom_ok'):
+                    init = (float(win.get('denc') or 0.0), 0.0,
+                            float(win.get('dtheta_enc') or 0.0))
+                    fit2 = ranges_mod.fit_translation(
+                        win['scan_prev'], win['scan_cur'],
+                        self.ranges_params, init=init)
+                    if (fit2.get('quality', 0.0) > fit.get('quality', 0.0)
+                            + 1e-6):
+                        fit = fit2
             except Exception as exc:                  # noqa: BLE001
                 self.get_logger().error('扫描配准失败：%s' % exc)
                 fit = None
@@ -722,17 +735,29 @@ class SlipNode(Node):
         if period > 0 and now - self._last_debug >= period:
             self._last_debug = now
             r = self._rates()
+            fit = ((self._last_verdict or {}).get('detail') or {}).get('fit') or {}
+            if fit:
+                fit_txt = '配准 q=%.2f 内点=%d 覆盖=%.2f 扫描位移=%.3f m' % (
+                    fit.get('quality', 0.0), fit.get('beams', 0),
+                    fit.get('coverage', 0.0), fit.get('motion', -1.0))
+            else:
+                fit_txt = '配准 无'
             self.get_logger().info(
                 '采样 odom %.1f wheel %.1f imu %.1f scan %.1f cmd %.1f Hz｜'
-                '状态 %s｜最近原因 %s｜窗 t0=%.2f now=%.2f 样本 odom=%d cmd=%d 首 %.2f 末 %.2f'
+                '状态 %s｜%s｜最近原因 %s｜窗 t0=%.2f now=%.2f 样本 odom=%d cmd=%d 首 %.2f 末 %.2f｜'
+                'scan 帧 %d 最新 %.2f 窗内指令覆盖 %.2f'
                 % (r.get('odom', 0.0), r.get('wheel', 0.0), r.get('imu', 0.0),
                    r.get('scan', 0.0), r.get('cmd', 0.0),
-                   (self._last_verdict or {}).get('type') or '无',
+                   self._last_state or 'normal', fit_txt,
                    self._last_reason or '无',
                    self.agg.t0 if self.agg.t0 is not None else -1.0, now,
                    len(self.agg.odom.items), len(self.agg.cmd.items),
                    (self.agg.odom.items[0][0] if self.agg.odom.items else -1.0),
-                   (self.agg.odom.items[-1][0] if self.agg.odom.items else -1.0)))
+                   (self.agg.odom.items[-1][0] if self.agg.odom.items else -1.0),
+                   len(self.agg.scan.items),
+                   (self.agg.scan.items[-1][0] if self.agg.scan.items else -1.0),
+                   float(((self._last_verdict or {}).get('detail') or {})
+                         .get('cmd_coverage', -1.0))))
 
     def _rates(self):
         """最近一秒各路输入的实际频率（一路没来就是 0.0）。"""
