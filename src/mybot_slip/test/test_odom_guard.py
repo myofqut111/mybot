@@ -68,10 +68,34 @@ class _Twist(object):
         self.covariance = _Cov([lin_var, lin_var, 0.0, 0.0, 0.0, ang_var]).covariance
 
 
+class _Vec3(object):
+    def __init__(self, x=0.0, y=0.0, z=0.0):
+        self.x, self.y, self.z = x, y, z
+
+
+class _Quat(object):
+    def __init__(self, x=0.0, y=0.0, z=0.0, w=1.0):
+        self.x, self.y, self.z, self.w = x, y, z, w
+
+
+class _PoseMsg(object):
+    def __init__(self, x=0.0, y=0.0, yaw=0.0):
+        self.position = _Vec3(x, y, 0.0)
+        self.orientation = _Quat(0.0, 0.0, yaw, 1.0)
+
+
+class _TwistMsg(object):
+    def __init__(self, vx=0.0, wz=0.0):
+        self.linear = _Vec3(vx, 0.0, 0.0)
+        self.angular = _Vec3(0.0, 0.0, wz)
+
+
 class _Odom(object):
-    def __init__(self, pos_var=0.01, yaw_var=0.01):
+    def __init__(self, pos_var=0.01, yaw_var=0.01, x=0.0, y=0.0, vx=0.15, wz=0.0):
         self.pose = _Pose(pos_var, yaw_var)
+        self.pose.pose = _PoseMsg(x, y)
         self.twist = _Twist(pos_var, yaw_var)
+        self.twist.twist = _TwistMsg(vx, wz)
 
 
 class OdomGuardTest(unittest.TestCase):
@@ -131,6 +155,68 @@ class OdomGuardTest(unittest.TestCase):
         self.guard.set_inflated(True)
         self.node.sub.cb(msg)
         self.assertAlmostEqual(msg.pose.covariance[0], 0.01)
+
+    # ---------- 方案 §10 严重档：冻结里程对融合位姿的更新 ----------
+    def test_freeze_holds_last_pose(self):
+        self.node.sub.cb(_Odom(x=1.0, y=2.0))
+        self.assertAlmostEqual(self.node.pub.sent[-1].pose.pose.position.x, 1.0)
+        self.guard.set_frozen(True)
+        self.node.sub.cb(_Odom(x=2.5, y=2.0))          # 打滑：odom 报又走了 1.5 m
+        out = self.node.pub.sent[-1]
+        self.assertAlmostEqual(out.pose.pose.position.x, 1.0)
+        self.assertAlmostEqual(out.pose.pose.position.y, 2.0)
+        self.assertEqual(self.guard.frozen_frames, 1)
+
+    def test_freeze_zeroes_twist(self):
+        self.node.sub.cb(_Odom(x=0.0, vx=0.15, wz=0.4))
+        self.guard.set_frozen(True)
+        self.node.sub.cb(_Odom(x=0.2, vx=0.15, wz=0.4))
+        out = self.node.pub.sent[-1]
+        self.assertAlmostEqual(out.twist.twist.linear.x, 0.0)
+        self.assertAlmostEqual(out.twist.twist.angular.z, 0.0)
+
+    def test_freeze_still_publishes_and_inflates(self):
+        self.node.sub.cb(_Odom(x=0.0))
+        before = self.guard.published
+        self.guard.set_frozen(True)
+        self.node.sub.cb(_Odom(x=0.5))
+        self.assertEqual(self.guard.published, before + 1)
+        self.assertAlmostEqual(self.node.pub.sent[-1].pose.covariance[0],
+                               0.01 * DEFAULTS['position_factor'])
+
+    def test_unfreeze_resumes_forwarding(self):
+        self.node.sub.cb(_Odom(x=1.0))
+        self.guard.set_frozen(True)
+        self.node.sub.cb(_Odom(x=5.0))
+        before = self.guard.published
+        self.guard.set_frozen(False)
+        self.node.sub.cb(_Odom(x=5.2))
+        self.assertEqual(self.guard.published, before + 1)
+        self.assertAlmostEqual(self.guard.frozen_frames, 1)
+
+    def test_unfreeze_reanchors_without_jump(self):
+        """解冻那一帧正好接在冻结位姿上（1.0），不能跳到 5.2。"""
+        self.node.sub.cb(_Odom(x=1.0))
+        self.guard.set_frozen(True)
+        self.node.sub.cb(_Odom(x=5.0))
+        self.guard.set_frozen(False)
+        self.node.sub.cb(_Odom(x=5.2))
+        out = self.node.pub.sent[-1]
+        self.assertAlmostEqual(out.pose.pose.position.x, 1.0)
+
+    def test_reanchor_offset_persists(self):
+        self.node.sub.cb(_Odom(x=1.0))
+        self.guard.set_frozen(True)
+        self.node.sub.cb(_Odom(x=5.0))
+        self.guard.set_frozen(False)
+        self.node.sub.cb(_Odom(x=5.2))     # 重锚：偏移 4.2
+        self.node.sub.cb(_Odom(x=6.0))     # 增量照常：1.0 + 0.8
+        self.assertAlmostEqual(self.node.pub.sent[-1].pose.pose.position.x, 1.8)
+
+    def test_set_frozen_reports_only_on_change(self):
+        self.assertTrue(self.guard.set_frozen(True))
+        self.assertFalse(self.guard.set_frozen(True))
+        self.assertTrue(self.guard.set_frozen(False))
 
 
 if __name__ == '__main__':

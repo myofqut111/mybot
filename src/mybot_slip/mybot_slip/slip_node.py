@@ -197,6 +197,7 @@ class SlipNode(Node):
         self._pose = None
         self._recovery_pose = None
         self._jump_reported = False
+        self._conservative_reported = False
 
         # 20 Hz 轮询：窗口是 0.3 s，20 Hz 足够不丢边界
         self.create_timer(0.05, self._tick)
@@ -323,6 +324,7 @@ class SlipNode(Node):
     # ------------------------------------------------------------------
     def _tick(self):
         now = self._now()
+        verdict = None
         try:
             wins = self.agg.poll(now)
         except Exception as exc:                      # noqa: BLE001
@@ -399,14 +401,33 @@ class SlipNode(Node):
             if self.machine.state == 'normal':
                 self._failed_reported = False
 
-        # 方案 §10.1 明确写着「而不是停止 SLAM 节点或切断激光输入」，
-        # 所以这里不再碰 slam_toolbox：保护地图只靠下面的协方差放大。
-        # （pause_slam_on_slip / suspend_slam 两个参数保留只为兼容旧 launch。）
+        # 方案 §10 三档处理（不是"停 SLAM、切激光"）：
+        #   轻度(is_normal=False 但还没确认) → 只放大协方差
+        #   严重(确认后 recovery)            → 冻结里程对融合位姿的更新
+        #   激光+IMU 都不可信                → 冻结 + 停车 + 上报，等人工
         abnormal = self.machine.state != 'normal'
+        conservative = bool((verdict or {}).get('type') == 'SENSOR_CONFLICT')
+        # "严重"= 已经确认（连续 Nconfirm 个窗都是滑移），不只是疑似；
+        # 关掉恢复动作时状态机停在 SLIP，但冻结照样要生效。
+        confirmed = self.machine.slip_count >= int(
+            self.machine.p.get('confirm_windows', 2))
+        severe = (self.machine.state in ('recovery', 'check')) or confirmed \
+            or conservative
 
-        # 方案 §10.1：打滑期间放大编码器里程协方差（SLAM/TF 不中断）
         if self.odom_guard is not None:
             self.odom_guard.set_inflated(abnormal)
+            self.odom_guard.set_frozen(severe)
+
+        if conservative:
+            # 保守模式：不再自动往前开，停车并上报一次
+            self._hold_still(now, force=True)
+            if not self._conservative_reported:
+                self._conservative_reported = True
+                self._cancel_nav_goal()
+                self._on_failed(now, {'reason': '激光与 IMU 都不可信，进入保守模式：'
+                                                '停车、限速、禁止自动导航，等人工'})
+        elif self.machine.state == 'normal':
+            self._conservative_reported = False
 
     def p(self, name):
         return self.get_parameter(name).value
@@ -482,7 +503,7 @@ class SlipNode(Node):
         except Exception as exc:                      # noqa: BLE001
             self.get_logger().warn('请求重定位失败：%s' % exc)
 
-    def _hold_still(self, now):
+    def _hold_still(self, now, force=False):
         """异常状态且手上没动作时，持续发零速占住速度通道。
 
         `cmd_mux` 只在"恢复这一侧最近 0.5 s 还有指令"时才让路，所以这里要
@@ -491,8 +512,11 @@ class SlipNode(Node):
         # 只有"确认了"才摁车。以前连 suspect 也发零速，一条误判就能让
         # cmd_mux 把速度通道抢过去，车原地一顿、Nav2 目标被取消——真机上
         # 表现为"走走停停、建图半天建不完"。疑似阶段只记录，不动车。
-        if self.machine.state != 'recovery' or self.machine.pending_action:
-            return
+        # force=True 是保守模式（激光+IMU 都不可信）用的：那时不管状态机
+        # 在哪一档，都必须先停住。
+        if not force:
+            if self.machine.state != 'recovery' or self.machine.pending_action:
+                return
         if now - self._last_hold < 0.1:
             return
         self._last_hold = now

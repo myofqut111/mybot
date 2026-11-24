@@ -1,11 +1,12 @@
-"""方案 §4：打滑期间把编码器里程的协方差放大，让融合少信它。
+"""方案 §10：按打滑严重程度分三档处理编码器里程。
 
-方案原文是「放大其协方差、降低融合权重」，同时「SLAM 和 TF 不中断」——
-也就是**不改流程、只改可信度**。做法是原样转发 `/odom`，但在异常窗口里
-把 pose/twist 的协方差乘一个系数，EKF 看到的就是"这一路现在很不可靠"。
+- **轻度**（疑似）：原样转发，只把协方差放大，降低融合权重；
+- **持续/严重**（确认打滑、恢复动作执行中）：**冻结**——位姿保持最后一帧
+  好值、速度清零，EKF 看到"没动"，融合位姿就不再跟着打滑漂，TF 仍然连续；
+- **激光与 IMU 也不可信**：同上冻结，并由节点上报、停车待人工（保守模式）。
 
-为什么不在打滑时直接不发 odom：EKF 会因为没有输入而停止输出
-`odometry/filtered`，TF 就断了，正是方案要避免的事。
+方案原文要求「SLAM 和 TF 不中断」，所以任何一档都照发消息，只是内容不同；
+不像"停止发 odom"那样会把 EKF 饿死、把 TF 拉断。
 """
 import copy
 
@@ -30,7 +31,12 @@ class OdomCovarianceGuard(object):
         self.p = p
         self.node = node
         self._inflated = False
+        self._frozen = False
+        self._last_pose = None
+        self._offset = None
+        self._reanchor_pending = False
         self.published = 0
+        self.frozen_frames = 0
         # ROS 消息类型延迟导入：单测（不 source ROS）也能验证协方差算术
         from nav_msgs.msg import Odometry
         from rclpy.qos import QoSProfile
@@ -42,6 +48,10 @@ class OdomCovarianceGuard(object):
     @property
     def inflated(self):
         return self._inflated
+
+    @property
+    def frozen(self):
+        return self._frozen
 
     def set_inflated(self, want):
         """异常状态置 True；回到 NORMAL 置 False。"""
@@ -55,12 +65,62 @@ class OdomCovarianceGuard(object):
                self.p['position_factor'], self.p['yaw_factor']))
         return True
 
+    def set_frozen(self, want):
+        """方案 §10 严重档：冻结里程对融合位姿的更新（位姿保持、速度清零）。"""
+        want = bool(want)
+        if want == self._frozen:
+            return False
+        self._frozen = want
+        if want:
+            self.node.get_logger().warn(
+                '编码器里程：冻结（保持最后一帧位姿、速度清零，TF 仍然连续），'
+                '位姿改由 IMU/激光维持')
+        else:
+            self.node.get_logger().warn('编码器里程：解冻，恢复正常转发')
+            self._reanchor_pending = True
+        return True
+
     def _on_odom(self, msg):
         out = copy.deepcopy(msg)
-        if self._inflated:
+        if self._frozen and self._last_pose is not None:
+            # 位姿保持：EKF 的 odom0 是靠相邻两帧的位姿差算速度的，
+            # 位姿不动 → 速度 0 → 融合位姿不再跟着打滑往前走。
+            out.pose.pose.position.x = self._last_pose.position.x
+            out.pose.pose.position.y = self._last_pose.position.y
+            out.pose.pose.position.z = self._last_pose.position.z
+            out.pose.pose.orientation = copy.deepcopy(self._last_pose.orientation)
+            out.twist.twist.linear.x = 0.0
+            out.twist.twist.linear.y = 0.0
+            out.twist.twist.linear.z = 0.0
+            out.twist.twist.angular.x = 0.0
+            out.twist.twist.angular.y = 0.0
+            out.twist.twist.angular.z = 0.0
+            self.frozen_frames += 1
+        else:
+            self._apply_offset(out)
+            self._last_pose = copy.deepcopy(out.pose.pose)
+        if self._inflated or self._frozen:
             self._inflate(out)
         self._pub.publish(out)
         self.published += 1
+
+    def _apply_offset(self, out):
+        """解冻后的第一个消息：把打滑期间攒下的位移从原点去掉。
+
+        不这么做的话，EKF 会在解冻那一帧看到一个 1 m 级的位姿跳变，
+        融合位姿会直接瞬移；重锚之后位姿保持连续，后续增量不受影响。
+        """
+        p = out.pose.pose.position
+        if self._reanchor_pending and self._last_pose is not None:
+            self._reanchor_pending = False
+            self._offset = (p.x - self._last_pose.position.x,
+                            p.y - self._last_pose.position.y)
+            self.node.get_logger().warn(
+                '编码器里程：解冻后重锚，去掉打滑期间累计的 %.2f m / %.2f m'
+                % (self._offset[0], self._offset[1]))
+        if self._offset is not None:
+            p.x -= self._offset[0]
+            p.y -= self._offset[1]
 
     def _inflate(self, msg):
         p = self.p
