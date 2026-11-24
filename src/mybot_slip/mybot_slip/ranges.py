@@ -63,12 +63,35 @@ def _points(scan, min_range=0.05, max_ratio=0.98):
     return pts
 
 
-def _build_grid(pts, cell):
+def _normals(pts):
+    """按束序估每个点的单位法向（垂直于相邻点连线）。
+
+    点对点 ICP 在墙面上会沿墙滑：残差只在法向上有约束，切向随便滑。
+    给每个点配上法向、只用「法向残差」以后，墙面才真正钉住——
+    横向 dy 的精度从 3 cm 级降到毫米级，这是方案 §12 那个 0.03 m 阈值能用的前提。
+    """
+    n = len(pts)
+    out = []
+    for i in range(n):
+        j = min(i + 1, n - 1)
+        k = max(i - 1, 0)
+        tx = pts[j][0] - pts[k][0]
+        ty = pts[j][1] - pts[k][1]
+        length = math.hypot(tx, ty)
+        if length < 1e-6:
+            out.append(None)
+            continue
+        out.append((-ty / length, tx / length))   # 切向转 90°
+    return out
+
+
+def _build_grid(pts, cell, normals=None):
     g = {}
     inv = 1.0 / cell
-    for x, y in pts:
+    for i, (x, y) in enumerate(pts):
+        nrm = normals[i] if normals else None
         k = (int(math.floor(x * inv)), int(math.floor(y * inv)))
-        g.setdefault(k, []).append((x, y))
+        g.setdefault(k, []).append((x, y, nrm))
     return g, inv
 
 
@@ -79,11 +102,11 @@ def _nearest(grid, inv, cell, px, py, max_d):
     best_d2 = max_d * max_d
     for gx in range(cx - span, cx + span + 1):
         for gy in range(cy - span, cy + span + 1):
-            for qx, qy in grid.get((gx, gy), ()):
-                d2 = (qx - px) ** 2 + (qy - py) ** 2
+            for q in grid.get((gx, gy), ()):
+                d2 = (q[0] - px) ** 2 + (q[1] - py) ** 2
                 if d2 < best_d2:
                     best_d2 = d2
-                    best = (qx, qy)
+                    best = q
     return best, math.sqrt(best_d2) if best else None
 
 
@@ -130,7 +153,7 @@ def fit_translation(prev, cur, params=None, init=None):
     if len(src) < p['min_points'] or len(dst) < p['min_points']:
         return _fail('点数不足 %d/%d' % (len(src), len(dst)))
 
-    grid, inv = _build_grid(dst, p["cell_m"])
+    grid, inv = _build_grid(dst, p["cell_m"], _normals(dst))
     # §4：扫描匹配以里程计预测为初值，否则长走廊/重复结构容易陷局部极小
     if init is not None:
         dx, dy, dth = (float(init[0]), float(init[1]),
@@ -149,7 +172,7 @@ def fit_translation(prev, cur, params=None, init=None):
             ry = s * px + c * py + dy
             q, _d = _nearest(grid, inv, p['cell_m'], rx, ry, p['max_corr_dist'])
             if q is not None:
-                pairs.append((px, py, q[0], q[1]))
+                pairs.append((px, py, q[0], q[1], q[2]))
         if len(pairs) < p['min_points']:
             return _fail('对应点不足 %d' % len(pairs))
 
@@ -193,25 +216,32 @@ def fit_translation(prev, cur, params=None, init=None):
 
 
 def _solve(pairs, p):
-    """最小二乘解 (dx, dy, dθ)。
+    """最小二乘解 (dx, dy, dθ)——点对线（point-to-line）。
 
-    残差： p + (t + dθ·J p) - q，J = [[0,-1],[1,0]]
+    残差只用**法向分量**：r = n·(R p + t − q) ≈ n·(p − q) + n·t + dθ·n·(J p)。
+    这样墙面上的切向滑移不进方程，横向 dy 才定得住。
+    法向缺失的点退回点对点（两行 x/y 残差）。
     """
     a11 = a12 = a13 = a22 = a23 = a33 = 0.0
     b1 = b2 = b3 = 0.0
-    for px, py, qx, qy in pairs:
+    for px, py, qx, qy, nrm in pairs:
         ex = qx - px
         ey = qy - py
-        # 行1: dx - dθ*py = ex ; 行2: dy + dθ*px = ey
-        a11 += 1.0
-        a12 += 0.0
-        a13 += -py
-        a22 += 1.0
-        a23 += px
-        a33 += px * px + py * py
-        b1 += ex
-        b2 += ey
-        b3 += ex * (-py) + ey * px
+        if nrm is not None:
+            nx, ny = nrm
+            rows = ((nx, ny, nx * (-py) + ny * px, nx * ex + ny * ey),)
+        else:
+            rows = ((1.0, 0.0, -py, ex), (0.0, 1.0, px, ey))
+        for r1, r2, r3, rhs in rows:
+            a11 += r1 * r1
+            a12 += r1 * r2
+            a13 += r1 * r3
+            a22 += r2 * r2
+            a23 += r2 * r3
+            a33 += r3 * r3
+            b1 += r1 * rhs
+            b2 += r2 * rhs
+            b3 += r3 * rhs
     n = float(len(pairs))
     if n < 1:
         return None
@@ -230,10 +260,10 @@ def _solve(pairs, p):
     dth = (a11 * (a22 * b3 - b2 * a23)
            - a12 * (a12 * b3 - b2 * a13)
            + b1 * (a12 * a23 - a22 * a13)) / det
-    # 残差
+    # 残差仍按点对点算：它才是"配得准不准"的直观量
     c, s = math.cos(dth), math.sin(dth)
     tot = 0.0
-    for px, py, qx, qy in pairs:
+    for px, py, qx, qy, _n in pairs:
         rx = c * px - s * py + dx - qx
         ry = s * px + c * py + dy - qy
         tot += rx * rx + ry * ry
@@ -244,7 +274,7 @@ def _solve(pairs, p):
 def _inliers(pairs, dx, dy, dth, sigma):
     c, s = math.cos(dth), math.sin(dth)
     res = []
-    for px, py, qx, qy in pairs:
+    for px, py, qx, qy, _n in pairs:
         rx = c * px - s * py + dx - qx
         ry = s * px + c * py + dy - qy
         res.append(math.hypot(rx, ry))

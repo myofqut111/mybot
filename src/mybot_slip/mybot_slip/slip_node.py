@@ -737,9 +737,11 @@ class SlipNode(Node):
             r = self._rates()
             fit = ((self._last_verdict or {}).get('detail') or {}).get('fit') or {}
             if fit:
-                fit_txt = '配准 q=%.2f 内点=%d 覆盖=%.2f 扫描位移=%.3f m' % (
-                    fit.get('quality', 0.0), fit.get('beams', 0),
-                    fit.get('coverage', 0.0), fit.get('motion', -1.0))
+                fit_txt = ('配准 q=%.2f 内点=%d 覆盖=%.2f 扫描位移=%.3f m'
+                           ' dx=%+.3f dy=%+.3f' % (
+                               fit.get('quality', 0.0), fit.get('beams', 0),
+                               fit.get('coverage', 0.0), fit.get('motion', -1.0),
+                               fit.get('dx') or 0.0, fit.get('dy') or 0.0))
             else:
                 fit_txt = '配准 无'
             self.get_logger().info(

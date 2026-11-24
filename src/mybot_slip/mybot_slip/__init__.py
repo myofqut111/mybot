@@ -9,4 +9,4 @@
     slip_node—— ROS 节点：订阅五路输入，发 /slip/state
 """
 
-__version__ = "0.8.1"
+__version__ = "0.8.2"
