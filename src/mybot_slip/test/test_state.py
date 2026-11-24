@@ -35,9 +35,11 @@ class ConfirmTest(unittest.TestCase):
         m.step(0.0, verdict('LINEAR_SLIP', denc=0.06))
         out = m.step(0.3, verdict('LINEAR_SLIP', denc=0.06))
         self.assertEqual(out['action'], 'back')
-        # 0.5*0.06=0.03，但受 back_min_m=0.10 托底
-        self.assertAlmostEqual(out['distance'], 0.10)
-        self.assertGreaterEqual(out['distance'], m.p['back_min_m'])
+        # 表 9-1 / §9.3：后退固定 0.12 m、速度 0.15 m/s、超时 1.5 s
+        self.assertAlmostEqual(out['distance'], 0.12)
+        self.assertAlmostEqual(out['speed'], 0.15)
+        self.assertAlmostEqual(out['timeout_s'], 1.5)
+        self.assertAlmostEqual(out['rear_check_m'], 0.30)
 
     def test_confirmation_needs_time(self):
         m = st.SlipStateMachine({'confirm_windows': 2, 'confirm_window_s': 1.0})
@@ -47,11 +49,16 @@ class ConfirmTest(unittest.TestCase):
         out = m.step(1.2, verdict('LINEAR_SLIP'))
         self.assertEqual(out['action'], 'back')
 
-    def test_back_distance_clamped(self):
+    def test_second_back_is_longer(self):
+        """§9.5：第二次恢复后退 0.20 m（不是按比例算，也不是重复 0.12）。"""
         m = st.SlipStateMachine({'confirm_window_s': 0.0})
         m.step(0.0, verdict('LINEAR_SLIP', denc=2.0))
-        out = m.step(0.3, verdict('LINEAR_SLIP', denc=2.0))
-        self.assertLessEqual(out['distance'], m.p['back_max_m'])
+        first = m.step(0.3, verdict('LINEAR_SLIP', denc=2.0))
+        self.assertAlmostEqual(first['distance'], 0.12)
+        m.on_action_done(0.6, ok=False)            # 第一次失败 → 第二次
+        second = m.pending_action
+        self.assertEqual(second['action'], 'back')
+        self.assertAlmostEqual(second['distance'], 0.20)
 
     def test_drop_back_to_normal(self):
         m = st.SlipStateMachine({'confirm_window_s': 0.0})
@@ -113,27 +120,27 @@ class RecoveryTest(unittest.TestCase):
 
     def test_clean_windows_recover(self):
         m = self._to_recovery()
-        m.on_action_done(0.6, ok=True, moved=0.10)      # 后退完成 → 低速重试
+        m.on_action_done(0.6, ok=True, moved=0.12)      # 后退完成 → 低速重试
         m.on_action_done(1.2, ok=True, moved=0.10)      # 重试完成 → CHECK
-        # 方案 §5：CHECK 里先做一次 0.05 m 试探前进
-        probe = m.step(2.0, verdict())
+        # §9.5：静止 0.3 s 后先采两个干净窗（这里第一次只算第 1 个）
+        self.assertIsNone(m.step(2.0, verdict())['action'])
+        probe = m.step(2.4, verdict())
         self.assertEqual(probe['action'], 'probe')
         self.assertAlmostEqual(probe['distance'], 0.05)
-        m.on_action_done(2.4, ok=True, moved=0.05)
-        actions = []
-        for i in range(3):
-            out = m.step(3.0 + i * 0.3, verdict())
-            actions.append(out['action'])
-        self.assertIn('recovered', actions)
+        # 探针走完 → 复检一次（1 个干净窗）就恢复
+        m.on_action_done(2.8, ok=True, moved=0.05)
+        out = m.step(3.2, verdict())
+        self.assertEqual(out['action'], 'recovered')
         self.assertEqual(m.state, st.NORMAL)
         self.assertEqual(m.recoveries, 0)
 
     def test_slip_during_check_goes_back_to_recovery(self):
         m = self._to_recovery()
-        m.on_action_done(0.6, ok=True, moved=0.10)
+        m.on_action_done(0.6, ok=True, moved=0.12)
         m.on_action_done(1.2, ok=True, moved=0.10)
-        m.step(2.0, verdict())          # 发出 probe
-        m.on_action_done(2.4, ok=True, moved=0.05)
+        m.step(2.0, verdict())          # 第 1 个干净窗
+        m.step(2.4, verdict())          # 第 2 个干净窗 → 发出 probe
+        m.on_action_done(2.8, ok=True, moved=0.05)
         m.step(3.5, verdict('LINEAR_SLIP'))
         self.assertEqual(m.state, st.SLIP)
 

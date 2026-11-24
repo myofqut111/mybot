@@ -21,11 +21,11 @@ DEFAULTS = {
     'r_high': 0.60,           # 确认用滑移率
     'r_low': 0.36,            # 解除用（= 0.6 * r_high）
     'r_omega': 0.60,
-    'r_wheel': 0.50,
+    'r_wheel': 0.60,
     'thresh_abs_m': 0.05,     # 绝对下限上限（会按运动量缩放）
     'thresh_scale': 0.5,      # 自适应系数：thresh_eff = min(abs, scale*denc)
     'thresh_lat_m': 0.03,     # 横向滑移
-    'thresh_over_m': 0.03,    # 过位移（下坡滑行）
+    'thresh_over_m': 0.05,    # 过位移（下坡滑行）
     'min_shortfall_m': 0.03,  # P1/P2 的绝对差下限（ICP 噪声 ~1.5 cm，取 2σ）
     'stall_eps_m': 0.005,     # 堵转：几乎没有位移
     'max_scan_motion_m': 0.045,  # 两帧扫描「没动」的上限（真打滑应 ≈0；ICP 失败会≈真实位移）
@@ -33,7 +33,9 @@ DEFAULTS = {
     'stall_cmd_linear': 0.05,
     'stall_cmd_angular': 0.15,
     'wheel_base_m': 0.175,    # 轮距，用于左右轮反解
-    'scan_valid_ratio': 0.60, # 激光置信度门槛（内点比例）
+    'scan_valid_ratio': 0.60,  # 激光置信度门槛（内点比例 ≥0.60）
+    'score_min': 0.65,        # 激光匹配分下限（方案 12 章）
+    'min_beams': 30,          # 有效束数下限（方案 12 章）
     'turn_limit_rad': 0.30,   # 窗内转角超过它时 P1 只作参考
     'angular_require_same_sign': True,  # P4 要求编码器与陀螺同向，反向视为传感器问题
 }
@@ -108,8 +110,9 @@ def evaluate(win, params=None, fit=None):
     detail = out['detail']
     detail['fit'] = fit
     scan_ok = bool(fit.get('ok')) and fit.get('coverage', 0.0) >= 0.0
-    scan_trusted = scan_ok and (fit.get('quality', 0.0) >= 0.55) and \
-        (fit.get('coverage', 1.0) >= p['scan_valid_ratio'])
+    scan_trusted = scan_ok and (fit.get('quality', 0.0) >= p['score_min']) and \
+        (fit.get('coverage', 1.0) >= p['scan_valid_ratio']) and \
+        (fit.get('beams', 0) >= p['min_beams'])
 
     turning = abs(dtheta_enc) > p['turn_limit_rad']
 

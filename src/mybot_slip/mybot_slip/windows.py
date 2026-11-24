@@ -13,7 +13,7 @@ import math
 
 
 DEFAULTS = {
-    'window_s': 0.50,          # 窗口长度（拉长能提高灵敏度，代价是慢 0.2 s）
+    'window_s': 0.40,          # 方案 §12：Tw 0.25~0.40 s，取上限（8 Hz 的 odom 一窗 3~4 条）
     'max_window_s': 1.50,      # 里程计太稀疏时窗口最多拉长到这里
     'min_odom_samples': 2,     # 窗口里至少这么多条 odom 才算够用（8 Hz 时 0.5 s 有 4 条）
     'warmup_s': 0.30,          # 指令切换后多久内的窗口不算

@@ -26,19 +26,16 @@ import math
 
 DEFAULTS = {
     'confirm_windows': 2,      # 连续几个窗有滑移才算确认（再叠加 confirm_window_s 防抖）
-    'confirm_window_s': 0.45,  # 且跨时不小于此值（防抖）；0.5 s 窗下两窗即确认
+    'confirm_window_s': 0.0,   # 方案 §12：只要求 Nconfirm=2 个连续窗（Tw 0.40 s 即 0.8 s）
     'release_windows': 2,      # 连续几个窗干净才回 NORMAL
-    'back_min_m': 0.10,
-    'back_max_m': 0.30,
-    'back_ratio': 0.5,         # d_back = back_ratio * 本窗编码器位移
     'back_verify_ratio': 0.6,  # 后退实测 >= 期望*此值 才算成功
     'escape_yaw_rad': 0.9,     # STALL 脱困转多少
     'escape_speed': 1.2,
     'inflate_try': 3,          # 第几次恢复时请求调大膨胀
     'max_recovery': 2,         # 方案 §7：一个恢复周期最多试两次
     'alternate_after_fail': True,   # 失败后换姿势（后退<->转向）；关掉就重复同一种
-    'recovery_cooldown_s': 60.0,
-    'settle_s': 0.8,           # 动作后静置（等滤波器/里程计稳定）
+    'recovery_cooldown_s': 5.0,   # 方案 §9.6：FAILED 复位后 5 s 冷却
+    'settle_s': 0.3,           # 方案 §9.5：CHECK 前静止 0.3 s
     'stall_no_back': True,
     'retry_m': 0.10,           # 单轮打滑：低速重试走多远
     'retry_speed': 0.08,
@@ -216,6 +213,7 @@ class SlipStateMachine(object):
                 'distance': self.p['retry_m'],
                 'speed': self.p['retry_speed'],
                 'timeout_s': 6.0,
+                'reset_odom': bool(kind.get('reset_odom')),
                 'type': self.type,
                 'reason': '低速试探 %.2fm，确认能正常走' % self.p['retry_m'],
             }
@@ -275,7 +273,13 @@ class SlipStateMachine(object):
             self.type = verdict.get('type')
             return self._idle('still slipping')
         if not self.probed:
-            # 方案 §5：先记住当前位姿，再试探前进一小步，看三个源还对不对得上
+            # 方案 §9.5：静止 0.3 s 后先采两个非重叠窗，全满足才做 0.05 m 试探
+            if self.clean_count + 1 < self.p['release_windows']:
+                self.clean_count += 1
+                return self._idle('releasing %d/%d'
+                                  % (self.clean_count, self.p['release_windows']))
+            self.clean_count = 0
+            # 方案 §5：两个干净窗通过后，试探前进一小步，看三个源还对不对得上
             act = {
                 'action': 'probe',
                 'distance': self.p['probe_m'],
@@ -290,8 +294,10 @@ class SlipStateMachine(object):
             self.last_action = act
             self.action_deadline = now + max(act['timeout_s'], self.p['action_timeout_s'])
             return dict(act)
+        # 方案 §9.5：试探前进后「复检一次」，所以探针之后只需要一个干净窗
         self.clean_count += 1
-        if self.clean_count >= self.p['release_windows']:
+        need = 1 if self.probed else self.p['release_windows']
+        if self.clean_count >= need:
             self.state = NORMAL
             self.type = None
             self.slip_count = 0
@@ -345,16 +351,17 @@ class SlipStateMachine(object):
             }
 
         if slip_type in ('WHEEL_L', 'WHEEL_R'):
-            # 单轮打滑：降速、清除错误里程积分、低速重试
+            # 表 9-1：降速、清除该轮里程积分、小幅反向微转后低速重试
             return {
-                'action': 'go',
-                'distance': p['retry_m'],
-                'speed': p['retry_speed'],
+                'action': 'escape',
+                'yaw': -p['micro_yaw_rad'],
+                'speed': p['escape_speed'],
+                'timeout_s': 4.0,
+                'then': 'slow_go',
                 'reset_odom': True,
-                'timeout_s': 6.0,
                 'type': slip_type,
-                'reason': '单轮打滑：降速到 %.2f m/s、清里程积分后低速重试'
-                          % p['retry_speed'],
+                'reason': '单轮打滑：降速、清里程积分，反向微转 %.2f rad 后低速重试'
+                          % p['micro_yaw_rad'],
             }
 
         if slip_type == 'LATERAL_SLIP':
@@ -393,21 +400,23 @@ class SlipStateMachine(object):
             }
 
         # 直行空转 / 顶住障碍物：确认后方安全后短距离后退，并小幅反向调整
-        denc = 0.0
-        if verdict:
-            denc = abs(verdict.get('_denc') or 0.0)
-        dist = min(max(p['back_ratio'] * denc, p['back_min_m']), p['back_max_m'])
+        # 方案 §9.3 + 表 12-1：第一次固定 0.12 m、−0.15 m/s、超时 1.5 s；
+        # 第二次 0.20 m。不再按本窗位移比例算（那是 v1.0 的做法）。
+        second = self.stats.get('backs', 0) >= 1
+        dist = 0.20 if second else 0.12
         self.stats['backs'] += 1
         return {
             'action': 'back',
             'distance': dist,
-            'speed': 0.08,
+            'speed': 0.15,
             'yaw_rate': p['reverse_adjust_yaw_rate'],
-            'timeout_s': 6.0,
+            'timeout_s': 1.5,
+            'rear_check_m': 0.30,
             'then': 'slow_go',
             'type': slip_type,
             'verify': True,
-            'reason': '直行空转：后退 %.2fm 并小幅反向调整' % dist,
+            'reason': '直行空转：后退 %.2fm（第 %s 次）并小幅反向调整'
+                      % (dist, '二' if second else '一'),
         }
 
     def _idle(self, reason):

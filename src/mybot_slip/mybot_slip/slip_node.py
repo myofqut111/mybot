@@ -27,7 +27,6 @@ from std_msgs.msg import String
 
 from . import criteria as criteria_mod
 from . import ranges as ranges_mod
-from . import slam_guard as slam_guard_mod
 from . import state as state_mod
 from . import windows as windows_mod
 
@@ -50,24 +49,30 @@ class SlipNode(Node):
         self.declare_parameter('debug_period_s', 5.0)   # 0 = 不打采样日志
         self.declare_parameter('use_header_stamp', False)  # 默认按接收时间切窗（各话题时钟可能不一致）
         self.declare_parameter('max_stamp_offset', 2.0)   # 时间戳与本机差超过它就当不可信
-        self.declare_parameter('pause_on_suspect', False)  # 一见到疑似就打住建图
+        self.declare_parameter('pause_on_suspect', False)  # 已废弃：方案 §10.1 不允许停建图
         self.declare_parameter('suspect_hold_s', 1.5)
         self.declare_parameter('max_window_s', 1.5)     # 里程计稀疏时窗口最多拉这么长
         self.declare_parameter('min_odom_samples', 2)   # 窗口里至少要几条 odom
         self.declare_parameter('alternate_after_fail', True)  # 失败后换姿势
-        self.declare_parameter('window_s', 0.5)          # 0.3 s 装不下 8 Hz 的 odom
+        self.declare_parameter('window_s', 0.4)          # 方案 §12：Tw 0.25~0.40 s，取上限
         self.declare_parameter('min_samples', 2)
         self.declare_parameter('warmup_s', 2.0)
         self.declare_parameter('min_cmd_coverage', 0.70)
         self.declare_parameter('min_wheel_hz', 8.0)
         self.declare_parameter('publish_period_s', 1.0)
         self.declare_parameter('recovery_enabled', False)
-        # 打滑期间是否暂停建图（slam 模式才有意义；amcl 模式自动忽略）
-        # 方案 §4：SLAM 和 TF 不能中断，打滑期间只降权不中断 → 默认关
+        # 打滑期间是否暂停建图——方案 §10.1 明确禁止停 SLAM/切激光，保留只为兼容
         self.declare_parameter('pause_slam_on_slip', False)
         self.declare_parameter('slam_pause_service',
                                '/slam_toolbox/pause_new_measurements')
         self.declare_parameter('slam_pause_max_s', 15.0)
+        # 方案 §11.2：进恢复就冻结 Nav2 的 progress_checker 计时
+        self.declare_parameter('freeze_progress_checker', True)
+        self.declare_parameter('progress_checker_node', '/controller_server')
+        self.declare_parameter('progress_checker_param',
+                               'progress_checker.movement_time_allowance')
+        self.declare_parameter('progress_checker_hold_s', 3600.0)
+        self.declare_parameter('progress_checker_normal_s', 25.0)
         # 方案 §1/§2：异常时占住速度通道、并取消 Nav2 当前目标
         self.declare_parameter('slip_cmd_topic', '/cmd_vel_slip')
         self.declare_parameter('fault_topic', '/slip/fault')
@@ -104,13 +109,21 @@ class SlipNode(Node):
         self.machine.allow_recovery = self.recovery_enabled
         self.ranges_params = dict(ranges_mod.DEFAULTS)
 
-        # 打滑期间摁住建图：打滑时 odom 在涨，扫描会按错位姿进图，事后拉不回来
-        self.slam_guard = slam_guard_mod.SlamPauseGuard(
-            self,
-            service_name=self.get_parameter('slam_pause_service').value,
-            enabled=bool(self.get_parameter('pause_slam_on_slip').value))
-        self.pause_policy = slam_guard_mod.PausePolicy(
-            max_hold_s=float(self.get_parameter('slam_pause_max_s').value))
+        # 方案 §10.1 明确要求「而不是停止 SLAM 节点或切断激光输入」，
+        # 所以不再构造 slam_guard / PausePolicy；保护地图靠 odom_guard 放协方差。
+        # 这两个参数只为兼容旧 launch 保留，读到也只告警。
+        if bool(self.get_parameter('pause_slam_on_slip').value):
+            self.get_logger().warn(
+                'pause_slam_on_slip 已按方案 §10.1 停用：打滑时不再暂停 SLAM，'
+                '改用放大里程协方差把错误位移挡在位姿链外')
+
+        # ---------------- 冻结 Nav2 progress_checker ----------------
+        # 方案 §11.2：进 SLIP_DETECTED 时冻结 progress_checker 计时，
+        # 免得 Nav2 判"无进展"去调内建 recovery 抢控制权。
+        self._pc_frozen = None          # None=还没设过，True/False=当前状态
+        self._pc_pending = False
+        self._pc_client = None
+        self._pc_warned = False
 
         # ---------------- 状态 ----------------
         self._have_wheel = False
@@ -352,31 +365,27 @@ class SlipNode(Node):
         # 让 cmd_mux 一直把控制权留在恢复这一侧（否则 Nav2 还在往前开）。
         self._hold_still(now)
 
-        # 方案 §2：一进恢复就取消 Nav2 目标，别让它一边判"无进展"一边调恢复行为。
-        # 只对**确认后**的 recovery 生效：suspect 每 1~2 秒就可能来一次，
-        # 在疑似阶段取消目标等于把导航掐死（今天 6 次跑里取消了约 100 次）。
-        if self.machine.state == 'recovery' and not self._nav_cancelled:
-            self._nav_cancelled = True
-            self._recovery_pose = self._pose
-            self._cancel_nav_goal()
-        elif self.machine.state == 'normal':
-            self._nav_cancelled = False
-            self._failed_reported = False
+        # 方案 §11.2：一确认就往"恢复"状态，冻结 Nav2 的 progress_checker 计时，
+        # 免得它一边判"无进展"一边调内建 recovery 来抢控制权。
+        # 方案 §11.3 才提到取消目标（台阶卡死→重规划），所以这里不取消。
+        if self.machine.state == 'recovery':
+            if not self._nav_cancelled:
+                self._nav_cancelled = True
+                self._recovery_pose = self._pose
+            self._freeze_progress(True)
+        else:
+            if self._nav_cancelled:
+                self._nav_cancelled = False
+                self._freeze_progress(False)
+            if self.machine.state == 'normal':
+                self._failed_reported = False
 
-        # 非 NORMAL 就摁住建图：打滑时 odom 还在涨，扫描会按错位姿进图。
-        # 只在"确认后"才暂停的话，确认本身要 1 s 左右，那 1 s 的错误扫描
-        # 已经写进图了，所以第一个"疑似"窗口就先摁住。
+        # 方案 §10.1 明确写着「而不是停止 SLAM 节点或切断激光输入」，
+        # 所以这里不再碰 slam_toolbox：保护地图只靠下面的协方差放大。
+        # （pause_slam_on_slip / suspend_slam 两个参数保留只为兼容旧 launch。）
         abnormal = self.machine.state != 'normal'
-        if bool(self.p('pause_on_suspect')) and now < self._suspect_until:
-            abnormal = True
-        want = self.pause_policy.want_pause(abnormal, now)
-        if self.pause_policy.take_capped_event():
-            self.get_logger().warn(
-                '打滑状态已持续 %.0f s，先恢复建图（一直停着更糟）'
-                % self.pause_policy.max_hold_s)
-        self.slam_guard.sync(want)
 
-        # 方案 §4：打滑期间放大编码器里程协方差（SLAM/TF 不中断）
+        # 方案 §10.1：打滑期间放大编码器里程协方差（SLAM/TF 不中断）
         if self.odom_guard is not None:
             self.odom_guard.set_inflated(abnormal)
 
@@ -490,6 +499,62 @@ class SlipNode(Node):
         self.get_logger().error(
             '打滑恢复失败，已停车并上报（%s），等人工处理'
             % action.get('reason'))
+
+    def _freeze_progress(self, want):
+        """方案 §11.2：冻结/恢复 Nav2 progress_checker 的计时。
+
+        做法是把 `controller_server` 上的 `progress_checker.movement_time_allowance`
+        临时调到很大（默认 3600 s），这样它不会因为"车没动够 0.25 m"去判失败、
+        进而调内建 recovery 跟我们的恢复动作抢 `/cmd_vel`（§11.1 的优先级只在我们
+        自己这一侧成立，Nav2 不知道）。回 NORMAL 再改回原值。
+        """
+        if not bool(self.p('freeze_progress_checker')):
+            return
+        if self._pc_frozen == want or self._pc_pending:
+            return
+        node = str(self.p('progress_checker_node'))
+        param = str(self.p('progress_checker_param'))
+        value = (float(self.p('progress_checker_hold_s')) if want
+                 else float(self.p('progress_checker_normal_s')))
+        try:
+            from rcl_interfaces.srv import SetParameters
+            from rcl_interfaces.msg import Parameter, ParameterValue, ParameterType
+            if self._pc_client is None:
+                self._pc_client = self.create_client(
+                    SetParameters, '%s/set_parameters' % node)
+            if not self._pc_client.service_is_ready():
+                if not self._pc_warned:
+                    self._pc_warned = True
+                    self.get_logger().warn(
+                        '%s 不在，冻结 progress_checker 跳过（不影响打滑检测）' % node)
+                return
+            req = SetParameters.Request()
+            val = ParameterValue()
+            val.type = ParameterType.PARAMETER_DOUBLE
+            val.double_value = value
+            one = Parameter()
+            one.name = param
+            one.value = val
+            req.parameters = [one]
+            self._pc_pending = True
+            future = self._pc_client.call_async(req)
+            future.add_done_callback(
+                lambda fut, w=want: self._on_pc_done(fut, w))
+        except Exception as exc:                      # noqa: BLE001
+            self._pc_pending = False
+            self.get_logger().warn('冻结 progress_checker 失败：%s' % exc)
+
+    def _on_pc_done(self, future, want):
+        self._pc_pending = False
+        try:
+            future.result()
+        except Exception as exc:                      # noqa: BLE001
+            self.get_logger().warn('冻结 progress_checker 请求失败：%s' % exc)
+            return
+        self._pc_frozen = want
+        self.get_logger().info(
+            'Nav2 progress_checker %s（防止它判无进展去抢控制权）'
+            % ('已冻结计时' if want else '计时已恢复'))
 
     def _cancel_nav_goal(self):
         """把 Nav2 手上的目标取消掉，免得它一直判"无进展"再调恢复行为。
@@ -624,7 +689,9 @@ class SlipNode(Node):
                 'stamp_offset': round(self._stamp_offset, 2),
             },
             'last_reason': self._last_reason,
-            'map_paused': self.slam_guard.paused,
+            # 方案 §10.1：建图不再暂停，这里保留字段给旧页面兼容，恒为 False
+            'map_paused': False,
+            'progress_frozen': bool(self._pc_frozen),
         }
         msg = String()
         msg.data = json.dumps(payload, ensure_ascii=False)
