@@ -53,6 +53,13 @@ class OdomCovarianceGuard(object):
     def frozen(self):
         return self._frozen
 
+    def subscriber_count(self):
+        """有几路在听 /odom_guarded。为 0 说明 EKF 还在听 /odom，这层防护是空转。"""
+        try:
+            return int(self._pub.get_subscription_count())
+        except Exception:                            # noqa: BLE001
+            return -1
+
     def set_inflated(self, want):
         """异常状态置 True；回到 NORMAL 置 False。"""
         want = bool(want)

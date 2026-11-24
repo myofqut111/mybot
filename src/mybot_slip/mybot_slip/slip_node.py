@@ -198,6 +198,7 @@ class SlipNode(Node):
         self._recovery_pose = None
         self._jump_reported = False
         self._conservative_reported = False
+        self._guard_warned = False
 
         # 20 Hz 轮询：窗口是 0.3 s，20 Hz 足够不丢边界
         self.create_timer(0.05, self._tick)
@@ -798,13 +799,28 @@ class SlipNode(Node):
                                fit.get('dx') or 0.0, fit.get('dy') or 0.0))
             else:
                 fit_txt = '配准 无'
+            if self.odom_guard is not None:
+                subs = self.odom_guard.subscriber_count()
+                if subs == 0 and not self._guard_warned:
+                    self._guard_warned = True
+                    self.get_logger().error(
+                        '没人订阅 %s：EKF 的 odom0 还在听 /odom，'
+                        '协方差放大和冻结都不会生效！'
+                        '请用 robot.launch.py（with_slip:=true）启动，'
+                        '或手动传 navigation 的 ekf_odom_topic:=%s'
+                        % (gp('odom_guard_out').value, gp('odom_guard_out').value))
+                elif subs > 0:
+                    self._guard_warned = False
             self.get_logger().info(
                 '采样 odom %.1f wheel %.1f imu %.1f scan %.1f cmd %.1f Hz｜'
-                '状态 %s｜%s｜最近原因 %s｜窗 t0=%.2f now=%.2f 样本 odom=%d cmd=%d 首 %.2f 末 %.2f｜'
+                '状态 %s｜冻结 %s｜%s｜最近原因 %s｜窗 t0=%.2f now=%.2f 样本 odom=%d cmd=%d 首 %.2f 末 %.2f｜'
                 'scan 帧 %d 最新 %.2f 窗内指令覆盖 %.2f'
                 % (r.get('odom', 0.0), r.get('wheel', 0.0), r.get('imu', 0.0),
                    r.get('scan', 0.0), r.get('cmd', 0.0),
-                   self._last_state or 'normal', fit_txt,
+                   self._last_state or 'normal',
+                   '是' if (self.odom_guard is not None
+                            and self.odom_guard.frozen) else '否',
+                   fit_txt,
                    self._last_reason or '无',
                    self.agg.t0 if self.agg.t0 is not None else -1.0, now,
                    len(self.agg.odom.items), len(self.agg.cmd.items),
