@@ -96,7 +96,7 @@ def generate_launch_description():
             'alternate_after_fail', default_value='true',
             description='恢复失败后是否换姿势（后退↔转向）'),
         DeclareLaunchArgument(
-            'pause_slam_on_slip', default_value='true',
+            'pause_slam_on_slip', default_value='false',
             description='打滑期间暂停 slam_toolbox（免得错位姿写进地图）；'
                         'amcl 模式下自动忽略'),
     ]

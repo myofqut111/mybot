@@ -418,7 +418,9 @@ class SlipStateMachine(object):
         # 直行空转 / 顶住障碍物：确认后方安全后短距离后退，并小幅反向调整
         # 方案 §9.3 + 表 12-1：第一次固定 0.12 m、−0.15 m/s、超时 1.5 s；
         # 第二次 0.20 m。不再按本窗位移比例算（那是 v1.0 的做法）。
-        second = self.stats.get('backs', 0) >= 1
+        # 第几次恢复按"本轮异常"算（self.recoveries 在 _start_recovery 里已 +1），
+        # 不能用累计的 stats['backs']——上一条路线的恢复次数会污染下一条。
+        second = self.recoveries >= 2
         dist = 0.20 if second else 0.12
         self.stats['backs'] += 1
         return {
