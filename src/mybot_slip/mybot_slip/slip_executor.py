@@ -120,6 +120,7 @@ class SlipExecutor(Node):
         self._inflate_saved = {}
         self._inflate_queue = []
         self._param_clients = {}
+        self._rear_warned = False     # §9.4 没有激光时只告警一次
         self.get_logger().info(
             '执行器就绪：动作来自 %s，结果发 %s（位移量用 %s，%s）'
             % (get('action_topic'), get('report_topic'), self.measure,
@@ -146,6 +147,37 @@ class SlipExecutor(Node):
                 self.monitor.add_yaw(w * dt)
         else:
             self._imu_last = now
+
+    def _rear_blocked(self, need):
+        """方案 §9.4：车体正后方 ±30° 扇区里有没有比 need 更近的东西。
+
+        返回最近的米数（< need 就是挡住了），测不了就返回 None（放行并告警一次）。
+        """
+        scan = self._scan_prev
+        if scan is None or not getattr(scan, 'ranges', None):
+            if not self._rear_warned:
+                self.get_logger().warn('没有激光数据，无法做后方安全检查（这次放行）')
+                self._rear_warned = True
+            return None
+        a0 = float(getattr(scan, 'angle_min', 0.0) or 0.0)
+        inc = float(getattr(scan, 'angle_increment', 0.0) or 0.0)
+        best = None
+        for i, r in enumerate(scan.ranges):
+            if r is None or r != r or r == float('inf'):
+                continue
+            a = a0 + i * inc
+            # 归一到 [-pi, pi]，只看背后 ±30°
+            while a > math.pi:
+                a -= 2.0 * math.pi
+            while a < -math.pi:
+                a += 2.0 * math.pi
+            if abs(abs(a) - math.pi) > math.radians(30.0):
+                continue
+            if best is None or r < best:
+                best = r
+        if best is None:
+            return None
+        return best if best < need else None
 
     def _on_scan(self, msg):
         """激光量位移：打滑时里程计正是在骗人的那一个，不能拿它验自己。"""
@@ -227,6 +259,14 @@ class SlipExecutor(Node):
             self._start_inflate(act)
             return
         if kind == 'back':
+            # 方案 §9.4：后退前先看车体后方 rear_check_m 扇区，有人/墙就别退
+            blocked = self._rear_blocked(float(act.get('rear_check_m') or 0.30))
+            if blocked is not None:
+                self.get_logger().warn('后方安全检查不通过：%.2f m（要求 ≥%.2f m）'
+                                       % (blocked, float(act.get('rear_check_m') or 0.30)))
+                self._report(act, ok=False, moved=0.0,
+                             why='后方 %.2f m 内有障碍，不能后退' % blocked, blocked=True)
+                return
             target = float(act.get('distance') or 0.0)
             monitor = TravelMonitor('back', target)
         elif kind == 'probe':
@@ -547,13 +587,14 @@ class SlipExecutor(Node):
         self.stop_until = time.monotonic() + self.settle_s
 
     def _report(self, act, ok, moved, why, odom_moved=None, signed=None,
-                scan_used=0, scan_drop=0, quality=0.0):
+                scan_used=0, scan_drop=0, quality=0.0, blocked=False):
         payload = {
             'id': act.get('id'),
             'kind': act.get('kind'),
             'ok': bool(ok),
             'moved': round(float(moved or 0.0), 4),
             'why': why,
+            'blocked': bool(blocked),
             'at': round(time.time(), 3),
         }
         if odom_moved is not None:

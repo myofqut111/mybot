@@ -16,7 +16,7 @@ DEFAULTS = {
     # ---- 窗口与使能 ----
     'v_floor': 0.10,          # 归一化滑移率的分母下限 m/s
     'omega_min': 0.30,        # 旋转判据的使能死区 rad/s
-    'd_floor_m': 0.005,       # 绝对位移死区
+    'd_floor_m': 0.03,        # 方案 §12：绝对位移死区 0.03 m
     # ---- 阈值 ----
     'r_high': 0.60,           # 确认用滑移率
     'r_low': 0.36,            # 解除用（= 0.6 * r_high）
@@ -36,7 +36,11 @@ DEFAULTS = {
     'scan_valid_ratio': 0.60,  # 激光置信度门槛（内点比例 ≥0.60）
     'score_min': 0.65,        # 激光匹配分下限（方案 12 章）
     'min_beams': 30,          # 有效束数下限（方案 12 章）
-    'turn_limit_rad': 0.30,   # 窗内转角超过它时 P1 只作参考
+    'turn_limit_rad': 0.30,   # 窗内转角超过它时 P1 只作参考（按 rad/s 判）
+    'omega_turn': 0.30,       # 方案 §12：转速超过它算"在转向"
+    'k_turn': 1.5,            # 方案 §12：转向时阈值放大的倍数
+    'max_tilt_deg': 10.0,     # 方案 §12：IMU 倾斜超过 10° 就不判（2D 假设不成立）
+    'imu_timeout_s': 0.10,    # 方案 §12：IMU 超过 100 ms 没数据视为不可用
     'angular_require_same_sign': True,  # P4 要求编码器与陀螺同向，反向视为传感器问题
 }
 
@@ -98,7 +102,20 @@ def evaluate(win, params=None, fit=None):
     dt = win.get('dt') or p.get('window_s', 0.3)
     cmd_v = win.get('cmd_linear') or 0.0
     cmd_w = win.get('cmd_angular') or 0.0
-    v_floor = max(p['v_floor'] * dt, p['d_floor_m'] * 4)
+    v_floor = max(p['v_floor'] * dt, p['d_floor_m'])
+
+    # ---------- 方案 §12：IMU 超时 / 车身倾斜 -> 这一窗不判 ----------
+    out['detail']['tilt_deg'] = win.get('tilt_deg')
+    if win.get('imu_stale'):
+        out['usable'] = False
+        out['reasons'].append('IMU 超过 %.0f ms 没数据' % (p['imu_timeout_s'] * 1000))
+        return out
+    tilt = win.get('tilt_deg')
+    if tilt is not None and abs(tilt) > p['max_tilt_deg']:
+        out['usable'] = False
+        out['reasons'].append('车身倾斜 %.1f°（>%.0f°，2D 假设不成立）'
+                              % (tilt, p['max_tilt_deg']))
+        return out
 
     # ---------- 激光平移估计 ----------
     if fit is None:
@@ -114,7 +131,10 @@ def evaluate(win, params=None, fit=None):
         (fit.get('coverage', 1.0) >= p['scan_valid_ratio']) and \
         (fit.get('beams', 0) >= p['min_beams'])
 
-    turning = abs(dtheta_enc) > p['turn_limit_rad']
+    turning = abs(dtheta_enc) * 2.0 / dt > p['turn_limit_rad'] if dt else False
+    # 方案 §12：转速 > ω_turn 时，阈值按 k_turn 放大（转向时 ICP 误差本来就大）
+    k = p['k_turn'] if dt and abs(dtheta_enc) / dt > p['omega_turn'] else 1.0
+    detail['threshold_scale'] = k
 
     ratios = out['ratios']
     cands = []
@@ -176,19 +196,19 @@ def evaluate(win, params=None, fit=None):
         ratios['linear'] = s
         shortfall = denc - (fit['dx'] or 0.0)
         # 低速度下 ICP 的绝对误差和位移同量级，差得不够多就不判
-        if s >= p['r_high'] and shortfall >= p['min_shortfall_m'] and scan_static:
+        if s >= p['r_high'] and shortfall >= p['min_shortfall_m'] * k and scan_static:
             cands.append(('LINEAR_SLIP', s,
                           '编码器 %.3fm，激光只有 %.3fm（滑移率 %.2f，激光可信度 %.2f）'
                           % (denc, fit['dx'], s, fit['quality'])))
         # ---------- P2 过位移 / 侧滑 ----------
-        if (s <= -p['r_high'] and -shortfall >= max(p['min_shortfall_m'], p['thresh_over_m'])
+        if (s <= -p['r_high'] and -shortfall >= max(p['min_shortfall_m'], p['thresh_over_m']) * k
                 and scan_static):
             cands.append(('OVERRUN', -s, '车体走了 %.3fm，轮子只记了 %.3fm（下坡/被推）'
                           % (fit['dx'], denc)))
         # 纯横向滑移：纵向走得没毛病（|s| 小），但车体偏偏横着挪了。
         # 不加 |s| 门的话，任何一次纵向突变（打滑开始那一帧）都会被它抢走。
         if (scan_trusted and abs(cmd_w) < 0.10 and abs(s) <= p['r_low']
-                and abs(fit.get('dy') or 0.0) > p['thresh_lat_m']):
+                and abs(fit.get('dy') or 0.0) > p['thresh_lat_m'] * k):
             cands.append(('LATERAL_SLIP', abs(fit['dy']), '横向漂了 %.3fm' % fit['dy']))
 
     # ---------- 传感器互相矛盾 ----------

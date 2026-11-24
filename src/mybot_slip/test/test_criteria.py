@@ -158,6 +158,38 @@ class CriteriaTest(unittest.TestCase):
                                   cmd=(0.0, 0.9)), fit=fit(dx=0.0))
         self.assertEqual(r['type'], 'SENSOR_CONFLICT')
 
+    # ---------- 方案 §12：IMU 超时 / 倾斜 / 转向放大 ----------
+    def test_imu_stale_window_is_not_judged(self):
+        w = win(denc=0.060, dtheta_imu=0.0)
+        w['imu_stale'] = True
+        r = criteria.evaluate(w, fit=fit(dx=0.0))
+        self.assertFalse(r['usable'])
+        self.assertFalse(r['slip'])
+
+    def test_tilt_over_ten_degrees_is_not_judged(self):
+        w = win(denc=0.060, dtheta_imu=0.0)
+        w['tilt_deg'] = 12.0
+        r = criteria.evaluate(w, fit=fit(dx=0.0))
+        self.assertFalse(r['usable'])
+        self.assertFalse(r['slip'])
+
+    def test_tilt_within_limit_still_judges(self):
+        w = win(denc=0.060, dtheta_imu=0.0)
+        w['tilt_deg'] = 6.0
+        r = criteria.evaluate(w, fit=fit(dx=0.0))
+        self.assertTrue(r['slip'])
+        self.assertEqual(r['type'], 'LINEAR_SLIP')
+
+    def test_turning_scales_threshold(self):
+        # 0.6 rad/s 转向：阈值 ×1.5，短差 0.045 m 不再算滑移
+        w = win(denc=0.060, dtheta_enc=0.24, dtheta_imu=0.24, cmd=(0.18, 0.6))
+        r = criteria.evaluate(w, fit=fit(dx=0.015))
+        self.assertEqual(r['detail'].get('threshold_scale'), 1.5)
+        self.assertNotEqual(r['type'], 'LINEAR_SLIP')
+        # 同样的差，在直行时就算滑移
+        r2 = criteria.evaluate(win(denc=0.060, dtheta_imu=0.0), fit=fit(dx=0.0))
+        self.assertTrue(r2['slip'])
+
 
 if __name__ == '__main__':
     unittest.main()

@@ -88,6 +88,9 @@ class SlipNode(Node):
         self.declare_parameter('pose_jump_m', 0.15)
         self.declare_parameter('pose_jump_rad', 0.20)
         self.declare_parameter('relocate_on_jump', True)
+        # 方案 §12：IMU 超时 100 ms / 车身倾斜 10°
+        self.declare_parameter('imu_timeout_s', 0.10)
+        self.declare_parameter('max_tilt_deg', 10.0)
 
         gp = self.get_parameter
         self.win_params = {
@@ -142,6 +145,8 @@ class SlipNode(Node):
         self._rate_ts = 0.0
         self._rate_cache = {}
         self._last_stamps = {}
+        self._imu_tilt = None       # 最近一次由加速度估出的车身倾角（度）
+        self._imu_tilt_at = 0.0
         self._stamp_warned = False
         self._suspect_until = 0.0
         self._stamp_offset = 0.0
@@ -290,6 +295,15 @@ class SlipNode(Node):
         self._alive['imu'] += 1
         self._last_stamps['imu'] = t
         self.agg.add_imu(t, msg.angular_velocity.z)
+        # 方案 §12：tilt 用加速度的重力方向估，超过 10° 说明 2D 假设不成立
+        ax = msg.linear_acceleration.x
+        ay = msg.linear_acceleration.y
+        az = msg.linear_acceleration.z
+        norm = math.sqrt(ax * ax + ay * ay + az * az)
+        if norm > 1e-3:
+            horiz = math.sqrt(ax * ax + ay * ay)
+            self._imu_tilt = math.degrees(math.atan2(horiz, abs(az)))
+            self._imu_tilt_at = t
 
     def _on_scan(self, msg):
         t = self._stamp(msg, self._now())
@@ -316,6 +330,10 @@ class SlipNode(Node):
             return
 
         for win in wins:
+            # 方案 §12：IMU 超时 100 ms / 倾斜 >10° 时这一窗不判
+            imu_at = self._last_stamps.get('imu')
+            win['imu_stale'] = (imu_at is None) or (now - imu_at > self.p('imu_timeout_s'))
+            win['tilt_deg'] = self._imu_tilt
             verdict = self._evaluate(win)
             if verdict.get('slip'):
                 self._suspect_until = now + float(self.p('suspect_hold_s'))
@@ -613,6 +631,18 @@ class SlipNode(Node):
         self.get_logger().warn(
             '动作回执：%s ok=%s moved=%.3f（%s）'
             % (rep.get('kind'), ok, float(moved or 0.0), rep.get('why') or ''))
+        if rep.get('blocked') and rep.get('kind') == 'back':
+            # §9.4 后方不安全：不许后退，改成原地转向脱困（同一次恢复机会）
+            self.get_logger().warn('后方不放行，改为原地转向脱困')
+            self.machine.pending_action = {
+                'action': 'escape',
+                'yaw': float(self.machine.p['escape_yaw_rad']),
+                'speed': float(self.machine.p['escape_speed']),
+                'timeout_s': 6.0,
+                'why': '后方 0.30 m 内有障碍，改原地转向',
+            }
+            self.machine.last_action = 'escape'
+            return
         self.machine.on_action_done(now, ok, moved=moved)
 
     def _evaluate(self, win):

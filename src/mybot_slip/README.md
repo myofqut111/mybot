@@ -112,6 +112,26 @@ ros2 param get /local_costmap/local_costmap inflation_layer.inflation_radius   #
 2. 别在定时器回调里 `spin_until_future_complete` 等参数回应——executor 正忙着跑这个
    回调，回应永远等不到。要 `call_async` + `add_done_callback`。
 
+## 对齐方案 §9.4 / §12 的四条（0.9.0）
+
+这四条之前只是"写了参数、没接逻辑"，0.9.0 补齐：
+
+| 方案条款 | 落点 | 做法 |
+|---|---|---|
+| §9.4 后退前查后方 0.3 m | `slip_executor._rear_blocked()` | 只在激光后向 ±30° 扇区里找最近点；挡住就不发速度，回执 `blocked=True` |
+| 后方被挡怎么继续 | `slip_node._on_report()` | 同一轮恢复内换成 `escape`（原地转向），不额外计一次恢复 |
+| §12 `Tstall 0.6 s` | `state._stall_ready()` | 堵转要连续 0.6 s 才确认，避免"刹一下"被当成堵转 |
+| §12 `k_turn 1.5` / `d_floor 0.03` / IMU 超时 / tilt 10° | `criteria.py` | 转向时阈值 ×1.5；位移下限 3 cm；IMU 超 100 ms 或倾角 >10° 整窗不判 |
+
+```bash
+# 默认值即方案值，需要改时在命令行覆盖
+ros2 launch fishbot_slip slip.launch.py ... imu_timeout_s:=0.10 max_tilt_deg:=10.0
+```
+
+横向精度：ICP 从点对点改点对线（`ranges._normals` + `_solve` 法向残差）后，
+真包 `~/bags/2026` 1031 窗实测 `dy` 中位 0.2 mm、95 分位 3.8 mm、最大 12.3 mm，
+对方案给的 `thresh_lat 0.03 m` 有约 8 倍余量——所以不动方案数字。
+
 ## 保护地图：只放大协方差，不碰 SLAM（0.8.0）
 
 方案 §10.1 写得很明确：「协方差放大 10~100 倍……**而不是停止 SLAM 节点或切断激光输入**」。

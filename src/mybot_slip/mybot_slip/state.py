@@ -36,6 +36,7 @@ DEFAULTS = {
     'alternate_after_fail': True,   # 失败后换姿势（后退<->转向）；关掉就重复同一种
     'recovery_cooldown_s': 5.0,   # 方案 §9.6：FAILED 复位后 5 s 冷却
     'settle_s': 0.3,           # 方案 §9.5：CHECK 前静止 0.3 s
+    'stall_hold_s': 0.6,       # 方案 §12 Tstall：堵转要持续 0.6 s
     'stall_no_back': True,
     'retry_m': 0.10,           # 单轮打滑：低速重试走多远
     'retry_speed': 0.08,
@@ -67,6 +68,7 @@ class SlipStateMachine(object):
         self.slip_count = 0
         self.clean_count = 0
         self.first_slip_at = None
+        self.first_stall_at = None
         self.recoveries = 0
         self.recovery_started_at = None
         self.pending_action = None       # 等外部执行
@@ -89,6 +91,7 @@ class SlipStateMachine(object):
         self.slip_count = 0
         self.clean_count = 0
         self.first_slip_at = None
+        self.first_stall_at = None
         self.recoveries = 0
         self.failed_at = None
 
@@ -239,8 +242,20 @@ class SlipStateMachine(object):
             self.first_slip_at = now
         self.slip_count += 1
         self.type = verdict.get('type')
+        if self.type == 'STALL' and self.first_stall_at is None:
+            # 方案 §12 Tstall：从第一个堵转窗开始计时
+            self.first_stall_at = now
         self.state = SLIP
         return self._idle('suspect')
+
+    def _stall_ready(self, now, verdict):
+        """方案 §12 Tstall：堵转必须持续 0.6 s 才算，短暂停一下不算。"""
+        if verdict.get('type') != 'STALL':
+            self.first_stall_at = None
+            return True
+        if self.first_stall_at is None:
+            self.first_stall_at = now
+        return (now - self.first_stall_at) >= self.p['stall_hold_s'] - 1e-9
 
     def _step_slip(self, now, verdict):
         if verdict.get('slip'):
@@ -249,7 +264,8 @@ class SlipStateMachine(object):
             first = self.first_slip_at if self.first_slip_at is not None else now
             span = now - first
             if (self.slip_count >= self.p['confirm_windows']
-                    and span >= self.p['confirm_window_s'] - 1e-9):
+                    and span >= self.p['confirm_window_s'] - 1e-9
+                    and self._stall_ready(now, verdict)):
                 if not self.allow_recovery:
                     # 没有执行器：只报警不动手，但状态留住，别让人以为已经好了
                     return self._idle('slip confirmed (recovery disabled)')

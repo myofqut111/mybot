@@ -72,7 +72,8 @@ class StallTest(unittest.TestCase):
         """方案 §3：堵转不后退、不加力，停车上报等人工。"""
         m = st.SlipStateMachine({'confirm_window_s': 0.0})
         m.step(0.0, verdict('STALL'))
-        out = m.step(0.3, verdict('STALL'))
+        # 方案 §12 Tstall：必须持续 0.6 s
+        out = m.step(0.8, verdict('STALL'))
         self.assertEqual(out['action'], 'stop')
         self.assertTrue(out.get('terminal'))
         self.assertNotIn('distance', out)
@@ -219,7 +220,10 @@ class NoExecutorTest(unittest.TestCase):
         """堵转：任何情况下都不发后退，只停车上报。"""
         m = st.SlipStateMachine({'confirm_window_s': 0.0})
         m.step(0.0, verdict('STALL'))
-        out = m.step(0.3, verdict('STALL'))
+        # 方案 §12 Tstall：堵转要持续 0.6 s，0.4 s 时还不该动
+        out = m.step(0.4, verdict('STALL'))
+        self.assertIsNone(out['action'])
+        out = m.step(0.8, verdict('STALL'))
         self.assertEqual(out['action'], 'stop')
         self.assertEqual(m.stats['backs'], 0)
         self.assertEqual(m.stats['escapes'], 0)
