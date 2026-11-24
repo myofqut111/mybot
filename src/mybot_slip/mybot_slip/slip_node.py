@@ -50,7 +50,7 @@ class SlipNode(Node):
         self.declare_parameter('debug_period_s', 5.0)   # 0 = 不打采样日志
         self.declare_parameter('use_header_stamp', False)  # 默认按接收时间切窗（各话题时钟可能不一致）
         self.declare_parameter('max_stamp_offset', 2.0)   # 时间戳与本机差超过它就当不可信
-        self.declare_parameter('pause_on_suspect', True)  # 一见到疑似就打住建图
+        self.declare_parameter('pause_on_suspect', False)  # 一见到疑似就打住建图
         self.declare_parameter('suspect_hold_s', 1.5)
         self.declare_parameter('max_window_s', 1.5)     # 里程计稀疏时窗口最多拉这么长
         self.declare_parameter('min_odom_samples', 2)   # 窗口里至少要几条 odom
@@ -313,12 +313,14 @@ class SlipNode(Node):
             state_before = self._last_state
             self._last_state = self.machine.state
             if state_before != self.machine.state:
+                reasons = (verdict.get('reasons') or [])
                 self.get_logger().info(
-                    '状态 %s → %s（%s）｜窗 %.2f s，滑移率 %s'
+                    '状态 %s → %s（%s）｜窗 %.2f s，滑移率 %s%s'
                     % (state_before or 'normal', self.machine.state,
                        action.get('reason', ''),
                        win.get('t1', 0.0) - win.get('t0', 0.0),
-                       {k: round(v, 2) for k, v in (verdict.get('ratios') or {}).items()}))
+                       {k: round(v, 2) for k, v in (verdict.get('ratios') or {}).items()},
+                       ('｜判据 %s' % reasons[0]) if reasons else ''))
             kind = action.get('action')
             if kind in ('back', 'escape', 'inflate', 'stop', 'probe', 'go'):
                 # 只有真的要让车动（或改参数）才发给执行器
@@ -350,8 +352,10 @@ class SlipNode(Node):
         # 让 cmd_mux 一直把控制权留在恢复这一侧（否则 Nav2 还在往前开）。
         self._hold_still(now)
 
-        # 方案 §2：一进恢复就取消 Nav2 目标，别让它一边判"无进展"一边调恢复行为
-        if self.machine.state in ('slip', 'recovery') and not self._nav_cancelled:
+        # 方案 §2：一进恢复就取消 Nav2 目标，别让它一边判"无进展"一边调恢复行为。
+        # 只对**确认后**的 recovery 生效：suspect 每 1~2 秒就可能来一次，
+        # 在疑似阶段取消目标等于把导航掐死（今天 6 次跑里取消了约 100 次）。
+        if self.machine.state == 'recovery' and not self._nav_cancelled:
             self._nav_cancelled = True
             self._recovery_pose = self._pose
             self._cancel_nav_goal()
@@ -456,7 +460,10 @@ class SlipNode(Node):
         `cmd_mux` 只在"恢复这一侧最近 0.5 s 还有指令"时才让路，所以这里要
         一直续；真机上手抖发一条零速是不够的。
         """
-        if self.machine.state == 'normal' or self.machine.pending_action:
+        # 只有"确认了"才摁车。以前连 suspect 也发零速，一条误判就能让
+        # cmd_mux 把速度通道抢过去，车原地一顿、Nav2 目标被取消——真机上
+        # 表现为"走走停停、建图半天建不完"。疑似阶段只记录，不动车。
+        if self.machine.state != 'recovery' or self.machine.pending_action:
             return
         if now - self._last_hold < 0.1:
             return

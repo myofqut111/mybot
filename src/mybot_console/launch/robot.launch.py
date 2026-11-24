@@ -103,7 +103,7 @@ def generate_launch_description():
         package='mybot_console',
         executable='robot_console',
         name='mybot_console',
-        output='screen',
+        output='both',
         respawn=True,
         respawn_delay=2.0,
         parameters=[console_params,

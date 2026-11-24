@@ -38,7 +38,7 @@ def _nodes(context):
             package='fishbot_slip',
             executable='slip_node',
             name='slip_node',
-            output='screen',
+            output='both',
             parameters=[{
                 'scan_topic': scan,
                 'recovery_enabled': recovery,
@@ -50,7 +50,7 @@ def _nodes(context):
             package='fishbot_slip',
             executable='slip_executor',
             name='slip_executor',
-            output='screen',
+            output='both',
             parameters=[{
                 'cmd_topic': executor_cmd,
                 'dry_run': dry,
@@ -62,7 +62,7 @@ def _nodes(context):
             package='fishbot_slip',
             executable='cmd_mux',
             name='cmd_mux',
-            output='screen',
+            output='both',
             parameters=[{
                 'nav_topic': nav_in,
                 'slip_topic': '/cmd_vel_slip',

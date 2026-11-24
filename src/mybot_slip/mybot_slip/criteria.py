@@ -186,9 +186,15 @@ def evaluate(win, params=None, fit=None):
             cands.append(('LATERAL_SLIP', abs(fit['dy']), '横向漂了 %.3fm' % fit['dy']))
 
     # ---------- 传感器互相矛盾 ----------
-    if dtheta_imu is not None and scan_trusted and abs(dtheta_enc) < 0.02 and \
-            abs(dtheta_imu) > max(p['omega_min'] * dt, 0.05):
-        cands.append(('SENSOR_CONFLICT', 1.0, '编码器说没转，陀螺说转了 %.3frad' % dtheta_imu))
+    # 必须是"我们要它转、编码器说没转、陀螺说转了"才算矛盾。
+    # 真机日志里这一条每 1~2 秒就亮一次（编码器 0、陀螺 0.3+ rad/s）：
+    # 直行时陀螺有零偏、原地不动时编码器本来就不转，不加指令门等于天天误报。
+    if (dtheta_imu is not None and scan_trusted
+            and abs(cmd_w) >= p['omega_min']
+            and abs(dtheta_enc) < 0.02
+            and abs(dtheta_imu) > max(p['omega_min'] * dt, 0.05)):
+        cands.append(('SENSOR_CONFLICT', 1.0, '指令转 %.2frad/s，编码器说没转，陀螺说转了 %.3frad'
+                      % (cmd_w, dtheta_imu)))
 
     if not cands:
         return out

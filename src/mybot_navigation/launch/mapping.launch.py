@@ -29,14 +29,14 @@ def generate_launch_description():
         package='robot_state_publisher',
         executable='robot_state_publisher',
         parameters=[{'robot_description': robot_description}],
-        output='screen')
+        output='both')
 
     # 1) EKF：融合 /odom(编码器) + /imu，发布 /odometry/filtered 和 odom->base_link TF
     ekf_node = Node(
         package='robot_localization',
         executable='ekf_node',
         name='ekf_filter_node',
-        output='screen',
+        output='both',
         parameters=[os.path.join(nav_share, 'config', 'ekf.yaml')])
 
     # 2) slam_toolbox 在线异步建图（真机 use_sim_time=false，并加载钉死 base_link
@@ -58,7 +58,7 @@ def generate_launch_description():
         name='rviz2',
         arguments=['-d', rviz_config],
         condition=IfCondition(rviz),
-        output='screen')
+        output='both')
 
     return LaunchDescription([
         DeclareLaunchArgument(

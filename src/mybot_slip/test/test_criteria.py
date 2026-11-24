@@ -145,6 +145,19 @@ class CriteriaTest(unittest.TestCase):
         released, _ = criteria.is_released(w, fit=fit(dx=0.058))
         self.assertTrue(released)
 
+    def test_sensor_conflict_needs_turn_command(self):
+        # 直行时（cmd_w≈0）陀螺有零偏、编码器本来就不转，不该算矛盾。
+        r = criteria.evaluate(win(denc=0.054, dtheta_enc=0.0, dtheta_imu=0.20,
+                                  cmd=(0.18, 0.0)), fit=fit(dx=0.052))
+        self.assertNotEqual(r['type'], 'SENSOR_CONFLICT')
+
+    def test_sensor_conflict_fires_when_asked_to_turn(self):
+        # 让车转 0.9 rad/s，编码器说没转、陀螺说转了 → 真矛盾
+        # denc 取 0.02：既高于堵转门槛（否则先判 STALL），又不足以构成直行滑移
+        r = criteria.evaluate(win(denc=0.02, dtheta_enc=0.0, dtheta_imu=0.20,
+                                  cmd=(0.0, 0.9)), fit=fit(dx=0.0))
+        self.assertEqual(r['type'], 'SENSOR_CONFLICT')
+
 
 if __name__ == '__main__':
     unittest.main()

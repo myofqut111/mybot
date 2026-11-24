@@ -28,7 +28,7 @@ def generate_launch_description():
         package='mybot_console',
         executable='mock_robot',
         name='mock_robot',
-        output='screen',
+        output='both',
     )
 
     return LaunchDescription([console, mock])

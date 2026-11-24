@@ -31,7 +31,7 @@ def generate_launch_description():
         package='mybot_explore',
         executable='explore_node',
         name='explore_node',
-        output='screen',
+        output='both',
         parameters=[params, {'drive': drive, 'autostart': autostart}],
     )
 

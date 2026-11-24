@@ -205,7 +205,7 @@ def generate_launch_description():
     # Humble 的 LifecycleNode 强制要求 namespace 关键字，即使空也要显式传 ''
     lifecycle_kwargs = dict(
         namespace='',
-        output='screen',
+        output='both',
         parameters=[configured_params, {'use_sim_time': use_sim_time}],
     )
 
@@ -217,14 +217,14 @@ def generate_launch_description():
         package='robot_state_publisher',
         executable='robot_state_publisher',
         parameters=[{'robot_description': robot_description}],
-        output='screen')
+        output='both')
 
     # ------------------------- 1. EKF（替代 FAST-LIO 里程计） -------------------------
     ekf_node = Node(
         package='robot_localization',
         executable='ekf_node',
         name='ekf_filter_node',
-        output='screen',
+        output='both',
         parameters=[ekf_params_file, {
             'use_sim_time': use_sim_time,
             'publish_tf': ParameterValue(ekf_publish_tf, value_type=bool),
@@ -239,7 +239,7 @@ def generate_launch_description():
     # 把假位移挡在位姿链外（治"两张图拼在一起"）。
     odom_shim_node = Node(
         package='mybot_explore', executable='odom_shim',
-        name='odom_shim', output='screen',
+        name='odom_shim', output='both',
         parameters=[{
             'odom_topic': '/odometry/filtered',
             'gate_topic': '/explore/scan_gate',
@@ -262,7 +262,7 @@ def generate_launch_description():
     # 这样"打滑丢帧"和"建图"解耦——以前整段 pause 会把地图一起停掉。
     scan_gate = Node(
         package='mybot_navigation', executable='scan_gate.py',
-        name='scan_gate', output='screen',
+        name='scan_gate', output='both',
         parameters=[{
             'input_topic': '/scan',
             'output_topic': '/scan_filtered',
@@ -286,7 +286,7 @@ def generate_launch_description():
     # 定位生命周期管理器：延时后才启动，启动即(autostart)激活 map_server+amcl
     lm_localization = Node(
         package='nav2_lifecycle_manager', executable='lifecycle_manager',
-        name='lifecycle_manager_localization', output='screen',
+        name='lifecycle_manager_localization', output='both',
         condition=IfCondition(use_amcl),
         parameters=[{
             'use_sim_time': use_sim_time,
@@ -316,7 +316,7 @@ def generate_launch_description():
     # 激活顺序：bt_navigator 必须最后（它要等 planner/controller 的 action server）。
     lm_navigation = Node(
         package='nav2_lifecycle_manager', executable='lifecycle_manager',
-        name='lifecycle_manager_navigation', output='screen',
+        name='lifecycle_manager_navigation', output='both',
         parameters=[{
             'use_sim_time': use_sim_time,
             'autostart': autostart,
@@ -329,7 +329,7 @@ def generate_launch_description():
     # ------------------------- 4. 定位门控（硬件无关，沿用 Go2 设计） -------------------------
     localization_gate = Node(
         package='mybot_navigation', executable='wait_for_localization.py',
-        name='navigation_localization_gate', output='screen',
+        name='navigation_localization_gate', output='both',
         parameters=[{
             'use_sim_time': use_sim_time,
             'stable_duration': gate_stable_duration,
@@ -380,7 +380,7 @@ def generate_launch_description():
         package='rviz2', executable='rviz2', name='rviz2',
         arguments=['-d', rviz_config],
         parameters=[{'use_sim_time': use_sim_time}],
-        condition=IfCondition(rviz), output='screen')
+        condition=IfCondition(rviz), output='both')
 
     ld = LaunchDescription()
     for arg in declare_args:
