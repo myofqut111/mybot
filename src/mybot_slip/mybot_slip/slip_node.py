@@ -13,6 +13,7 @@
 
 from __future__ import annotations
 
+from collections import deque
 import json
 import math
 
@@ -177,6 +178,7 @@ class SlipNode(Node):
         self._rate_cache = {}
         self._last_stamps = {}
         self._imu_tilt = None       # 最近一次由加速度估出的车身倾角（度）
+        self._acc_hist = deque(maxlen=300)   # (t, ||a||-g)，给 P1-b 判"车体是否真的没动"
         self._imu_tilt_at = 0.0
         self._acc_f = None          # 加速度一阶低通的状态（滤掉行进冲击，只留重力方向）
         self._tilt_bias = None      # IMU 安装倾角基准（这台车静止时就有 ~16°）
@@ -366,6 +368,11 @@ class SlipNode(Node):
                 self._tilt_bias += 0.02 * (raw - self._tilt_bias)
             self._imu_tilt = abs(raw - self._tilt_bias)
             self._imu_tilt_at = t
+        # P1-b 的前提：车体是否真的静止。记 |a| 相对重力的偏离，按窗算 RMS。
+        # 注意用未滤波的原始值——滤波会把振动抹掉，就没法区分"车没动"和"车在跑"。
+        self._acc_hist.append((t, abs(norm - 9.81)))
+        while len(self._acc_hist) > 2 and t - self._acc_hist[0][0] > 2.0:
+            self._acc_hist.popleft()
 
     def _on_scan(self, msg):
         t = self._stamp(msg, self._now())
@@ -413,6 +420,14 @@ class SlipNode(Node):
             imu_at = self._last_stamps.get('imu')
             win['imu_stale'] = (imu_at is None) or (now - imu_at > self.p('imu_timeout_s'))
             win['tilt_deg'] = self._imu_tilt
+            # P1-b 的前提量：这一窗里车体"晃不晃"。顶着箱子时 1~2 m/s²，
+            # 正常行驶 4~6 m/s²；长走廊直行靠它把"视野没变"和"车没动"分开。
+            t0w, t1w = win.get('t0'), win.get('t1')
+            if t0w is not None and t1w is not None and self._acc_hist:
+                devs = [d for (tt, d) in self._acc_hist if t0w <= tt <= t1w]
+                if devs:
+                    win['acc_rms'] = math.sqrt(
+                        sum(d * d for d in devs) / len(devs))
             verdict = self._evaluate(win)
             if verdict.get('slip'):
                 self._suspect_until = now + float(self.p('suspect_hold_s'))

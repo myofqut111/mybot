@@ -46,7 +46,7 @@ DEFAULTS = {
     'static_trust_m': 0.0,
     # P1-b：视野变化量 / 编码器位移 的上限（0=关闭）。几何退化（大平面正对、
     # 配准无平移信息）时，这条不依赖配准，靠"轮子走得多、视野变得少"判滑移。
-    'motion_ratio_max': 0.40,
+    'motion_ratio_max': 0.0,   # P1-b 默认关：实测走廊直行时 motion 也才 0.02~0.05，分不开
     'min_beams': 30,          # 有效束数下限（方案 12 章）
     'turn_limit_rad': 0.30,   # 窗内转角超过它时 P1 只作参考（按 rad/s 判）
     'omega_turn': 0.30,       # 方案 §12：转速超过它算"在转向"
@@ -54,6 +54,9 @@ DEFAULTS = {
     'max_tilt_deg': 10.0,     # 方案 §12：IMU 倾斜超过 10° 就不判（2D 假设不成立）
     'imu_timeout_s': 0.10,    # 方案 §12：IMU 超过 100 ms 没数据视为不可用
     'angular_require_same_sign': True,  # P4 要求编码器与陀螺同向，反向视为传感器问题
+    # P1-b 的前提：车体自己得是静止的。实测顶着箱子时 |a| 去均值 RMS 1.0~2.3、
+    # 正常行驶 4.4~6.0 m/s²；不设这一条，长走廊直行会被判成滑移（孔径问题）。
+    'p1b_max_acc_rms': 3.0,   # 0 = 关闭这条前提
 }
 
 TYPES = (
@@ -220,7 +223,14 @@ def evaluate(win, params=None, fit=None):
     # ICP 失败时扫描其实变了（motion≈真实位移）。motion 明显不为 0 就不判。
     motion = fit.get('motion')
     scan_static = (motion is None) or (motion <= p['max_scan_motion_m'])
-    if scan_trusted and not turning and abs(denc) > effective_threshold(denc, p):
+    # 配准质量差时（顶着箱子那种退化场景，quality 常只有 0.24~0.58），
+    # 只要"两种初值都收敛到 dx≈0"，这个 0 仍然是可信的——真走了的话，
+    # 从里程计初值出发的 ICP 会跟着走（实测走廊直行：dx=0.067 ≈ 编码器 0.066）。
+    static_fit = (abs(fit['dx'] or 0.0) <= p.get('d_floor_m', 0.03)
+                  and (fit['quality'] or 0.0) >= p.get('static_quality_min', 0.30)
+                  and (fit['coverage'] or 0.0) >= p['scan_valid_ratio'])
+    if (scan_trusted or static_fit) and not turning \
+            and abs(denc) > effective_threshold(denc, p):
         s = _slip_ratio(denc, fit['dx'], floor=v_floor)
         ratios['linear'] = s
         shortfall = denc - (fit['dx'] or 0.0)
@@ -250,14 +260,27 @@ def evaluate(win, params=None, fit=None):
     if (p['motion_ratio_max'] > 0.0 and motion is not None and covered
             and not turning
             and abs(denc) > effective_threshold(denc, p)):
+        # 车体自己得是"真的没在动"——否则长走廊直行时也是"视野几乎不变"
+        # （车走了 12 cm，扫描最近点只变 3 cm，孔径问题），会把正常行驶判成滑移。
+        # 用 IMU 加速度去均值的 RMS 区分：顶着箱子时 1.0~2.3，正常行驶 4.4~6.0 m/s²。
+        acc_limit = p.get('p1b_max_acc_rms', 0.0)
+        acc_rms = win.get('acc_rms')
+        if acc_limit > 0.0 and acc_rms is not None and acc_rms > acc_limit:
+            quiet = False
+        else:
+            quiet = True
         ratio = motion / abs(denc)
         s_b = 1.0 - ratio
-        if ratio <= p['motion_ratio_max'] and s_b >= p['r_high']:
+        if quiet and ratio <= p['motion_ratio_max'] and s_b >= p['r_high']:
             ratios['motion_ratio'] = ratio
+            if acc_rms is not None:
+                ratios['acc_rms'] = round(float(acc_rms), 2)
             if 'LINEAR_SLIP' not in [c[0] for c in cands]:
                 cands.append(('LINEAR_SLIP', s_b,
                               '编码器 %.3fm，视野只变化 %.3fm（比值 %.2f；'
-                              '此处配准给不出位移）' % (denc, motion, ratio)))
+                              '车体加速度 RMS %.1f 说明车没在晃）'
+                              % (denc, motion, ratio,
+                                 float(acc_rms) if acc_rms is not None else -1.0)))
 
     # ---------- 传感器互相矛盾 ----------
     # 必须是"我们要它转、编码器说没转、陀螺说转了"才算矛盾。

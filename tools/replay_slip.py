@@ -89,6 +89,7 @@ def main():
     n_invalid = 0
     inv_why = {}
     n_slip = 0
+    acc_hist = []
     fed = {}
     last_t = 0.0
     first_t = None
@@ -118,6 +119,9 @@ def main():
                 agg.add_wheel(t, pos[0], pos[1])
         elif kind == 'imu':
             agg.add_imu(t, msg.angular_velocity.z)
+            a = msg.linear_acceleration
+            acc_hist.append((t, abs(math.sqrt(a.x * a.x + a.y * a.y + a.z * a.z)
+                                    - 9.81)))
         elif kind == 'scan':
             if msg.ranges:
                 agg.add_scan(t, msg)
@@ -141,6 +145,13 @@ def main():
                 fit = None
                 if win.get('scan_ok'):
                     fit = ranges.fit_translation(win['scan_prev'], win['scan_cur'])
+                # 与节点一致：给 P1-b 填"车体晃不晃"
+                t0w, t1w = win.get('t0'), win.get('t1')
+                if t0w is not None and t1w is not None and acc_hist:
+                    devs = [d for (tt, d) in acc_hist if t0w <= tt <= t1w]
+                    if devs:
+                        win['acc_rms'] = math.sqrt(
+                            sum(d * d for d in devs) / len(devs))
                 v = criteria.evaluate(win, None, fit)
                 if os.environ.get('SHOW_MOTION') and v.get('slip'):
                     print('  t=%.1f motion=%s dx=%s denc=%s q=%s' % (

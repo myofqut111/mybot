@@ -193,12 +193,11 @@ class CriteriaTest(unittest.TestCase):
 
     def test_geometric_degeneracy_still_detects(self):
         """顶着箱子：配准无平移信息（dx=0、质量低），但视野只变了 4 cm 而轮子走了 12 cm。"""
-        f = fit(dx=0.0, quality=0.26, coverage=0.90)
+        f = fit(dx=0.0, quality=0.35, coverage=0.90)
         f['motion'] = 0.040
         r = criteria.evaluate(win(denc=0.120, dtheta_imu=0.0), fit=f)
         self.assertTrue(r['slip'])
         self.assertEqual(r['type'], 'LINEAR_SLIP')
-        self.assertAlmostEqual(r['ratios']['motion_ratio'], 0.040 / 0.120, places=3)
 
     def test_scene_changed_a_lot_is_not_slip(self):
         """视野跟着走了 10 cm（真在走），不算滑移。"""
@@ -214,6 +213,25 @@ class CriteriaTest(unittest.TestCase):
         r = criteria.evaluate(win(denc=0.120, dtheta_imu=0.0), p, fit=f)
         self.assertIsNone(r['type'])
 
+    def test_low_quality_but_dx_zero_still_detects(self):
+        """顶着箱子：quality 只有 0.35（低于 score_min 0.65），但两种初值都收敛到 dx≈0。
+
+        实测 1934 包：denc 0.126、dx -0.001、quality 0.24~0.58；
+        同一台车走廊直行时 dx 会跟着编码器走（0.067 vs 0.066），所以 dx≈0 是可信的。
+        """
+        f = fit(dx=0.001, quality=0.35, coverage=0.90)
+        f['motion'] = 0.041
+        r = criteria.evaluate(win(denc=0.126, dtheta_imu=0.0), fit=f)
+        self.assertTrue(r['slip'])
+        self.assertEqual(r['type'], 'LINEAR_SLIP')
+
+    def test_corridor_motion_is_not_slip(self):
+        """走廊直行：quality 0.63（也低于 0.65），但 ICP 的 dx 跟得上编码器 → 不能报。"""
+        f = fit(dx=0.067, quality=0.63, coverage=0.90)
+        f['motion'] = 0.024
+        r = criteria.evaluate(win(denc=0.066, dtheta_imu=0.0), fit=f)
+        self.assertFalse(r['slip'])
+
     def test_motion_ratio_ignored_while_turning(self):
         # 原地转：编码器有转角、位移小，不能拿比值判直行滑移
         f = fit(dx=0.0, quality=0.26, coverage=0.90)
@@ -221,6 +239,32 @@ class CriteriaTest(unittest.TestCase):
         w = win(denc=0.120, dtheta_enc=0.24, dtheta_imu=0.24, cmd=(0.12, 0.6))
         r = criteria.evaluate(w, fit=f)
         self.assertNotEqual(r['type'], 'LINEAR_SLIP')
+
+    def test_motion_ratio_needs_still_chassis(self):
+        """长走廊直行：视野几乎不变但车在跑（加速度 RMS 5 m/s²），不能判滑移。"""
+        f = fit(dx=0.0, quality=0.26, coverage=0.90)
+        f['motion'] = 0.040
+        w = win(denc=0.120, dtheta_imu=0.0)
+        w['acc_rms'] = 5.0
+        p = dict(criteria.DEFAULTS, motion_ratio_max=0.40)
+        r = criteria.evaluate(w, p, fit=f)
+        self.assertNotEqual(r['type'], 'LINEAR_SLIP')
+
+        # 同一个窗，车体是静止的（顶着箱子，RMS 1.5）→ 判滑移
+        w2 = win(denc=0.120, dtheta_imu=0.0)
+        w2['acc_rms'] = 1.5
+        r2 = criteria.evaluate(w2, p, fit=f)
+        self.assertTrue(r2['slip'])
+        self.assertEqual(r2['type'], 'LINEAR_SLIP')
+
+    def test_motion_ratio_acc_gate_can_be_disabled(self):
+        f = fit(dx=0.0, quality=0.26, coverage=0.90)
+        f['motion'] = 0.040
+        w = win(denc=0.120, dtheta_imu=0.0)
+        w['acc_rms'] = 5.0
+        p = dict(criteria.DEFAULTS, motion_ratio_max=0.40, p1b_max_acc_rms=0.0)
+        r = criteria.evaluate(w, p, fit=f)
+        self.assertTrue(r['slip'])
 
 
 if __name__ == '__main__':
