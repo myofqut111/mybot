@@ -41,6 +41,9 @@ DEFAULTS = {
     'wheel_base_m': 0.175,    # 轮距，用于左右轮反解
     'scan_valid_ratio': 0.60,  # 激光置信度门槛（内点比例 ≥0.60）
     'score_min': 0.65,        # 激光匹配分下限（方案 12 章）
+    # 不依赖配准的"世界没动"旁路：两帧扫描最近点位移中位数 <= 它就采信。
+    # 0 = 关闭（只看 score_min，与方案 12 章字面一致）。
+    'static_trust_m': 0.0,
     'min_beams': 30,          # 有效束数下限（方案 12 章）
     'turn_limit_rad': 0.30,   # 窗内转角超过它时 P1 只作参考（按 rad/s 判）
     'omega_turn': 0.30,       # 方案 §12：转速超过它算"在转向"
@@ -142,9 +145,17 @@ def evaluate(win, params=None, fit=None):
     detail = out['detail']
     detail['fit'] = fit
     scan_ok = bool(fit.get('ok')) and fit.get('coverage', 0.0) >= 0.0
-    scan_trusted = scan_ok and (fit.get('quality', 0.0) >= p['score_min']) and \
-        (fit.get('coverage', 1.0) >= p['scan_valid_ratio']) and \
+    covered = (fit.get('coverage', 1.0) >= p['scan_valid_ratio']) and \
         (fit.get('beams', 0) >= p['min_beams'])
+    # 方案 §12 的 score_min 是"配准可信"的门。但顶着箱子/贴墙时视野里全是近处大目标，
+    # 内点比天然低（实测 0.24~0.58），配准分不可信；此时若两帧扫描的最近点位移本身就很
+    # 小（<= static_trust_m），"世界没动"这个事实是**不依赖配准**直接量出来的，可以采信。
+    # static_trust_m = 0 表示关闭该旁路，行为与只看 score_min 完全一致。
+    motion = fit.get('motion')
+    strong = (fit.get('quality', 0.0) >= p['score_min']) or \
+        (p['static_trust_m'] > 0.0 and motion is not None
+         and motion <= p['static_trust_m'])
+    scan_trusted = scan_ok and covered and strong
 
     turning = abs(dtheta_enc) * 2.0 / dt > p['turn_limit_rad'] if dt else False
     # 方案 §12：转速 > ω_turn 时，阈值按 k_turn 放大（转向时 ICP 误差本来就大）
