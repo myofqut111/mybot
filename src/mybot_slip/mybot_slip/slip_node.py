@@ -178,6 +178,8 @@ class SlipNode(Node):
         self._last_stamps = {}
         self._imu_tilt = None       # 最近一次由加速度估出的车身倾角（度）
         self._imu_tilt_at = 0.0
+        self._acc_f = None          # 加速度一阶低通的状态（滤掉行进冲击，只留重力方向）
+        self._tilt_bias = None      # IMU 安装倾角基准（这台车静止时就有 ~16°）
         self._stamp_warned = False
         self._suspect_until = 0.0
         self._stamp_offset = 0.0
@@ -343,8 +345,26 @@ class SlipNode(Node):
         az = msg.linear_acceleration.z
         norm = math.sqrt(ax * ax + ay * ay + az * az)
         if norm > 1e-3:
-            horiz = math.sqrt(ax * ax + ay * ay)
-            self._imu_tilt = math.degrees(math.atan2(horiz, abs(az)))
+            # 加速度计测到的是"重力 + 运动加速度"。加速/顶住箱子时水平分量能到 1.7 m/s²，
+            # 直接 atan2 会算成 10° 以上、把整窗判成"倾斜不可用"（实测就卡在这）。
+            # 用一阶低通（≈0.4 s）只留缓慢的重力方向变化，滤掉行进中的冲击。
+            if self._acc_f is None:
+                self._acc_f = [ax, ay, az]
+            else:
+                a = 0.15
+                self._acc_f[0] += a * (ax - self._acc_f[0])
+                self._acc_f[1] += a * (ay - self._acc_f[1])
+                self._acc_f[2] += a * (az - self._acc_f[2])
+            fx, fy, fz = self._acc_f
+            horiz = math.sqrt(fx * fx + fy * fy)
+            raw = math.degrees(math.atan2(horiz, abs(fz)))
+            # IMU 装歪 16° 是这台车的常态（实测静止时 ax=-2.8、az=10.2）。
+            # 方案 §12 说的是"车身倾斜"，所以要减掉安装基准，只留**变化量**。
+            if self._tilt_bias is None:
+                self._tilt_bias = raw
+            else:
+                self._tilt_bias += 0.02 * (raw - self._tilt_bias)
+            self._imu_tilt = abs(raw - self._tilt_bias)
             self._imu_tilt_at = t
 
     def _on_scan(self, msg):
