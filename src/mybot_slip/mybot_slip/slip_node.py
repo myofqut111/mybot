@@ -530,8 +530,10 @@ class SlipNode(Node):
         # 关掉恢复动作时状态机停在 SLIP，但冻结照样要生效。
         confirmed = self.machine.slip_count >= int(
             self.machine.p.get('confirm_windows', 2))
-        severe = (self.machine.state in ('recovery', 'check')) or confirmed \
-            or conservative
+        # 《补充说明》§5.1：S1（候选）就要"暂缓位姿修正"——等确认再冻结已经晚了一窗，
+        # 实测 20:30 那个包里确认前后各一窗的错误位移照样进了图（422 s 那 0.33 m）。
+        trusted = getattr(self, '_last_trusted', 'S0') or 'S0'
+        severe = trusted != 'S0' or conservative
 
         if self.odom_guard is not None:
             self.odom_guard.set_inflated(abnormal)
@@ -903,6 +905,10 @@ class SlipNode(Node):
             'trusted_reason': self.trusted.reason,
             'nav_allowed': self.trusted.nav_allowed,
             'map_allowed': self.trusted.map_allowed,
+            # 冻结要真生效，前提是 EKF 的 odom0 接在 /odom_guarded 上；
+            # 订阅者为 0 时这里为 0，等于"保护没接上"，别再信"已冻结"。
+            'guard_subs': (self.odom_guard.subscriber_count()
+                           if self.odom_guard is not None else 0),
             'slip': bool(verdict.get('slip')),
             'type': verdict.get('type'),
             'primary_type': snap['type'],
