@@ -18,6 +18,7 @@ DEFAULTS = {
     'min_odom_samples': 2,     # 窗口里至少这么多条 odom 才算够用（8 Hz 时 0.5 s 有 4 条）
     'warmup_s': 0.30,          # 指令切换后多久内的窗口不算
     'min_cmd_coverage': 0.70,  # 指令覆盖低于此值判窗无效
+    'cmd_active_eps': 0.02,    # 生效指令小于这个值算"没让它动"，不判
     'min_samples': 2,          # odom/wheel/imu 每个窗口至少几个样本
     'max_gap_s': 0.60,         # 相邻样本间隔超过此值认为断流，本窗作废（WiFi 抖一下不该废窗）
     'imu_yaw_cov': 0.02,       # 陀螺角速度方差，用作降级判断
@@ -195,12 +196,20 @@ class WindowAggregator(object):
         }
 
         # --- 指令 ---
+        # 遥控器/键盘只在"按键变化"时发一条，之后车按最后一条指令继续走
+        # （这个包里 /cmd_vel 只有 0.6 Hz，机器人却一路在动）。所以不能用
+        # "窗口内指令的跨度"算覆盖率——那样遥控录的包会被整片判无效。
+        # 按"保持"语义：窗口中间生效的指令 = 窗口内插值，否则取窗口前最近一条；
+        # 只要它非零就算覆盖，为零（没人让它动）就不判。
+        mid = 0.5 * (t0 + t1)
         cmd_pts = self.cmd.between(t0, t1)
-        covered = (cmd_pts[-1][0] - cmd_pts[0][0]) if len(cmd_pts) >= 2 else 0.0
-        cov = min(1.0, covered / (t1 - t0)) if t1 > t0 else 0.0
-        lin = _interp(cmd_pts, 0.5 * (t0 + t1))
+        lin = _interp(cmd_pts, mid)
         if lin is None:
-            lin = self._last_cmd
+            prev_cmd = self.cmd.last_before(t0) or self.cmd.last_before(mid)
+            lin = prev_cmd[1] if prev_cmd else self._last_cmd
+        active = (abs(lin[0]) >= self.p['cmd_active_eps']
+                  or abs(lin[1]) >= self.p['cmd_active_eps'])
+        cov = 1.0 if active else 0.0
         win['cmd_coverage'] = cov
         win['cmd_linear'] = lin[0]
         win['cmd_angular'] = lin[1]

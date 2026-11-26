@@ -53,7 +53,11 @@ class WindowTest(unittest.TestCase):
         self.assertAlmostEqual(w['d_left'], 0.2 * w['dt'], places=3)
         self.assertAlmostEqual(w['d_right'], 0.2 * w['dt'], places=3)
 
-    def test_low_cmd_coverage_invalid(self):
+    def test_stale_cmd_is_held(self):
+        """遥控只在按键变化时发指令，之后车按最后一条继续走（实测 3.5 s 无新指令仍在动）。
+
+        所以"窗口内没有新指令"不等于"没人让它动"——按最后一条保持。
+        """
         agg = W()
         feed(agg, 0.0, 0.6, 0.05, 0.2, 0.0)
         t = 0.65
@@ -61,7 +65,21 @@ class WindowTest(unittest.TestCase):
             agg.add_odom(t, 0.2, 0.0)
             t += 0.05
         wins = agg.poll(1.2)
-        self.assertTrue(any((not w['valid']) and '指令覆盖' in w['reason'] for w in wins))
+        self.assertTrue(wins)
+        self.assertTrue(all(w['valid'] for w in wins))
+        self.assertAlmostEqual(wins[-1]['cmd_linear'], 0.2, places=3)
+
+    def test_zero_cmd_invalid(self):
+        """最后一条指令是 0（没人让它动）→ 不判。"""
+        agg = W()
+        feed(agg, 0.0, 0.6, 0.05, 0.2, 0.0, cmd=(0.0, 0.0))
+        t = 0.65
+        while t <= 1.2 + 1e-9:
+            agg.add_odom(t, 0.2, 0.0)
+            t += 0.05
+        wins = agg.poll(1.2)
+        self.assertTrue(any((not w['valid']) and '指令覆盖' in w['reason']
+                            for w in wins))
 
     def test_odom_gap_invalidates(self):
         agg = W(min_odom_samples=3)
