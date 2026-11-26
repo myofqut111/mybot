@@ -179,8 +179,16 @@ def generate_launch_description():
     default_slam_cfg = os.path.join(
         get_package_share_directory('mybot_navigation'),
         'config', 'mapper_params_online_async.yaml')
+    # 接打滑守护时 slam 要订阅 /scan_safe（不可信期间 slip 停止转发）。
+    # IncludeLaunchDescription 不接受 remappings（slam_toolbox 的 launch 里
+    # 节点自己也带 -r，外面再 remap 会抛 Action.__init__() got an unexpected
+    # keyword argument 'remappings'），所以改用一份 scan_topic 不同的参数文件。
+    safe_slam_cfg = os.path.join(
+        get_package_share_directory('mybot_navigation'),
+        'config', 'mapper_params_online_async_safe.yaml')
     effective_slam_cfg = PythonExpression([
-        "'", slam_params_file, "' or ", repr(default_slam_cfg)])
+        "'", slam_params_file, "' or ('", safe_slam_cfg, "' if '",
+        slam_scan_topic, "' == '/scan_safe' else '", default_slam_cfg, "')"])
 
     # ------------------------- 参数文件 -------------------------
     pkg_share = FindPackageShare(package='mybot_navigation')
@@ -285,10 +293,9 @@ def generate_launch_description():
             'use_sim_time': 'false',
             'slam_params_file': effective_slam_cfg,
         }.items(),
-        # 《补充说明》§3：建图只吃"可信"的那一路激光。开了打滑守护时
-        # robot.launch.py 会把 slam_scan_topic 传成 /scan_safe，
-        # S1/S3/S4 期间 slip 节点停止转发，slam 就写不进错误位姿下的障碍。
-        remappings=[('scan', slam_scan_topic)],
+        # 建图只吃"可信"的那一路激光：robot.launch.py 在 with_slip:=true 时
+        # 会把 slam_scan_topic 传成 /scan_safe，上面据此换成 scan_topic=/scan_safe
+        # 的那份参数文件（slam_toolbox 的 launch 不支持从外面 remap scan）。
         condition=IfCondition(use_slam))
 
     # 定位生命周期管理器：延时后才启动，启动即(autostart)激活 map_server+amcl
