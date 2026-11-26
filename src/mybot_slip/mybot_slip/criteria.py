@@ -44,6 +44,9 @@ DEFAULTS = {
     # 不依赖配准的"世界没动"旁路：两帧扫描最近点位移中位数 <= 它就采信。
     # 0 = 关闭（只看 score_min，与方案 12 章字面一致）。
     'static_trust_m': 0.0,
+    # P1-b：视野变化量 / 编码器位移 的上限（0=关闭）。几何退化（大平面正对、
+    # 配准无平移信息）时，这条不依赖配准，靠"轮子走得多、视野变得少"判滑移。
+    'motion_ratio_max': 0.40,
     'min_beams': 30,          # 有效束数下限（方案 12 章）
     'turn_limit_rad': 0.30,   # 窗内转角超过它时 P1 只作参考（按 rad/s 判）
     'omega_turn': 0.30,       # 方案 §12：转速超过它算"在转向"
@@ -236,6 +239,25 @@ def evaluate(win, params=None, fit=None):
         if (scan_trusted and abs(cmd_w) < 0.10 and abs(s) <= p['r_low']
                 and abs(fit.get('dy') or 0.0) > p['thresh_lat_m'] * k):
             cands.append(('LATERAL_SLIP', abs(fit['dy']), '横向漂了 %.3fm' % fit['dy']))
+
+    # ---------- P1-b 几何退化处的直行滑移：视野变化量远小于编码器位移 ----------
+    # 顶着箱子/大平面正对时，ICP 的残差对平移不敏感（实测把上一帧平移 0→7 cm，
+    # 平均最近点残差 0.061→0.063，几乎不变），配准既给不出位移、也给不出"没动"。
+    # 能用的证据是不做配准、直接量的两帧最近点位移：轮子走 12 cm 而视野只变 4 cm。
+    # motion_ratio_max = 0 关闭这条（回到只认 score_min 的行为）。
+    # 注意这里**故意不要求 scan_trusted**：正是因为配准分低（几何退化）才需要这条路，
+    # 只要求"扫描存在且覆盖够"——motion 本身不做配准，不依赖内点比。
+    if (p['motion_ratio_max'] > 0.0 and motion is not None and covered
+            and not turning
+            and abs(denc) > effective_threshold(denc, p)):
+        ratio = motion / abs(denc)
+        s_b = 1.0 - ratio
+        if ratio <= p['motion_ratio_max'] and s_b >= p['r_high']:
+            ratios['motion_ratio'] = ratio
+            if 'LINEAR_SLIP' not in [c[0] for c in cands]:
+                cands.append(('LINEAR_SLIP', s_b,
+                              '编码器 %.3fm，视野只变化 %.3fm（比值 %.2f；'
+                              '此处配准给不出位移）' % (denc, motion, ratio)))
 
     # ---------- 传感器互相矛盾 ----------
     # 必须是"我们要它转、编码器说没转、陀螺说转了"才算矛盾。
