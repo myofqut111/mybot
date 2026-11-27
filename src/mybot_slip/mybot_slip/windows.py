@@ -150,11 +150,16 @@ class WindowAggregator(object):
     def add_cmd(self, t, linear, angular):
         self._touch(t)
         linear, angular = float(linear), float(angular)
-        # 指令从「停」变成「动」或反向，视为一次切换 -> 之后 warmup_s 不判
-        was_idle = abs(self._last_cmd[0]) < 1e-3 and abs(self._last_cmd[1]) < 1e-3
+        # 只有"真正的切换"才重新 warmup：起步、停车、前进/后退反向、
+        # 或者大角速度反向。导航在贴着墙走时会不停 ±0.3 rad/s 地微调方向，
+        # 如果每次符号变化都算切换，warmup 会一直被续上、窗口几乎全是 warmup
+        # （实测 1451 包：打滑那几秒全是 warmup，检测器根本没在判）。
+        px, pw = self._last_cmd
+        was_idle = abs(px) < 1e-3 and abs(pw) < 1e-3
         now_idle = abs(linear) < 1e-3 and abs(angular) < 1e-3
-        sign_flip = (self._last_cmd[0] * linear < 0) or (self._last_cmd[1] * angular < 0)
-        if (was_idle and not now_idle) or sign_flip:
+        flip_lin = (px * linear < 0) and (abs(linear) > 0.03)
+        flip_w = (pw * angular < 0) and min(abs(pw), abs(angular)) > 0.25
+        if (was_idle and not now_idle) or (now_idle and not was_idle) or flip_lin or flip_w:
             self._warm_until = t + self.p['warmup_s']
         self._last_cmd = (linear, angular)
         self.cmd.add(t, (linear, angular))
