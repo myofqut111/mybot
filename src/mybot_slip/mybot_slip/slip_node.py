@@ -105,6 +105,7 @@ class SlipNode(Node):
         self.declare_parameter('nav_action', 'navigate_to_pose')
         # 方案 §4：打滑期间放大编码器里程协方差（SLAM/TF 不中断）
         self.declare_parameter('covariance_guard', True)
+        self.declare_parameter('freeze_max_s', 15.0)   # 冻结最长时长，超过就放开
         self.declare_parameter('odom_guard_out', '/odom_guarded')
         self.declare_parameter('covariance_position_factor', 100.0)
         self.declare_parameter('covariance_yaw_factor', 100.0)
@@ -313,6 +314,8 @@ class SlipNode(Node):
         self._jump_reported = False
         self._conservative_reported = False
         self._guard_warned = False
+        self._freeze_since = None
+        self._freeze_timeout_warned = False
 
         # 20 Hz 轮询：窗口是 0.3 s，20 Hz 足够不丢边界
         self.create_timer(0.05, self._tick)
@@ -702,7 +705,26 @@ class SlipNode(Node):
         # 《补充说明》§5.1：S1（候选）就要"暂缓位姿修正"——等确认再冻结已经晚了一窗，
         # 实测 20:30 那个包里确认前后各一窗的错误位移照样进了图（422 s 那 0.33 m）。
         trusted = getattr(self, '_last_trusted', 'S0') or 'S0'
-        severe = trusted != 'S0' or conservative
+        # FAILED 不能再冻结：方案 §9.6 的 FAILED 是"放弃恢复、交给上层"，
+        # 但车还在被遥控开，冻结位姿等于让 EKF 停在原地（实测 1823 那个包
+        # 140 s 之后 filtered 一直不动、与 odom 差到 4 m，图全废）。
+        # 冻结只在"还有动作要收尾"的阶段生效，并且有最长时长兜底。
+        failed = self.machine.state == 'failed'
+        severe = (trusted != 'S0' and not failed) or conservative
+        if severe:
+            if self._freeze_since is None:
+                self._freeze_since = now
+            elif now - self._freeze_since > float(self.p('freeze_max_s')):
+                if not self._freeze_timeout_warned:
+                    self._freeze_timeout_warned = True
+                    self.get_logger().warn(
+                        '位姿冻结已持续 %.0f s，超过上限，先放开（一直冻着比带点漂移更糟）'
+                        % (now - self._freeze_since))
+                severe = False
+                self._freeze_since = now
+        else:
+            self._freeze_since = None
+            self._freeze_timeout_warned = False
 
         if self.odom_guard is not None:
             self.odom_guard.set_inflated(abnormal)
