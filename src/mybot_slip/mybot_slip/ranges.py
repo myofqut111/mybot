@@ -26,6 +26,7 @@ DEFAULTS = {
     'outlier_sigma': 2.5,      # 鲁棒剔除阈值（残差中位数倍数）
     'min_inlier_ratio': 0.55,  # 内点比例下限
     'residual_scale_m': 0.03,  # 残差 -> 质量
+    'min_quality': 0.55,       # 判 ok 的质量下限（判据层用 0.55；激光速度观测可放宽到 0.25）
     'max_shift_m': 0.60,
     'max_rot_rad': 0.35,
 }
@@ -195,7 +196,7 @@ def fit_translation(prev, cur, params=None, init=None):
     coverage = inliers / float(len(src))
     shift = math.hypot(dx, dy)
     quality = coverage / (1.0 + (residual / p['residual_scale_m']) ** 2)
-    ok = (quality >= 0.55 and coverage >= p['min_inlier_ratio']
+    ok = (quality >= p['min_quality'] and coverage >= p['min_inlier_ratio']
           and shift <= p['max_shift_m'] and abs(dth) <= p['max_rot_rad'])
     reason = ''
     if not ok:

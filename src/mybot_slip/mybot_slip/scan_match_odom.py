@@ -47,6 +47,7 @@ class ScanMatchOdom(Node):
         d('inlier_ratio_mid', 0.35)
         d('beams_min', 30)
         d('coverage_min', 0.60)
+        d('fit_min_quality', 0.25)  # 交给 ranges 的 ok 下限；判据层是 0.55，这里放宽好让“一般”档真的能被用上
         d('max_speed', 0.60)       # m/s
         d('max_yaw_rate', 2.50)    # rad/s
         # 协方差：基础值（速度，m/s 与 rad/s）
@@ -70,6 +71,7 @@ class ScanMatchOdom(Node):
         self.r_mid = float(gp('inlier_ratio_mid').value)
         self.beams_min = int(gp('beams_min').value)
         self.coverage_min = float(gp('coverage_min').value)
+        self.fit_min_quality = float(gp('fit_min_quality').value)
         self.max_speed = float(gp('max_speed').value)
         self.max_yaw = float(gp('max_yaw_rate').value)
         self.sigma = {'vx': float(gp('sigma_vx').value),
@@ -132,7 +134,9 @@ class ScanMatchOdom(Node):
                     self._drop(t, '时间差 %.2fs 超出上限' % dt)
                 self._prev = (t, scan)
                 return
-            fit = ranges_mod.fit_translation(p0, scan, init=self._odom_init(t0, t))
+            fit = ranges_mod.fit_translation(
+                p0, scan, params={'min_quality': self.fit_min_quality},
+                init=self._odom_init(t0, t))
             self._handle(fit, dt, t)
         self._prev = (t, scan)
 

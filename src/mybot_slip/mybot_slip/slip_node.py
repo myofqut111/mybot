@@ -448,11 +448,16 @@ class SlipNode(Node):
             if not self._laser_paused:
                 self._laser_paused = True
                 self.metrics['laser_pauses'] += 1
+                # 只报真正越界的那一路，否则日志会写成 “Δv 0.00 > 0.06” 这种自相矛盾的话
+                bad = []
+                if dv > self.map_gate_conflict_v:
+                    bad.append('Δv %.2f > %.2f m/s' % (dv, self.map_gate_conflict_v))
+                if dw > self.map_gate_conflict_w:
+                    bad.append('Δw %.2f > %.2f rad/s' % (dw, self.map_gate_conflict_w))
                 self.get_logger().warn(
-                    '建图门控：轮速与激光不一致（Δv %.2f m/s > %.2f，Δw %.2f rad/s > %.2f），'
-                    '暂停写入持久地图' % (dv, self.map_gate_conflict_v,
-                                          dw, self.map_gate_conflict_w))
+                    '建图门控：轮速与激光不一致（%s），暂停写入持久地图' % '，'.join(bad))
             return
+
         self._laser_ok_n += 1
         if self._laser_paused and self._laser_ok_n >= self.map_gate_resume_n:
             self._laser_paused = False
