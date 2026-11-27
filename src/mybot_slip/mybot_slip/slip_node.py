@@ -278,6 +278,15 @@ class SlipNode(Node):
         self.create_subscription(Odometry, gp('scan_match_topic').value,
                                  self._on_scan_match, QoSProfile(depth=10))
 
+        # 方案 §9.6：FAILED 要上层复位（静止 2 s + 冷却 5 s 后生效）
+        self.declare_parameter('reset_service', '/slip/reset')
+        try:
+            from std_srvs.srv import Empty as _Empty
+            self.create_service(_Empty, gp('reset_service').value,
+                                self._on_reset_request)
+        except Exception as exc:                       # noqa: BLE001
+            self.get_logger().warn('复位服务没起来：%s' % exc)
+
         # 《补充说明》§3：地图门控——只有可信状态允许时才把激光转给 slam
         self.map_scan_pub = None
         self.map_gate = bool(gp('map_gate').value)
@@ -366,6 +375,15 @@ class SlipNode(Node):
         self._odom_hist.append((t, vx, wz))
         _trim_hist(self._odom_hist, t)
         self.agg.add_odom(t, vx, wz)
+
+    def _on_reset_request(self, request, response):
+        ok = self.machine.request_reset(time.monotonic())
+        self.get_logger().info(
+            '收到复位请求：%s（静止 %.1f s + 冷却 %.1f s 后生效）'
+            % ('已受理' if ok else '当前不是 FAILED，忽略',
+               float(self.p('reset_hold_s')),
+               float(self.machine.p['recovery_cooldown_s'])))
+        return response
 
     def _on_scan_match(self, msg):
         """激光速度观测（方案 §3）：只取 twist，pose 段不用。"""

@@ -35,6 +35,8 @@ DEFAULTS = {
     'max_recovery': 2,         # 方案 §7：一个恢复周期最多试两次
     'alternate_after_fail': True,   # 失败后换姿势（后退<->转向）；关掉就重复同一种
     'recovery_cooldown_s': 5.0,   # 方案 §9.6：FAILED 复位后 5 s 冷却
+    'auto_reset_failed': False,   # 方案 §9.6：FAILED 要上层 reset，不自动复位
+    'reset_hold_s': 2.0,          # 复位前要静止 2 s
     'settle_s': 0.3,           # 方案 §9.5：CHECK 前静止 0.3 s
     'stall_hold_s': 0.6,       # 方案 §12 Tstall：堵转要持续 0.6 s
     'stall_no_back': True,
@@ -78,6 +80,7 @@ class SlipStateMachine(object):
         self.last_action = None
         self.allow_recovery = True       # 执行器不在时由节点置 False：只报不动
         self.failed_at = None
+        self._reset_req_at = None        # 上层调用 request_reset() 的时间
         self.probed = False              # 本次 CHECK 是否已经做过试探前进
         self.stall_stops = 0             # 本轮堵转已经"停车上报"过几次
         self.history = []                # [(t, state, type)]，限量
@@ -85,6 +88,13 @@ class SlipStateMachine(object):
                       'timeouts': 0}
 
     # ------------------------------------------------------------------
+    def request_reset(self, now):
+        """上层复位请求：方案 §9.6 要求静止 2 s + 冷却 5 s 之后才真的回 NORMAL。"""
+        if self.state == FAILED:
+            self._reset_req_at = now
+            return True
+        return False
+
     def reset_failure(self):
         self.state = NORMAL
         self.type = None
@@ -94,6 +104,7 @@ class SlipStateMachine(object):
         self.first_stall_at = None
         self.recoveries = 0
         self.failed_at = None
+        self._reset_req_at = None
 
     # ------------------------------------------------------------------
     def step(self, now, verdict):
@@ -105,13 +116,27 @@ class SlipStateMachine(object):
             return self._idle('cooldown')
 
         if self.state == FAILED:
-            # 失败不是终点：过了冷却期回到观察态，否则一次失败就永久躺平
-            if self.failed_at is not None and \
+            # 方案 §9.6：FAILED 要上层 reset/人工复位（静止 2 s + 冷却 5 s）。
+            # auto_reset_failed=True 时退回"冷却结束自动复位"的老行为，方便调试。
+            if self.p.get('auto_reset_failed', False):
+                if self.failed_at is not None and \
+                        now - self.failed_at >= self.p['recovery_cooldown_s']:
+                    self.reset_failure()
+                    self.cooldown_until = None
+                    return {'action': 'reset', 'state': self.state,
+                            'reason': '失败冷却结束，重新观察'}
+                return self._idle('failed')
+            if self._reset_req_at is not None and \
+                    self.failed_at is not None and \
+                    now - self._reset_req_at >= self.p.get('reset_hold_s', 2.0) and \
                     now - self.failed_at >= self.p['recovery_cooldown_s']:
+                self._reset_req_at = None
                 self.reset_failure()
                 self.cooldown_until = None
                 return {'action': 'reset', 'state': self.state,
-                        'reason': '失败冷却结束，重新观察'}
+                        'reason': '已复位（人工 reset + 静止 %.1f s + 冷却 %.1f s）'
+                                  % (self.p.get('reset_hold_s', 2.0),
+                                     self.p['recovery_cooldown_s'])}
             return self._idle('failed')
 
         if self.state == NORMAL:

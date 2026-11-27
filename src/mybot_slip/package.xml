@@ -2,7 +2,7 @@
 <?xml-model href="http://download.ros.org/schema/package_format3.xsd" schematypens="http://www.w3.org/2001/XMLSchema"?>
 <package format="3">
   <name>mybot_slip</name>
-  <version>0.12.3</version>
+  <version>0.12.4</version>
   <description>差速轮打滑检测与恢复：窗口聚合 + 多判据 + 按类型分流的恢复状态机</description>
   <maintainer email="dev@example.com">Mybot Maintainer</maintainer>
   <license>Apache-2.0</license>

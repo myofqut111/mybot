@@ -378,7 +378,9 @@ class SlipExecutor(Node):
         act = self.action
         twist = Twist()
         if act['kind'] == 'back':
-            twist.linear.x = -abs(self.back_speed)
+            # 按动作给的速度走（方案 §9.3：−0.15 m/s、超时 1.5 s）；
+            # 用执行器自己的 back_speed 会和 1.5 s 超时打架，永远差一点点。
+            twist.linear.x = -abs(float(act.get('speed') or self.back_speed))
             # 方案 §3：后退的同时小幅反向调整，别退回原路再撞同一个角
             rate = act.get('yaw_rate')
             if rate:

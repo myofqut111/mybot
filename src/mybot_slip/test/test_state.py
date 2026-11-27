@@ -230,12 +230,31 @@ class NoExecutorTest(unittest.TestCase):
 
     def test_failed_state_resets_after_cooldown(self):
         m = st.SlipStateMachine({'confirm_window_s': 0.0, 'max_recovery': 2,
+                                 'recovery_cooldown_s': 5.0,
+                                 'auto_reset_failed': True})
+        self._confirm(m)
+        for i in range(3):
+            m.on_action_done(1.0 + i, ok=False)
+        self.assertEqual(m.state, st.FAILED)
+        out = m.step(30.0, verdict())
+        self.assertEqual(out['action'], 'reset')
+        self.assertEqual(m.state, st.NORMAL)
+
+    def test_failed_needs_upper_reset_by_default(self):
+        """方案 §9.6：默认不自动复位，要上层 reset（静止 reset_hold_s 后生效）。"""
+        m = st.SlipStateMachine({'confirm_window_s': 0.0, 'max_recovery': 2,
                                  'recovery_cooldown_s': 5.0})
         self._confirm(m)
         for i in range(3):
             m.on_action_done(1.0 + i, ok=False)
         self.assertEqual(m.state, st.FAILED)
         out = m.step(30.0, verdict())
+        self.assertEqual(out.get('action'), None)
+        self.assertEqual(m.state, st.FAILED)
+        self.assertTrue(m.request_reset(30.0))
+        out = m.step(31.0, verdict())          # 只过了 1 s，不够静止 2 s
+        self.assertEqual(m.state, st.FAILED)
+        out = m.step(32.1, verdict())
         self.assertEqual(out['action'], 'reset')
         self.assertEqual(m.state, st.NORMAL)
 
