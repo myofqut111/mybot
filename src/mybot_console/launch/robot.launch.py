@@ -47,6 +47,7 @@ def generate_launch_description():
     with_slip = LaunchConfiguration('with_slip')
     scan_topic = LaunchConfiguration('scan_topic')
     scan_match = LaunchConfiguration('scan_match')
+    scan_match_out = LaunchConfiguration('scan_match_out')
     localization_gate = LaunchConfiguration('localization_gate')
     http_port = LaunchConfiguration('http_port')
     host = LaunchConfiguration('host')
@@ -90,6 +91,7 @@ def generate_launch_description():
         package='mybot_slip', executable='scan_match_odom',
         name='scan_match_odom', output='both',
         parameters=[{'scan_topic': scan_topic,
+                     'out_topic': scan_match_out,
                      'use_odom_init': True}],
         condition=IfCondition(scan_match),
     )
@@ -144,6 +146,9 @@ def generate_launch_description():
                               description='打滑检测用的激光话题'),
         DeclareLaunchArgument('scan_match', default_value='false',
                               description='是否起激光速度观测 scan_match_odom（EKF 的 odom1；方案 §4）'),
+        DeclareLaunchArgument('scan_match_out', default_value='/scan_match/odom',
+                              description='激光速度输出话题；灰度第一阶段传 /scan_match/log_only，'
+                                          '这样 EKF 收不到，只做记录对比'),
         DeclareLaunchArgument('localization_gate', default_value='true',
                               description='是否等 AMCL 稳定后再激活 Nav2（无真机 mock 时传 false）'),
         DeclareLaunchArgument('controller', default_value='rpp',
