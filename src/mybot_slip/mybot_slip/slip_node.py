@@ -1132,6 +1132,10 @@ class SlipNode(Node):
             # 方案 §10.1：建图不再暂停，这里保留字段给旧页面兼容，恒为 False
             'map_paused': False,
             'progress_frozen': bool(self._pc_frozen),
+            # 位姿冻结：/odom_guarded 是否正在保持最后一帧（用户排查"一直冻结"就看这个）
+            'odom_frozen': bool(getattr(self.odom_guard, 'frozen', False)),
+            'odom_guard_subs': (self.odom_guard.subscriber_count()
+                                if self.odom_guard is not None else 0),
             # 《补充说明》§9：六项指标随状态一起发
             'metrics': {
                 'pose_pollution_m': round(self.metrics['pose_pollution_m'], 3),
