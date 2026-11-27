@@ -30,6 +30,40 @@ def _wrap(a):
     return a
 
 
+def decide_cov(quality, cond, weak_angle, cfg):
+    """方案 §5 的纯函数版：质量分档 + 按轴放大。
+
+    返回 dict(tier, sx, sy, sw, degen) 或 dict(drop='原因')。
+    cfg 需要 r_good / r_mid / mid_scale / degen_scale / degen_cond /
+    along_cos / publish_mid。
+    节点与离线回放共用这一份，保证"线上怎么放大、离线就怎么放大"。
+    """
+    if quality >= cfg['r_good']:
+        tier, sx, sy, sw = 'good', 1.0, 1.0, 1.0
+    elif quality >= cfg['r_mid']:
+        if not cfg['publish_mid']:
+            return {'drop': '质量一般（%.2f）已按配置丢弃' % quality}
+        tier = 'mid'
+        sx = sy = sw = cfg['mid_scale']
+    else:
+        return {'drop': '质量差（%.2f）' % quality}
+
+    degen = 'none'
+    if cond is not None and weak_angle is not None and cond < cfg['degen_cond']:
+        ax = abs(math.cos(weak_angle))
+        ay = abs(math.sin(weak_angle))
+        if ax >= cfg['along_cos']:
+            sx *= cfg['degen_scale']
+            degen = 'along'
+        elif ay >= cfg['along_cos']:
+            sy *= cfg['degen_scale']
+            degen = 'lateral'
+        else:
+            return {'drop': '退化方向无法判定（cond %.2f，角度 %.0f°）'
+                            % (cond, math.degrees(weak_angle))}
+    return {'tier': tier, 'sx': sx, 'sy': sy, 'sw': sw, 'degen': degen}
+
+
 class ScanMatchOdom(Node):
     def __init__(self):
         super().__init__('scan_match_odom')
@@ -44,10 +78,11 @@ class ScanMatchOdom(Node):
         d('jump_rad', 0.80)
         # 有效性
         d('inlier_ratio_good', 0.60)
-        d('inlier_ratio_mid', 0.35)
+        d('inlier_ratio_mid', 0.25)
         d('beams_min', 30)
         d('coverage_min', 0.60)
         d('fit_min_quality', 0.25)  # 交给 ranges 的 ok 下限；判据层是 0.55，这里放宽好让“一般”档真的能被用上
+        d('fit_residual_scale', 0.05)  # 残差尺度：按 base bag 标定（真机残差中位 0.038，0.03 太严）
         d('max_speed', 0.60)       # m/s
         d('max_yaw_rate', 2.50)    # rad/s
         # 协方差：基础值（速度，m/s 与 rad/s）
@@ -56,6 +91,8 @@ class ScanMatchOdom(Node):
         d('sigma_wz', 0.020)
         d('mid_scale', 3.0)        # 质量一般时的放大倍数
         d('degen_scale', 6.0)      # 判定为退化方向时的放大倍数
+        d('degen_cond', 0.20)      # 法向阵 λmin/λmax 低于它算退化
+        d('along_cos', 0.80)       # 弱方向与车体轴夹角余弦超过它才认得出是哪一路
         d('use_odom_init', True)
         d('publish_mid', True)     # 质量一般是否照发（方案允许，配合放大协方差）
 
@@ -72,6 +109,7 @@ class ScanMatchOdom(Node):
         self.beams_min = int(gp('beams_min').value)
         self.coverage_min = float(gp('coverage_min').value)
         self.fit_min_quality = float(gp('fit_min_quality').value)
+        self.fit_residual_scale = float(gp('fit_residual_scale').value)
         self.max_speed = float(gp('max_speed').value)
         self.max_yaw = float(gp('max_yaw_rate').value)
         self.sigma = {'vx': float(gp('sigma_vx').value),
@@ -79,12 +117,16 @@ class ScanMatchOdom(Node):
                       'wz': float(gp('sigma_wz').value)}
         self.mid_scale = float(gp('mid_scale').value)
         self.degen_scale = float(gp('degen_scale').value)
+        self.degen_cond = float(gp('degen_cond').value)
+        self.along_cos = float(gp('along_cos').value)
         self.use_odom_init = bool(gp('use_odom_init').value)
         self.publish_mid = bool(gp('publish_mid').value)
 
         self._prev = None            # (t, pts)
         self._odom_prev = None       # (t, x, y, yaw)
         self._last_log = 0.0
+        self._degen = 'none'
+        self._degen_at = 0.0
         self.stats = {'good': 0, 'mid': 0, 'drop': 0}
 
         self.pub = self.create_publisher(Odometry, self.out_topic, 10)
@@ -135,7 +177,9 @@ class ScanMatchOdom(Node):
                 self._prev = (t, scan)
                 return
             fit = ranges_mod.fit_translation(
-                p0, scan, params={'min_quality': self.fit_min_quality},
+                p0, scan,
+                params={'min_quality': self.fit_min_quality,
+                        'residual_scale_m': self.fit_residual_scale},
                 init=self._odom_init(t0, t))
             self._handle(fit, dt, t)
         self._prev = (t, scan)
@@ -161,23 +205,25 @@ class ScanMatchOdom(Node):
             self._drop(t, '速度超限（vx %.2f，wz %.2f）' % (vx, wz))
             return
 
-        # 质量分档（方案 §5 表 5-1）
+        # 质量分档 + 按轴放大（方案 §5），与离线回放共用 decide_cov
         inlier_ratio = quality  # ranges.fit_translation 的 quality 就是内点比×覆盖
-        if inlier_ratio >= self.r_good:
-            tier, scales = 'good', (1.0, 1.0, 1.0)
-        elif inlier_ratio >= self.r_mid:
-            tier, scales = 'mid', (self.mid_scale,) * 3
-            if not self.publish_mid:
-                self._drop(t, '质量一般（%.2f）已按配置丢弃' % inlier_ratio)
-                return
-        else:
-            self._drop(t, '质量差（%.2f）' % inlier_ratio)
+        cfg = {'r_good': self.r_good, 'r_mid': self.r_mid,
+               'mid_scale': self.mid_scale, 'degen_scale': self.degen_scale,
+               'degen_cond': self.degen_cond, 'along_cos': self.along_cos,
+               'publish_mid': self.publish_mid}
+        res = decide_cov(inlier_ratio, fit.get('cond'), fit.get('weak_angle'), cfg)
+        if 'drop' in res:
+            self._drop(t, res['drop'])
             return
+        tier = res['tier']
+        sx, sy, sw = res['sx'], res['sy'], res['sw']
+        self._degen = res['degen']
+        if self._degen != 'none':
+            self._degen_at = t
+            self.get_logger().debug(
+                '退化：放大 %s 轴 %.0f 倍（cond %.2f）'
+                % (self._degen, self.degen_scale, fit.get('cond') or 0.0))
 
-        # 退化方向：沿视野弱约束方向（这里用横向/转角相对前向的比例粗判）
-        sx, sy, sw = scales
-        if abs(vx) > 0.02 and abs(vy) > max(0.05, 0.5 * abs(vx)):
-            sy *= self.degen_scale     # 横向估计明显大于前向 → 可能是退化
         if abs(wz) > 0.1 and inlier_ratio < self.r_good:
             sw *= (self.mid_scale if tier == 'mid' else 1.0)
 

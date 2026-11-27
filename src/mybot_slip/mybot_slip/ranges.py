@@ -182,6 +182,7 @@ def fit_translation(prev, cur, params=None, init=None):
             return _fail('法方程奇异')
         dx, dy, dth = sol['dx'], sol['dy'], sol['dtheta']
         residual = sol['residual']
+        last = sol
         # 鲁棒剔除：残差大于 k×中位数的点不要
         keep = _inliers(pairs, dx, dy, dth, p['outlier_sigma'])
         if len(keep) >= p['min_points'] and len(keep) < len(pairs):
@@ -189,6 +190,7 @@ def fit_translation(prev, cur, params=None, init=None):
             if sol2 is not None:
                 dx, dy, dth = sol2['dx'], sol2['dy'], sol2['dtheta']
                 residual = sol2['residual']
+                last = sol2
                 inliers = len(keep)
         else:
             inliers = len(pairs)
@@ -213,6 +215,7 @@ def fit_translation(prev, cur, params=None, init=None):
         'dx': dx, 'dy': dy, 'dtheta': dth, 'beams': inliers,
         'coverage': coverage, 'residual': residual, 'quality': quality,
         'ok': ok, 'reason': reason, 'motion': scan_motion(prev, cur, p),
+        'cond': last.get('cond'), 'weak_angle': last.get('weak_angle'),
     }
 
 
@@ -225,11 +228,15 @@ def _solve(pairs, p):
     """
     a11 = a12 = a13 = a22 = a23 = a33 = 0.0
     b1 = b2 = b3 = 0.0
+    t11 = t12 = t22 = 0.0        # 平移 2x2 法向阵：Σ n nᵀ，用来看退化方向
     for px, py, qx, qy, nrm in pairs:
         ex = qx - px
         ey = qy - py
         if nrm is not None:
             nx, ny = nrm
+            t11 += nx * nx
+            t12 += nx * ny
+            t22 += ny * ny
             rows = ((nx, ny, nx * (-py) + ny * px, nx * ex + ny * ey),)
         else:
             rows = ((1.0, 0.0, -py, ex), (0.0, 1.0, px, ey))
@@ -269,7 +276,32 @@ def _solve(pairs, p):
         ry = s * px + c * py + dy - qy
         tot += rx * rx + ry * ry
     return {'dx': dx, 'dy': dy, 'dtheta': dth,
-            'residual': math.sqrt(tot / len(pairs))}
+            'residual': math.sqrt(tot / len(pairs)),
+            'cond': _cond(t11, t12, t22)[0],
+            'weak_angle': _cond(t11, t12, t22)[1]}
+
+
+def _cond(t11, t12, t22):
+    """平移方向的可观测性：返回 (λ_min/λ_max, 最弱方向角 rad)。
+
+    走廊里所有法向几乎平行 → 法向阵近似秩 1 → 比值接近 0，
+    对应的最小特征向量就是"扫描看不出运动"的方向。
+    """
+    tr = t11 + t22
+    det = t11 * t22 - t12 * t12
+    disc = max(tr * tr / 4.0 - det, 0.0)
+    root = math.sqrt(disc)
+    l1 = tr / 2.0 + root            # 大
+    l2 = tr / 2.0 - root            # 小
+    if l1 <= 1e-12:
+        return 0.0, 0.0
+    cond = max(l2, 0.0) / l1
+    # 最小特征值对应的特征向量方向
+    if abs(t12) > 1e-12:
+        ang = math.atan2(l2 - t11, t12)
+    else:
+        ang = math.pi / 2.0 if t11 >= t22 else 0.0
+    return cond, ang
 
 
 def _inliers(pairs, dx, dy, dth, sigma):
