@@ -46,6 +46,7 @@ def generate_launch_description():
     localization = LaunchConfiguration('localization')
     with_slip = LaunchConfiguration('with_slip')
     scan_topic = LaunchConfiguration('scan_topic')
+    scan_match = LaunchConfiguration('scan_match')
     localization_gate = LaunchConfiguration('localization_gate')
     http_port = LaunchConfiguration('http_port')
     host = LaunchConfiguration('host')
@@ -82,6 +83,16 @@ def generate_launch_description():
                            condition=IfCondition(nav))]
 
     navigation = OpaqueFunction(function=_navigation)
+
+    # 方案《低成本激光速度接入 EKF》§3：激光速度观测节点。
+    # 它只在起了的时候给 EKF 提供 odom1；不起就等于关闭，EKF 行为与原来一致。
+    scan_match_node = Node(
+        package='mybot_slip', executable='scan_match_odom',
+        name='scan_match_odom', output='both',
+        parameters=[{'scan_topic': scan_topic,
+                     'use_odom_init': True}],
+        condition=IfCondition(scan_match),
+    )
 
     # 打滑检测 + 恢复（含速度仲裁）。默认不开，开了才接管 /cmd_vel。
     slip = _launch_of(
@@ -131,6 +142,8 @@ def generate_launch_description():
                               description='是否开打滑检测+恢复（会接管 /cmd_vel 做仲裁）'),
         DeclareLaunchArgument('scan_topic', default_value='/scan',
                               description='打滑检测用的激光话题'),
+        DeclareLaunchArgument('scan_match', default_value='false',
+                              description='是否起激光速度观测 scan_match_odom（EKF 的 odom1；方案 §4）'),
         DeclareLaunchArgument('localization_gate', default_value='true',
                               description='是否等 AMCL 稳定后再激活 Nav2（无真机 mock 时传 false）'),
         DeclareLaunchArgument('controller', default_value='rpp',
@@ -140,6 +153,7 @@ def generate_launch_description():
         DeclareLaunchArgument('host', default_value='0.0.0.0',
                               description='监听地址，0.0.0.0 = 局域网可访问'),
         navigation,
+        scan_match_node,
         slip,
         patrol_only,
         console,

@@ -128,6 +128,9 @@ def generate_launch_description():
             'ekf_odom_topic', default_value='/odom',
             description='EKF 的 odom0 输入；接打滑检测时传 /odom_guarded（同一路数据，打滑期间协方差被放大）'),
         DeclareLaunchArgument(
+            'scan_match_topic', default_value='/scan_match/odom',
+            description='EKF 的 odom1 输入（激光速度观测，方案 §4）；不起 scan_match_odom 节点则无消息、行为不变'),
+        DeclareLaunchArgument(
             'slam_scan_topic', default_value='/scan',
             description='slam_toolbox 订阅的激光；接打滑守护时传 /scan_safe（不可信期间停止转发）'),
         DeclareLaunchArgument(
@@ -243,6 +246,9 @@ def generate_launch_description():
             # 打滑检测开着时，EKF 吃的是协方差被放大的那一路（方案 §4），
             # 它仍然是 /odom 的同一条数据流，只是权重被压低。
             'odom0': ekf_odom_topic,
+            # 方案《低成本激光速度接入 EKF》§4：第二路 twist 输入（激光速度观测）。
+            # 开关就是"有没有起 scan_match_odom 节点"——不起就没消息，EKF 行为不变。
+            'odom1': LaunchConfiguration('scan_match_topic'),
         }],
         condition=IfCondition(enable_ekf),
     )

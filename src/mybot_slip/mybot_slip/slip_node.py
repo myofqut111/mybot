@@ -99,6 +99,12 @@ class SlipNode(Node):
         self.declare_parameter('metrics_topic', '/slip/metrics')
         self.declare_parameter('suspect_speed_cap', 0.10)
         self.declare_parameter('suspect_yaw_cap', 0.50)
+        # 方案《低成本激光速度接入 EKF 与建图门控》§6：激光-轮速一致性门控
+        self.declare_parameter('scan_match_topic', '/scan_match/odom')
+        self.declare_parameter('map_gate_use_laser', True)
+        self.declare_parameter('map_gate_conflict_v', 0.06)   # m/s
+        self.declare_parameter('map_gate_conflict_w', 0.30)   # rad/s
+        self.declare_parameter('map_gate_resume_windows', 5)
 
         gp = self.get_parameter
         self.win_params = {
@@ -128,6 +134,15 @@ class SlipNode(Node):
             'suspect_yaw_cap': float(gp('suspect_yaw_cap').value),
         })
         self._map_allowed = True
+        # 激光-轮速一致性门控（方案 §6）：等不到激光观测时不因它暂停，保持原行为
+        self.map_gate_use_laser = bool(gp('map_gate_use_laser').value)
+        self.map_gate_conflict_v = float(gp('map_gate_conflict_v').value)
+        self.map_gate_conflict_w = float(gp('map_gate_conflict_w').value)
+        self.map_gate_resume_n = int(gp('map_gate_resume_windows').value)
+        self._laser_tw = None      # (t, vx, wz)
+        self._odom_tw = None       # (t, vx, wz)
+        self._laser_ok_n = 0
+        self._laser_paused = False
         # §9 六项指标（只记在节点里，不上页面）
         self.metrics = {
             'pose_pollution_m': 0.0,   # 确认前定位污染量（疑似窗里被当成位移的编码器距离）
@@ -138,6 +153,10 @@ class SlipNode(Node):
             's4_safe_stops': 0,
             'nav_blocked_s': 0.0,
             'map_frames_dropped': 0,   # 因不可信而被挡在建图之外的帧
+            # 方案 §6：激光-轮速一致性门控的统计
+            'laser_pauses': 0,
+            'laser_resumes': 0,
+            'laser_conflict_windows': 0,
         }
         self._last_nav_blocked_at = None
         self._last_trusted = 'S0'
@@ -216,6 +235,9 @@ class SlipNode(Node):
                                  self._on_cmd, QoSProfile(depth=10))
         self.create_subscription(Odometry, gp('pose_topic').value,
                                  self._on_pose, QoSProfile(depth=20))
+        # 方案 §3：激光速度观测（没有这个节点时只是收不到，不影响原有逻辑）
+        self.create_subscription(Odometry, gp('scan_match_topic').value,
+                                 self._on_scan_match, QoSProfile(depth=10))
 
         # 《补充说明》§3：地图门控——只有可信状态允许时才把激光转给 slam
         self.map_scan_pub = None
@@ -299,7 +321,15 @@ class SlipNode(Node):
         t = self._stamp(msg, self._now())
         self._alive['odom'] += 1
         self._last_stamps['odom'] = t
-        self.agg.add_odom(t, msg.twist.twist.linear.x, msg.twist.twist.angular.z)
+        vx = msg.twist.twist.linear.x
+        wz = msg.twist.twist.angular.z
+        self._odom_tw = (t, vx, wz)
+        self.agg.add_odom(t, vx, wz)
+
+    def _on_scan_match(self, msg):
+        """激光速度观测（方案 §3）：只取 twist，pose 段不用。"""
+        t = self._stamp(msg, self._now())
+        self._laser_tw = (t, msg.twist.twist.linear.x, msg.twist.twist.angular.z)
 
     def _on_pose(self, msg):
         px = msg.pose.pose.position.x
@@ -393,6 +423,43 @@ class SlipNode(Node):
         self._alive['cmd'] += 1
         self.agg.add_cmd(t, msg.linear.x, msg.angular.z)
 
+    def _update_laser_gate(self, now):
+        """方案 §6：轮速与激光速度矛盾超阈值 → 暂停写图；连续若干帧一致 → 恢复。
+
+        没有激光观测（节点没起 / 一直丢）时**不因它暂停**，保持原有行为，
+        这样"关掉新功能就回到原系统"这条才能成立。
+        """
+        if not self.map_gate_use_laser:
+            self._laser_paused = False
+            return
+        laser, odo = self._laser_tw, self._odom_tw
+        if (laser is None or odo is None
+                or now - laser[0] > 0.6 or now - odo[0] > 0.6):
+            self._laser_ok_n = 0
+            if self._laser_paused:
+                self._laser_paused = False
+                self.get_logger().info('建图门控：激光观测中断，恢复原行为')
+            return
+        dv = abs(odo[1] - laser[1])
+        dw = abs(odo[2] - laser[2])
+        if dv > self.map_gate_conflict_v or dw > self.map_gate_conflict_w:
+            self._laser_ok_n = 0
+            self.metrics['laser_conflict_windows'] += 1
+            if not self._laser_paused:
+                self._laser_paused = True
+                self.metrics['laser_pauses'] += 1
+                self.get_logger().warn(
+                    '建图门控：轮速与激光不一致（Δv %.2f m/s > %.2f，Δw %.2f rad/s > %.2f），'
+                    '暂停写入持久地图' % (dv, self.map_gate_conflict_v,
+                                          dw, self.map_gate_conflict_w))
+            return
+        self._laser_ok_n += 1
+        if self._laser_paused and self._laser_ok_n >= self.map_gate_resume_n:
+            self._laser_paused = False
+            self.metrics['laser_resumes'] += 1
+            self.get_logger().info('建图门控：连续 %d 帧一致，恢复写入持久地图'
+                                   % self._laser_ok_n)
+
     # ------------------------------------------------------------------
     # 主循环
     # ------------------------------------------------------------------
@@ -460,7 +527,9 @@ class SlipNode(Node):
                                        % (getattr(self, '_last_trusted', 'S0') or 'S0',
                                           tstate, treason))
                 self._last_trusted = tstate
-            self._map_allowed = tstate in self.trusted_mod.MAP_ALLOWED
+            self._update_laser_gate(now)
+            self._map_allowed = (tstate in self.trusted_mod.MAP_ALLOWED
+                                 and not self._laser_paused)
 
             # §5.2：要动之前先过准入；不过就停车上报，不再试第二次
             kind = action.get('action')
