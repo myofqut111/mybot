@@ -120,10 +120,12 @@ class CmdMux(Node):
                     self.get_logger().info('可信状态恢复，解除限速')
             self._note('nav')
             return
-        # 两路都不发：停住（底盘自己也有看门狗，这里只是别留最后一条）
-        if self._source is not None:
+        # 两路都不发：只在"从有到无"的那一刻补一帧零速把车停住，之后**保持安静**。
+        # 不能一直按 20 Hz 发零：手动遥控（手柄/键盘/网页箭头）发到 /cmd_vel 的
+        # 指令会被我们每 50 ms 覆盖一次，表现就是"遥控不了车"。
+        if self._source != 'idle':
             self._note('idle')
-        self.pub.publish(self._zero)
+            self.pub.publish(self._zero)
 
     def _note(self, source):
         if source == self._source:
