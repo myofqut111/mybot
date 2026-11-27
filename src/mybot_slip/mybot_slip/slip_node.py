@@ -380,12 +380,18 @@ class SlipNode(Node):
         self.agg.add_odom(t, vx, wz)
 
     def _on_reset_request(self, request, response):
+        # 复位一律先解冻位姿：冻结是"恢复过程中的临时手段"，不是复位的一部分。
+        # 之前 FAILED 时冻结不释放，人看到的就是"复位了还是冻结"，只能重启。
+        if self.odom_guard is not None:
+            self.odom_guard.set_frozen(False)
+        self._freeze_since = None
+        self._freeze_timeout_warned = False
         ok = self.machine.request_reset(time.monotonic())
         self.get_logger().info(
-            '收到复位请求：%s（静止 %.1f s + 冷却 %.1f s 后生效）'
-            % ('已受理' if ok else '当前不是 FAILED，忽略',
+            '收到复位请求：%s（已解冻位姿；静止 %.1f s + 冷却 %.1f s 后生效）'
+            % ('已受理' if ok else '当前不是 FAILED，仍已解冻位姿',
                float(self.p('reset_hold_s')),
-               float(self.machine.p['recovery_cooldown_s'])))
+               float(self.machine.p('recovery_cooldown_s'))))
         return response
 
     def _on_scan_match(self, msg):
