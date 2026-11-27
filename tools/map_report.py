@@ -138,7 +138,7 @@ def main():
                 if map_false_since is None:
                     map_false_since = rel
 
-        elif topic == '/scan_match/log_only':
+        elif topic in ('/scan_match/log_only', '/scan_match/odom'):
             m = deserialize_message(data, get_message(types[topic]))
             cov = list(m.twist.covariance)
             if cov and cov[0] > 0:
@@ -206,7 +206,7 @@ def main():
 
     # ---------- 5 激光速度 ----------
     print('=' * 62)
-    print('5 激光速度（/scan_match/log_only）')
+    print('5 激光速度（/scan_match/log_only 或 /scan_match/odom）')
     if icp_sig:
         good = sum(1 for s in icp_sig if s <= 0.03)
         mid = sum(1 for s in icp_sig if 0.03 < s <= 0.10)
